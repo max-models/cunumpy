@@ -21,7 +21,7 @@ pip install -e .
 Example usage:
 
 ```
-export ARRAYS_BACKEND=cupy
+export ARRAY_BACKEND=cupy
 ```
 
 ```python
