@@ -1,9 +1,13 @@
-def test_import_app():
-    from app.main import main
+import cunumpy as xp
 
-    print("app imported")
-    main()
+
+def test_xp_array():
+
+    arr = xp.array([1, 2])
+    arr *= 2
+
+    print(f"{arr = } {type(arr) = }")
 
 
 if __name__ == "__main__":
-    test_import_app()
+    test_xp_array()
