@@ -4,9 +4,9 @@ build-backend = "setuptools.build_meta"
 requires = [ "setuptools", "wheel" ]
 
 [project]
-name = "template-python"
+name = "cunumpy"
 version = "0.1"
-description = "Template python repository."
+description = "Simple wrapper for numpy and cupy. Replace `import numpy as np` with `import cunumpy as xp`."
 readme = "README.md"
 keywords = [ "python" ]
 license = { file = "LICENSE.txt" }
@@ -30,7 +30,7 @@ optional-dependencies.dev = [
   "black[jupyter]",
   "isort",
   "ruff",
-  "template-python[test,docs]",
+  "cunumpy[test,docs]",
 ]
 # https://medium.com/@pratikdomadiya123/build-project-documentation-quickly-with-the-sphinx-python-2a9732b66594
 optional-dependencies.docs = [
@@ -45,8 +45,7 @@ optional-dependencies.docs = [
   "sphinx-book-theme",
 ]
 optional-dependencies.test = [ "coverage", "pytest" ]
-urls."Source" = "https://github.com/max-models/template-python"
-scripts.template-python = "app.main:main"
+urls."Source" = "https://github.com/max-models/cunumpy"
 
 [tool.setuptools.packages.find]
 where = [ "src" ]

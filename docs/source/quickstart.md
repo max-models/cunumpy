@@ -6,6 +6,8 @@ Clone the repo
 git clone ...
 ```
 
+# Install
+
 Create and activate python environment
 
 ```
@@ -20,19 +22,25 @@ Install the code and requirements with pip
 pip install -e .
 ```
 
-Run the code with
+Example usage:
 
 ```
-template-python
+export ARRAYS_BACKEND=cupy
+```
+
+```python
+import cunumpy as xp
+arr = xp.array([1,2])
+
+print(type(arr))
+print(xp.__version__)
 ```
 
 # Build docs
+
 
 ```
 make html
 cd ../
 open docs/_build/html/index.html
 ```
-
-```{toctree}
-:maxdepth: 1

@@ -26,7 +26,7 @@ def setup(app):
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
-project = "python-template"
+project = "cunumpy"
 copyright = "2025, Max"
 author = "Max"
 
@@ -68,7 +68,7 @@ html_theme_options = {
     "icon_links": [
         {
             "name": "GitHub",
-            "url": "https://github.com/max-models/template-python",
+            "url": "https://github.com/max-models/cunumpy",
             "icon": "fab fa-github",
             "type": "fontawesome",
         },

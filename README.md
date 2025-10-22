@@ -1,8 +1,6 @@
-# template-python
+# CuNumpy
 
-Template repository for python projects
-
-Documentation: https://max-models.github.io/template-python/
+Simple wrapper for numpy and cupy. Replace `import numpy as np` with `import cunumpy as xp`.
 
 # Install
 
@@ -20,10 +18,18 @@ Install the code and requirements with pip
 pip install -e .
 ```
 
-Run the code with
+Example usage:
 
 ```
-template-python
+export ARRAYS_BACKEND=cupy
+```
+
+```python
+import cunumpy as xp
+arr = xp.array([1,2])
+
+print(type(arr))
+print(xp.__version__)
 ```
 
 # Build docs
