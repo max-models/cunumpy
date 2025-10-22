@@ -8,5 +8,6 @@ def test_xp_array():
 
     print(f"{arr = } {type(arr) = }")
 
+
 if __name__ == "__main__":
     test_xp_array()
