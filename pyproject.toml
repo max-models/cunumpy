@@ -5,7 +5,7 @@ requires = [ "setuptools", "wheel" ]
 
 [project]
 name = "cunumpy"
-version = "0.1"
+version = "0.1.1"
 description = "Simple wrapper for numpy and cupy. Replace `import numpy as np` with `import cunumpy as xp`."
 readme = "README.md"
 keywords = [ "python" ]
