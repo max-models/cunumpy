@@ -48,3 +48,6 @@ urls."Source" = "https://github.com/max-models/cunumpy"
 
 [tool.setuptools.packages.find]
 where = [ "src" ]
+
+[tool.setuptools.package-data]
+cunumpy = [ "py.typed", "*.pyi" ]
