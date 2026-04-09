@@ -17,11 +17,7 @@ def test_numpy_symbols_accessible():
     This validates the runtime behaviour that the stub file (__init__.pyi)
     declares to Pylance so that `xp.<Tab>` shows numpy completions in VS Code.
     """
-    missing = [
-        name
-        for name in np.__all__
-        if not hasattr(xp, name)
-    ]
+    missing = [name for name in np.__all__ if not hasattr(xp, name)]
     assert missing == [], f"Symbols not accessible via cunumpy: {missing}"
 
 

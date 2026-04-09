@@ -2,5 +2,6 @@
 # `import cunumpy as xp` followed by `xp.<Tab>` shows numpy completions.
 # At runtime the real __init__.py dispatches to numpy or cupy via __getattr__.
 from numpy import *
-from numpy import __version__, __config__
+from numpy import __config__, __version__
+
 from . import xp
