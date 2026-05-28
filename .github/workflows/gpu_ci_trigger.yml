@@ -1,3 +1,24 @@
+# SETUP INSTRUCTIONS:
+# ------------------
+# This workflow synchronizes the code to GitLab via SSH to trigger GPU-enabled CI.
+# 
+# 1. GENERATE SSH KEY PAIR (on your local machine):
+#    ssh-keygen -t ed25519 -f ~/.ssh/gitlab_sync_key -N "" -C "github-to-gitlab-sync"
+#
+# 2. CONFIGURE GITLAB (The Target):
+#    - Go to GitLab project > Settings > Repository > Deploy keys.
+#    - Add the content of '~/.ssh/gitlab_sync_key.pub'.
+#    - IMPORTANT: Check "Allow write access to this repository".
+#
+# 3. CONFIGURE GITHUB (The Source):
+#    - Go to GitHub repo > Settings > Secrets and variables > Actions.
+#    - Add new Repository Secrets:
+#      - Name: GITLAB_SSH_PRIVATE_KEY
+#        Value: Paste the entire content of '~/.ssh/gitlab_sync_key'.
+#      - Name: GITLAB_TOKEN
+#        Value: Your GitLab Personal Access Token (with 'api' and 'read_repository' scopes).
+#
+
 name: Sync to GitLab and Run GPU CI
 
 on:
@@ -22,6 +43,7 @@ jobs:
           ssh-private-key: ${{ secrets.GITLAB_SSH_PRIVATE_KEY }}
 
       - name: Push to GitLab via SSH & Provide Link
+        id: push
         run: |
           # 1. Setup SSH known hosts
           mkdir -p ~/.ssh
@@ -29,10 +51,13 @@ jobs:
 
           # 2. Determine target branch
           if [ "${{ github.event_name }}" == "pull_request" ]; then
-            TARGET_BRANCH="pr-${{ github.event.number }}"
+            TARGET_BRANCH="gpu-test-pr-${{ github.event.number }}"
           else
-            TARGET_BRANCH="${{ github.ref_name }}"
+            SOURCE_REF="${{ github.ref_name }}"
+            SAFE_REF="${SOURCE_REF//\//-}"
+            TARGET_BRANCH="gpu-test-${SAFE_REF}"
           fi
+          echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
 
           # 3. Add GitLab SSH remote
           git remote add gitlab git@gitlab.mpcdf.mpg.de:maxlin/cunumpy.git
@@ -41,9 +66,16 @@ jobs:
           git push -f gitlab HEAD:refs/heads/$TARGET_BRANCH
 
           # 5. Provide the direct link
-          # We construct the URL manually since the push triggers the pipeline automatically
           PIPELINE_URL="https://gitlab.mpcdf.mpg.de/maxlin/cunumpy/-/pipelines?ref=$TARGET_BRANCH"
 
           echo "::notice::GitLab GPU CI Pipeline started automatically via Push!"
           echo "::notice::View Pipeline: $PIPELINE_URL"
 
+      - name: Wait for GitLab Pipeline
+        uses: docker://gitlab/glab:latest
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          GITLAB_HOST: gitlab.mpcdf.mpg.de
+        with:
+          entrypoint: glab
+          args: ci status --live --branch ${{ env.TARGET_BRANCH }} --repo maxlin/cunumpy

@@ -1,6 +1,7 @@
 # cunumpy/__init__.py
 from . import xp
 from .xp import (
+    cupy_available,
     get_backend,
     is_cpu,
     is_gpu,
@@ -14,6 +15,7 @@ from .xp import (
 
 __all__ = [
     "xp",
+    "cupy_available",
     "to_numpy",
     "to_cupy",
     "to_cunumpy",
