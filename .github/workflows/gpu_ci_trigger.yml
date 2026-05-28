@@ -1,25 +1,40 @@
-name: Trigger GitLab GPU CI
+name: Sync to GitLab and Run GPU CI
 
 on:
   push:
     branches: [main, devel]
   pull_request:
     branches: [main, devel]
-  workflow_dispatch: # Allows manual triggering
+  workflow_dispatch:
 
 jobs:
-  trigger-gitlab:
+  sync-and-test:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger GitLab Pipeline
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch all history for all branches and tags
+
+      - name: Push to GitLab
+        env:
+          # You will need to add this secret to GitHub
+          GITLAB_PUSH_TOKEN: ${{ secrets.GITLAB_PUSH_TOKEN }}
         run: |
-          # Use the branch name that triggered this workflow
-          # github.head_ref is used for PRs, github.ref_name for pushes
-          BRANCH_NAME="${{ github.head_ref || github.ref_name }}"
+          # Determine the branch name
+          # For PRs, we push to a branch named 'pr-<number>' on GitLab
+          # For regular pushes, we use the actual branch name
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            TARGET_BRANCH="pr-${{ github.event.number }}"
+          else
+            TARGET_BRANCH="${{ github.ref_name }}"
+          fi
           
-          curl --request POST \
-            --form token=${{ secrets.GITLAB_TRIGGER_TOKEN }} \
-            --form "ref=$BRANCH_NAME" \
-            --form "variables[GH_SHA]=${{ github.event.pull_request.head.sha || github.sha }}" \
-            --form "variables[GH_REPO]=${{ github.repository }}" \
-            "https://gitlab.mpcdf.mpg.de/api/v4/projects/${{ secrets.GITLAB_PROJECT_ID }}/trigger/pipeline"
+          echo "Pushing to GitLab branch: $TARGET_BRANCH"
+          
+          # Add GitLab as a remote using the Project Access Token
+          # Format: https://oauth2:TOKEN@gitlab.mpcdf.mpg.de/path/to/repo.git
+          git remote add gitlab "https://oauth2:${GITLAB_PUSH_TOKEN}@gitlab.mpcdf.mpg.de/maxlin/cunumpy.git"
+          
+          # Force push the current HEAD to the target branch on GitLab
+          git push -f gitlab HEAD:refs/heads/$TARGET_BRANCH

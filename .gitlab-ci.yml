@@ -3,48 +3,26 @@ variables:
   CUDA_IMAGE: "nvidia/cuda:12.4.1-devel-ubuntu22.04"
 
 stages:
-  - checkout
   - test
 
-# 1. Checkout Step: Clone the canonical GitHub repo at the exact SHA
-checkout_github:
-  stage: checkout
-  image: alpine:latest
-  tags:
-    - mpcdf-shared
-  script:
-    - apk add --no-cache git
-    - echo "Cloning GitHub repo ${GH_REPO} at SHA ${GH_SHA}"
-    - git clone https://x-access-token:${GH_PAT}@github.com/${GH_REPO}.git workspace
-    - cd workspace
-    - git checkout ${GH_SHA}
-  artifacts:
-    paths:
-      - workspace/
-    expire_in: 1 hour
-
-# 2. GPU Test Step: Run CUDA sanity checks, build, and test
+# GPU Test Step: Run CUDA sanity checks, build, and test
+# Since GitHub now pushes the code directly to GitLab, we can just use the local repo.
 gpu_tests:
   stage: test
   image: ${CUDA_IMAGE}
   tags:
     - gpu-nvidia
     - gpu-nvidia-cc80
-  dependencies:
-    - checkout_github
   before_script:
     - apt-get update && apt-get install -y cmake python3-pip git
-    - cd workspace
   script:
     - echo "--- CUDA Sanity Check ---"
     - nvidia-smi
     
     - echo "--- Detect Compute Capability ---"
-    # Simple check for CC 8.0 (A100)
     - nvidia-smi --query-gpu=compute_cap --format=csv,noheader
     
     - echo "--- CMake Build ---"
-    # Example for C++ components if they exist
     - if [ -f "CMakeLists.txt" ]; then
         mkdir build && cd build;
         cmake ..;
