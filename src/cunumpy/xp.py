@@ -1,6 +1,7 @@
 import os
+from contextlib import contextmanager
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Generator, Literal
 
 import numpy as np
 
@@ -19,27 +20,31 @@ class ArrayBackend:
         ], "Array backend must be either 'numpy' or 'cupy'."
 
         self._backend: BackendType = "cupy" if backend.lower() == "cupy" else "numpy"
+        self._xp: ModuleType = np  # Placeholder
 
         # Import numpy/cupy
-        if self.backend == "cupy":
+        self._xp = self._load_backend(self._backend, verbose)
+
+    def _load_backend(self, backend: BackendType, verbose: bool = False) -> ModuleType:
+        if backend == "cupy":
             try:
                 import cupy as cp
 
-                self._xp = cp
+                return cp
             except ImportError:
                 if verbose:
                     print("CuPy not available.")
-                self._backend = "numpy"
+                return np
+        import numpy as np_mod
 
-        if self.backend == "numpy":
-            import numpy as np
+        return np_mod
 
-            self._xp = np
-
-        assert isinstance(self.xp, ModuleType)
-
+    def __init_post__(self, verbose: bool = False) -> None:
+        # This is now redundant but kept for compatibility if called
+        self._xp = self._load_backend(self._backend, verbose)
+        assert isinstance(self._xp, ModuleType)
         if verbose:
-            print(f"Using {self.xp.__name__} backend.")
+            print(f"Using {self._xp.__name__} backend.")
 
     @property
     def backend(self) -> BackendType:
@@ -49,6 +54,21 @@ class ArrayBackend:
     def xp(self) -> ModuleType:
         return self._xp
 
+    @contextmanager
+    def use_backend(self, backend: BackendType) -> Generator[None, None, None]:
+        """Temporarily change the backend."""
+        old_backend = self._backend
+        old_xp = self._xp
+
+        self._backend = backend
+        self._xp = self._load_backend(backend)
+
+        try:
+            yield
+        finally:
+            self._backend = old_backend
+            self._xp = old_xp
+
 
 # TODO: Make this configurable via environment variable or config file.
 array_backend = ArrayBackend(
@@ -57,6 +77,13 @@ array_backend = ArrayBackend(
     ),
     verbose=False,
 )
+# Re-run initialization logic properly after backend selection
+array_backend.__init_post__(verbose=False)
+
+
+def use_backend(backend: BackendType) -> Generator[None, None, None]:
+    """Temporarily change the backend."""
+    return array_backend.use_backend(backend)
 
 
 def to_numpy(array: Any) -> np.ndarray:

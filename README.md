@@ -41,6 +41,11 @@ arr_xp = xp.to_cunumpy(arr)
 print(xp.get_backend(arr))
 print(xp.is_gpu(arr))
 print(xp.is_cpu(arr))
+
+# Temporarily switch backend
+with xp.use_backend("numpy"):
+    # This code runs on CPU even if ARRAY_BACKEND=cupy
+    arr_cpu = xp.zeros(100)
 ```
 
 # Build docs

@@ -26,6 +26,7 @@ def test_numpy_symbols_accessible():
         "get_backend",
         "is_gpu",
         "is_cpu",
+        "use_backend",
         "xp",
     ]
     missing = [
@@ -70,6 +71,18 @@ def test_get_backend_and_is_gpu_cpu():
     assert xp.get_backend(arr) == "numpy"
     assert xp.is_gpu(arr) is False
     assert xp.is_cpu(arr) is True
+
+
+def test_use_backend():
+    # Initial backend should be numpy (default) in this test environment
+    assert "numpy" in xp.xp.__name__
+
+    with xp.use_backend("numpy"):
+        assert "numpy" in xp.xp.__name__
+        arr = xp.zeros(10)
+        assert isinstance(arr, np.ndarray)
+
+    assert "numpy" in xp.xp.__name__
 
 
 if __name__ == "__main__":
