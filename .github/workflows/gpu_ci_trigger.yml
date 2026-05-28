@@ -41,3 +41,26 @@ jobs:
 
           # 4. Force push
           git push -f gitlab HEAD:refs/heads/$TARGET_BRANCH
+          
+          # Store branch for next step
+          echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
+
+      - name: Trigger GitLab Pipeline & Provide Link
+        run: |
+          # Trigger the pipeline and capture the JSON response
+          RESPONSE=$(curl --silent --request POST \
+            --form token=${{ secrets.GITLAB_TRIGGER_TOKEN }} \
+            --form "ref=$TARGET_BRANCH" \
+            "https://gitlab.mpcdf.mpg.de/api/v4/projects/${{ secrets.GITLAB_PROJECT_ID }}/trigger/pipeline")
+          
+          # Extract the pipeline web_url using python (built-in to runner)
+          PIPELINE_URL=$(echo $RESPONSE | python3 -c "import sys, json; print(json.load(sys.stdin).get('web_url', ''))")
+          
+          if [ -z "$PIPELINE_URL" ]; then
+            echo "::error::Failed to trigger GitLab pipeline. Response: $RESPONSE"
+            exit 1
+          fi
+          
+          echo "::notice::GitLab GPU CI Pipeline triggered successfully!"
+          echo "::notice::View Pipeline: $PIPELINE_URL"
+          echo "PIPELINE_URL=$PIPELINE_URL" >> $GITHUB_ENV
