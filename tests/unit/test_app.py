@@ -18,6 +18,9 @@ def test_numpy_symbols_accessible():
     This validates the runtime behaviour that the stub file (__init__.pyi)
     declares to Pylance so that `xp.<Tab>` shows numpy completions in VS Code.
     """
+    if xp.cupy_backend:
+        pytest.skip("CuPy does not have 100% symbol parity with NumPy.")
+
     # Exclude our custom methods from the numpy check
     custom_methods = [
         "to_numpy",
