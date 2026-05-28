@@ -6,17 +6,9 @@ import pytest
 import cunumpy as xp
 
 
-def has_cupy():
-    try:
-        import cupy
-        import cupy.cuda
-
-        return cupy.cuda.is_available()
-    except ImportError:
-        return False
-
-
-@pytest.mark.skipif(not has_cupy(), reason="CuPy/GPU not available")
+@pytest.mark.skipif(
+    not xp.has_cupy(), reason="CuPy/GPU not available or not functional"
+)
 def test_benchmark_matmul():
     """Benchmark matrix multiplication to show CuPy performance gain."""
     size = 2000
@@ -57,7 +49,9 @@ def test_benchmark_matmul():
     assert t_cp < t_np, f"CuPy ({t_cp:.4f}s) was not faster than NumPy ({t_np:.4f}s)"
 
 
-@pytest.mark.skipif(not has_cupy(), reason="CuPy/GPU not available")
+@pytest.mark.skipif(
+    not xp.has_cupy(), reason="CuPy/GPU not available or not functional"
+)
 def test_benchmark_fft():
     """Benchmark FFT performance."""
     size = 2**22  # ~4 million elements

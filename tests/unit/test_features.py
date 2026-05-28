@@ -4,19 +4,10 @@ import pytest
 import cunumpy as xp
 
 
-def has_cupy():
-    try:
-        import cupy
-
-        return True
-    except ImportError:
-        return False
-
-
 @pytest.mark.parametrize("backend", ["numpy", "cupy"])
 def test_matrix_multiplication(backend):
-    if backend == "cupy" and not has_cupy():
-        pytest.skip("CuPy not installed")
+    if backend == "cupy" and not xp.has_cupy():
+        pytest.skip("CuPy not installed or not functional")
 
     with xp.use_backend(backend):
         # Test basic @ operator and matmul
@@ -34,8 +25,8 @@ def test_matrix_multiplication(backend):
 
 @pytest.mark.parametrize("backend", ["numpy", "cupy"])
 def test_reductions_and_axes(backend):
-    if backend == "cupy" and not has_cupy():
-        pytest.skip("CuPy not installed")
+    if backend == "cupy" and not xp.has_cupy():
+        pytest.skip("CuPy not installed or not functional")
 
     with xp.use_backend(backend):
         a = xp.array([[1, 10, 100], [2, 20, 200]], dtype=float)
@@ -48,8 +39,8 @@ def test_reductions_and_axes(backend):
 
 @pytest.mark.parametrize("backend", ["numpy", "cupy"])
 def test_complex_elementwise(backend):
-    if backend == "cupy" and not has_cupy():
-        pytest.skip("CuPy not installed")
+    if backend == "cupy" and not xp.has_cupy():
+        pytest.skip("CuPy not installed or not functional")
 
     with xp.use_backend(backend):
         a = xp.array([-1, 0, 1], dtype=float)
@@ -65,8 +56,8 @@ def test_complex_elementwise(backend):
 
 @pytest.mark.parametrize("backend", ["numpy", "cupy"])
 def test_broadcasting_logic(backend):
-    if backend == "cupy" and not has_cupy():
-        pytest.skip("CuPy not installed")
+    if backend == "cupy" and not xp.has_cupy():
+        pytest.skip("CuPy not installed or not functional")
 
     with xp.use_backend(backend):
         # 3D + 1D broadcasting
@@ -81,8 +72,8 @@ def test_broadcasting_logic(backend):
 
 @pytest.mark.parametrize("backend", ["numpy", "cupy"])
 def test_fft_parity(backend):
-    if backend == "cupy" and not has_cupy():
-        pytest.skip("CuPy not installed")
+    if backend == "cupy" and not xp.has_cupy():
+        pytest.skip("CuPy not installed or not functional")
 
     with xp.use_backend(backend):
         # Create a signal with two frequencies
@@ -99,8 +90,8 @@ def test_fft_parity(backend):
 @pytest.mark.parametrize("backend", ["numpy", "cupy"])
 def test_realistic_normalization_workflow(backend):
     """Workflow: Load data -> Compute Stats -> Normalize -> Mask Outliers."""
-    if backend == "cupy" and not has_cupy():
-        pytest.skip("CuPy not installed")
+    if backend == "cupy" and not xp.has_cupy():
+        pytest.skip("CuPy not installed or not functional")
 
     with xp.use_backend(backend):
         # 1. Create dummy data with clear outliers
@@ -122,8 +113,8 @@ def test_realistic_normalization_workflow(backend):
 
 @pytest.mark.parametrize("backend", ["numpy", "cupy"])
 def test_stacking_and_concatenation(backend):
-    if backend == "cupy" and not has_cupy():
-        pytest.skip("CuPy not installed")
+    if backend == "cupy" and not xp.has_cupy():
+        pytest.skip("CuPy not installed or not functional")
 
     with xp.use_backend(backend):
         a = xp.array([1, 2, 3])
@@ -139,8 +130,8 @@ def test_stacking_and_concatenation(backend):
 
 @pytest.mark.parametrize("backend", ["numpy", "cupy"])
 def test_advanced_indexing(backend):
-    if backend == "cupy" and not has_cupy():
-        pytest.skip("CuPy not installed")
+    if backend == "cupy" and not xp.has_cupy():
+        pytest.skip("CuPy not installed or not functional")
 
     with xp.use_backend(backend):
         a = xp.arange(10).reshape(2, 5)
@@ -155,8 +146,8 @@ def test_advanced_indexing(backend):
 
 @pytest.mark.parametrize("backend", ["numpy", "cupy"])
 def test_random_generation(backend):
-    if backend == "cupy" and not has_cupy():
-        pytest.skip("CuPy not installed")
+    if backend == "cupy" and not xp.has_cupy():
+        pytest.skip("CuPy not installed or not functional")
 
     with xp.use_backend(backend):
         # Test reproducibility if we were to add seed (checking existing proxy)

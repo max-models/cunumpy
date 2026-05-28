@@ -92,6 +92,26 @@ def set_backend(backend: BackendType) -> None:
     array_backend._xp = array_backend._load_backend(backend)
 
 
+def has_cupy() -> bool:
+    """Check if CuPy is available and functional."""
+    try:
+        import cupy as cp
+
+        # Check if a GPU is available
+        if not cp.is_available():
+            return False
+
+        # Verify that essential libraries are loadable by performing a small operation.
+        # This prevents failures in environments where CuPy is installed but CUDA
+        # libraries (like libcublas or libcufft) are missing.
+        a = cp.array([1.0], dtype=cp.float32)
+        _ = a @ a
+
+        return True
+    except (ImportError, Exception):
+        return False
+
+
 def _cupy_backend() -> bool:
     """Check if the active global backend is CuPy."""
     return array_backend.backend == "cupy"
