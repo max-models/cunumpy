@@ -47,20 +47,28 @@ jobs:
 
       - name: Trigger GitLab Pipeline & Provide Link
         run: |
+          # Give GitLab a moment to index the newly pushed branch
+          sleep 2
+          
           # Trigger the pipeline and capture the JSON response
-          RESPONSE=$(curl --silent --request POST \
+          # We use -w to get the HTTP status code as well
+          RESPONSE_DATA=$(curl --silent --show-error --write-out "\n%{http_code}" --request POST \
             --form token=${{ secrets.GITLAB_TRIGGER_TOKEN }} \
             --form "ref=$TARGET_BRANCH" \
             "https://gitlab.mpcdf.mpg.de/api/v4/projects/${{ secrets.GITLAB_PROJECT_ID }}/trigger/pipeline")
           
-          # Extract the pipeline web_url using python (built-in to runner)
-          PIPELINE_URL=$(echo $RESPONSE | python3 -c "import sys, json; print(json.load(sys.stdin).get('web_url', ''))")
+          HTTP_STATUS=$(echo "$RESPONSE_DATA" | tail -n1)
+          RESPONSE_BODY=$(echo "$RESPONSE_DATA" | sed '$d')
           
-          if [ -z "$PIPELINE_URL" ]; then
-            echo "::error::Failed to trigger GitLab pipeline. Response: $RESPONSE"
+          if [ "$HTTP_STATUS" != "201" ]; then
+            echo "::error::GitLab API returned $HTTP_STATUS"
+            echo "::error::Response: $RESPONSE_BODY"
+            echo "::error::Check if GITLAB_PROJECT_ID (${{ secrets.GITLAB_PROJECT_ID }}) and GITLAB_TRIGGER_TOKEN are correct."
             exit 1
           fi
           
+          # Extract the pipeline web_url
+          PIPELINE_URL=$(echo $RESPONSE_BODY | python3 -c "import sys, json; print(json.load(sys.stdin).get('web_url', ''))")
+          
           echo "::notice::GitLab GPU CI Pipeline triggered successfully!"
           echo "::notice::View Pipeline: $PIPELINE_URL"
-          echo "PIPELINE_URL=$PIPELINE_URL" >> $GITHUB_ENV
