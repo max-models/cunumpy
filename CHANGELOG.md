@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `xp.synchronize()`: Blocks until GPU operations are complete (no-op on CPU). Essential for accurate benchmarking.
 - **Developer Experience**:
     - Added `isort` configuration to `pyproject.toml` with `black` profile compatibility.
+    - Reorganized test suite into specialized files: `test_numpy.py`, `test_cupy.py`, and `test_cunumpy.py`.
 
 ### Changed
 - **Dynamic Dispatch Architecture**: Refactored `src/cunumpy/xp.py` to use module-level `__getattr__`. This ensures that `cunumpy.<op>` calls always resolve to the currently active backend module, enabling seamless runtime switching via `set_backend`.

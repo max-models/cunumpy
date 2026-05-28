@@ -30,7 +30,7 @@ gpu_tests:
     - echo "--- Pytest Execution ---"
     # The MPCDF image likely has a specific python environment. 
     # We install our dependencies into the user directory or a virtualenv.
-    - python3 -m pip install --user pytest cupy-cuda12x
+    - python3 -m pip install --user cupy-cuda12x
     - python3 -m pip install --user -e .
     
     # Add the user bin to PATH for pytest
