@@ -1,0 +1,49 @@
+name: Sync to GitLab and Run GPU CI
+
+on:
+  push:
+    branches: [main, devel]
+  pull_request:
+    branches: [main, devel]
+  workflow_dispatch:
+
+jobs:
+  sync-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install SSH Key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.GITLAB_SSH_PRIVATE_KEY }}
+
+      - name: Push to GitLab via SSH & Provide Link
+        run: |
+          # 1. Setup SSH known hosts
+          mkdir -p ~/.ssh
+          ssh-keyscan gitlab.mpcdf.mpg.de >> ~/.ssh/known_hosts
+
+          # 2. Determine target branch
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            TARGET_BRANCH="pr-${{ github.event.number }}"
+          else
+            TARGET_BRANCH="${{ github.ref_name }}"
+          fi
+
+          # 3. Add GitLab SSH remote
+          git remote add gitlab git@gitlab.mpcdf.mpg.de:maxlin/cunumpy.git
+
+          # 4. Force push (This automatically starts the GitLab Pipeline)
+          git push -f gitlab HEAD:refs/heads/$TARGET_BRANCH
+
+          # 5. Provide the direct link
+          # We construct the URL manually since the push triggers the pipeline automatically
+          PIPELINE_URL="https://gitlab.mpcdf.mpg.de/maxlin/cunumpy/-/pipelines?ref=$TARGET_BRANCH"
+
+          echo "::notice::GitLab GPU CI Pipeline started automatically via Push!"
+          echo "::notice::View Pipeline: $PIPELINE_URL"
+
