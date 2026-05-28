@@ -1,7 +1,6 @@
 variables:
-  # Base image with CUDA and C++ tools
-  CUDA_IMAGE: "nvidia/cuda:12.4.1-devel-ubuntu22.04"
-  # Instruct pip to install to a directory in the path, or avoid the 'UNKNOWN' warning
+  # Use the specialized MPCDF HPC image
+  CUDA_IMAGE: "gitlab-registry.mpcdf.mpg.de/mpcdf/ci-module-image/nvhpcsdk_26:2026"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
 stages:
@@ -13,28 +12,34 @@ gpu_tests:
   tags:
     - gpu-nvidia
     - gpu-nvidia-cc80
-  before_script:
-    # Set non-interactive timezone to prevent tzdata prompting
-    - export DEBIAN_FRONTEND=noninteractive
-    - apt-get update && apt-get install -y cmake python3-pip git
   script:
     - echo "--- CUDA Sanity Check ---"
     - nvidia-smi
     
     - echo "--- Detect Compute Capability ---"
     - nvidia-smi --query-gpu=compute_cap --format=csv,noheader
-
-    - ls
-    - pwd
-
+    
+    - echo "--- Tool Versions ---"
+    - cmake --version
+    - python3 --version
+    - git --version
+    
+    - echo "--- CMake Build ---"
+    - if [ -f "CMakeLists.txt" ]; then
+        mkdir -p build && cd build;
+        cmake ..;
+        make -j$(nproc);
+        cd ..;
+      fi
+    
     - echo "--- Pytest Execution ---"
-    # Ensure pip is up to date and install test requirements directly
-    - python3 -m venv .venv
-    - source .venv/bin/activate
-    - pip install --upgrade pip
-    - pip install pytest cupy-cuda12x
-    # Install the package itself
-    - pip install -e .
-    # Set the backend to cupy for tests and run them
+    # The MPCDF image likely has a specific python environment. 
+    # We install our dependencies into the user directory or a virtualenv.
+    - python3 -m pip install --user pytest cupy-cuda12x
+    - python3 -m pip install --user -e .
+    
+    # Add the user bin to PATH for pytest
+    - export PATH="$HOME/.local/bin:$PATH"
     - export ARRAY_BACKEND=cupy
+    
     - python3 -m pytest tests/unit/
