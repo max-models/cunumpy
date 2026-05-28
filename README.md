@@ -30,6 +30,28 @@ arr = xp.array([1,2])
 
 print(type(arr))
 print(xp.__version__)
+
+# Convert to NumPy
+arr_np = xp.to_numpy(arr)
+
+# Convert to active backend
+arr_xp = xp.to_cunumpy(arr)
+
+# Inspect backend
+print(xp.get_backend(arr))
+print(xp.is_gpu(arr))
+print(xp.is_cpu(arr))
+
+# Temporarily switch backend
+with xp.use_backend("numpy"):
+    # This code runs on CPU even if ARRAY_BACKEND=cupy
+    arr_cpu = xp.zeros(100)
+
+# Set backend globally
+xp.set_backend("cupy")
+
+# Synchronize GPU operations (no-op on CPU)
+xp.synchronize()
 ```
 
 # Build docs
