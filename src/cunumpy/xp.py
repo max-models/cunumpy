@@ -77,6 +77,24 @@ def to_cupy(array: Any) -> Any:
         raise ImportError("CuPy is not available.")
 
 
+def to_cunumpy(array: Any) -> Any:
+    """Convert an array to the currently active backend."""
+    if array_backend.backend == "cupy":
+        return to_cupy(array)
+    return to_numpy(array)
+
+
+def get_backend(array: Any) -> BackendType:
+    """Return 'cupy' or 'numpy' depending on the array type."""
+    module = getattr(type(array), "__module__", "")
+    return "cupy" if "cupy" in module else "numpy"
+
+
+def is_gpu(array: Any) -> bool:
+    """Check if the array is stored on a GPU (CuPy)."""
+    return get_backend(array) == "cupy"
+
+
 # TYPE_CHECKING is True when type checking (e.g., mypy), but False at runtime.
 # This allows us to use autocompletion for xp (i.e., numpy/cupy) as if numpy was imported.
 if TYPE_CHECKING:

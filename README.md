@@ -34,8 +34,12 @@ print(xp.__version__)
 # Convert to NumPy
 arr_np = xp.to_numpy(arr)
 
-# Convert to CuPy (requires CuPy installed)
-# arr_cp = xp.to_cupy(arr)
+# Convert to active backend
+arr_xp = xp.to_cunumpy(arr)
+
+# Inspect backend
+print(xp.get_backend(arr))
+print(xp.is_gpu(arr))
 ```
 
 # Build docs

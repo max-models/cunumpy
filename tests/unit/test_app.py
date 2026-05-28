@@ -19,7 +19,14 @@ def test_numpy_symbols_accessible():
     declares to Pylance so that `xp.<Tab>` shows numpy completions in VS Code.
     """
     # Exclude our custom methods from the numpy check
-    custom_methods = ["to_numpy", "to_cupy", "xp"]
+    custom_methods = [
+        "to_numpy",
+        "to_cupy",
+        "to_cunumpy",
+        "get_backend",
+        "is_gpu",
+        "xp",
+    ]
     missing = [
         name
         for name in np.__all__
@@ -48,6 +55,19 @@ def test_to_cupy_not_available():
 
     with pytest.raises(ImportError):
         xp.to_cupy(arr)
+
+
+def test_to_cunumpy():
+    arr = np.array([1, 2, 3])
+    arr_xp = xp.to_cunumpy(arr)
+    # Backend is numpy in tests usually
+    assert isinstance(arr_xp, (np.ndarray, xp.ndarray))
+
+
+def test_get_backend_and_is_gpu():
+    arr = np.array([1, 2, 3])
+    assert xp.get_backend(arr) == "numpy"
+    assert xp.is_gpu(arr) is False
 
 
 if __name__ == "__main__":
