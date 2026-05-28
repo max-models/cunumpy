@@ -1,12 +1,12 @@
 variables:
   # Base image with CUDA and C++ tools
   CUDA_IMAGE: "nvidia/cuda:12.4.1-devel-ubuntu22.04"
+  # Instruct pip to install to a directory in the path, or avoid the 'UNKNOWN' warning
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
 stages:
   - test
 
-# GPU Test Step: Run CUDA sanity checks, build, and test
-# Since GitHub now pushes the code directly to GitLab, we can just use the local repo.
 gpu_tests:
   stage: test
   image: ${CUDA_IMAGE}
@@ -14,6 +14,8 @@ gpu_tests:
     - gpu-nvidia
     - gpu-nvidia-cc80
   before_script:
+    # Set non-interactive timezone to prevent tzdata prompting
+    - export DEBIAN_FRONTEND=noninteractive
     - apt-get update && apt-get install -y cmake python3-pip git
   script:
     - echo "--- CUDA Sanity Check ---"
@@ -31,5 +33,11 @@ gpu_tests:
       fi
     
     - echo "--- Pytest Execution ---"
-    - pip3 install .[test]
-    - pytest tests/unit/
+    # Ensure pip is up to date and install test requirements directly
+    - python3 -m pip install --upgrade pip
+    - pip3 install pytest cupy-cuda12x
+    # Install the package itself
+    - pip3 install -e .
+    # Set the backend to cupy for tests and run them
+    - export ARRAY_BACKEND=cupy
+    - python3 -m pytest tests/unit/
