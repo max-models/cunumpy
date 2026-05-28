@@ -46,6 +46,9 @@ print(xp.is_cpu(arr))
 with xp.use_backend("numpy"):
     # This code runs on CPU even if ARRAY_BACKEND=cupy
     arr_cpu = xp.zeros(100)
+
+# Set backend globally
+xp.set_backend("cupy")
 ```
 
 # Build docs

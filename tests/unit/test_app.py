@@ -27,6 +27,7 @@ def test_numpy_symbols_accessible():
         "is_gpu",
         "is_cpu",
         "use_backend",
+        "set_backend",
         "xp",
     ]
     missing = [
@@ -75,6 +76,7 @@ def test_get_backend_and_is_gpu_cpu():
 
 def test_use_backend():
     # Initial backend should be numpy (default) in this test environment
+    # Accessing xp.xp triggers the dynamic __getattr__ in xp.py
     assert "numpy" in xp.xp.__name__
 
     with xp.use_backend("numpy"):
@@ -83,6 +85,21 @@ def test_use_backend():
         assert isinstance(arr, np.ndarray)
 
     assert "numpy" in xp.xp.__name__
+
+
+def test_set_backend():
+    # Set to numpy
+    xp.set_backend("numpy")
+    assert "numpy" in xp.xp.__name__
+    arr = xp.array([1])
+    assert isinstance(arr, np.ndarray)
+
+    # Set to cupy (falls back to numpy if not available)
+    xp.set_backend("cupy")
+    # If cupy is not installed, xp.xp will be numpy module
+    # We just verify it doesn't crash and we can still call things
+    arr2 = xp.array([2])
+    assert arr2 is not None
 
 
 if __name__ == "__main__":

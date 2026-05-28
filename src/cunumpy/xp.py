@@ -86,6 +86,12 @@ def use_backend(backend: BackendType) -> Generator[None, None, None]:
     return array_backend.use_backend(backend)
 
 
+def set_backend(backend: BackendType) -> None:
+    """Set the backend globally."""
+    array_backend._backend = backend
+    array_backend._xp = array_backend._load_backend(backend)
+
+
 def to_numpy(array: Any) -> np.ndarray:
     """Convert an array to a NumPy array."""
     if hasattr(array, "get"):
@@ -132,4 +138,8 @@ def is_cpu(array: Any) -> bool:
 if TYPE_CHECKING:
     import numpy as xp
 else:
-    xp = array_backend.xp
+    # Use module-level __getattr__ for dynamic xp (Python 3.7+)
+    def __getattr__(name):
+        if name == "xp":
+            return array_backend.xp
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

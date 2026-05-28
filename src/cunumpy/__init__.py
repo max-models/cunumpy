@@ -1,14 +1,7 @@
 # cunumpy/__init__.py
 from . import xp
-from .xp import (
-    get_backend,
-    is_cpu,
-    is_gpu,
-    to_cunumpy,
-    to_cupy,
-    to_numpy,
-    use_backend,
-)
+from .xp import (get_backend, is_cpu, is_gpu, set_backend, to_cunumpy, to_cupy,
+                 to_numpy, use_backend)
 
 __all__ = [
     "xp",
@@ -19,6 +12,7 @@ __all__ = [
     "is_gpu",
     "is_cpu",
     "use_backend",
+    "set_backend",
 ]
 
 
