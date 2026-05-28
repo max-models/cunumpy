@@ -32,10 +32,15 @@ gpu_tests:
     # The MPCDF image likely has a specific python environment. 
     # We install our dependencies into the user directory or a virtualenv.
     - python3 -m pip install --user cupy-cuda12x
+    - python3 -m pip install --user nvidia-cublas-cu12 nvidia-cufft-cu12 nvidia-curand-cu12 nvidia-cusolver-cu12 nvidia-cusparse-cu12
     - python3 -m pip install --user -e .
     
     # Add the user bin to PATH for pytest
     - export PATH="$HOME/.local/bin:$PATH"
+    
+    # Try to find libcublas and other libraries in the HPC environment
+    - export LD_LIBRARY_PATH=$(find /mpcdf/soft /opt/nvidia -name libcublas.so.12 -exec dirname {} \; 2>/dev/null | head -n 1):$LD_LIBRARY_PATH
+    
     - export ARRAY_BACKEND=cupy
     
     - pytest -xvs .
