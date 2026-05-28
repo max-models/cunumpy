@@ -48,7 +48,7 @@ jobs:
       - name: Trigger GitLab Pipeline & Provide Link
         run: |
           # Give GitLab a moment to index the newly pushed branch
-          sleep 2
+          sleep 10
           
           # Trigger the pipeline and capture the JSON response
           # We use -w to get the HTTP status code as well
