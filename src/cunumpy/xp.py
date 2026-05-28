@@ -21,18 +21,8 @@ def cupy_available() -> bool:
         import cupy as cp
 
         # Check if a GPU is available
-        if not cp.is_available():
-            _CUPY_AVAILABLE_CACHE = False
-            return False
-
-        # Verify that essential libraries are loadable by performing a small operation.
-        # This prevents failures in environments where CuPy is installed but CUDA
-        # libraries (like libcublas or libcufft) are missing.
-        # a = cp.array([1.0], dtype=cp.float32)
-        # _ = a @ a
-
-        _CUPY_AVAILABLE_CACHE = True
-        return True
+        _CUPY_AVAILABLE_CACHE = cp.is_available()
+        return _CUPY_AVAILABLE_CACHE
     except (ImportError, Exception):
         _CUPY_AVAILABLE_CACHE = False
         return False
