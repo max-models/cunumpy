@@ -27,13 +27,13 @@ class ArrayBackend:
 
     def _load_backend(self, backend: BackendType, verbose: bool = False) -> ModuleType:
         if backend == "cupy":
-            try:
+            if has_cupy():
                 import cupy as cp
 
                 return cp
-            except ImportError:
+            else:
                 if verbose:
-                    print("CuPy not available.")
+                    print("CuPy not available or not functional.")
                 return np
         import numpy as np_mod
 
@@ -163,7 +163,7 @@ def to_cupy(array: Any) -> Any:
 
 def to_cunumpy(array: Any) -> Any:
     """Convert an array to the currently active backend."""
-    if array_backend.backend == "cupy":
+    if array_backend.backend == "cupy" and has_cupy():
         return to_cupy(array)
     return to_numpy(array)
 
