@@ -23,21 +23,18 @@ gpu_tests:
     
     - echo "--- Detect Compute Capability ---"
     - nvidia-smi --query-gpu=compute_cap --format=csv,noheader
-    
-    - echo "--- CMake Build ---"
-    - if [ -f "CMakeLists.txt" ]; then
-        mkdir build && cd build;
-        cmake ..;
-        make -j$(nproc);
-        cd ..;
-      fi
-    
+
+    - ls
+    - pwd
+
     - echo "--- Pytest Execution ---"
     # Ensure pip is up to date and install test requirements directly
-    - python3 -m pip install --upgrade pip
-    - pip3 install pytest cupy-cuda12x
+    - python3 -m venv .venv
+    - source .venv/bin/activate
+    - pip install --upgrade pip
+    - pip install pytest cupy-cuda12x
     # Install the package itself
-    - pip3 install -e .
+    - pip install -e .
     # Set the backend to cupy for tests and run them
     - export ARRAY_BACKEND=cupy
     - python3 -m pytest tests/unit/
