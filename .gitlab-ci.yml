@@ -15,6 +15,7 @@ gpu_tests:
   before_script:
     - module load python-waterboa/2025.06
     - module load nvhpcsdk/26
+    - module load fftw-serial/3.3.10
   script:
     - echo "--- CUDA Sanity Check ---"
     - nvidia-smi
