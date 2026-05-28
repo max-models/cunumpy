@@ -38,4 +38,4 @@ gpu_tests:
     - export PATH="$HOME/.local/bin:$PATH"
     - export ARRAY_BACKEND=cupy
     
-    - python3 -m pytest tests/unit/
+    - pytest -xvs .
