@@ -13,8 +13,6 @@ gpu_tests:
     - gpu-nvidia
     - gpu-nvidia-cc80
   before_script:
-    - echo "Running GPU tests on image: ${CUDA_IMAGE}"
-    # Load modules
     - module load python-waterboa/2025.06
     - module load nvhpcsdk/26
   script:
