@@ -1,3 +1,22 @@
+# SETUP INSTRUCTIONS:
+# ------------------
+# This workflow synchronizes the code to GitLab via SSH to trigger GPU-enabled CI.
+# 
+# 1. GENERATE SSH KEY PAIR (on your local machine):
+#    ssh-keygen -t ed25519 -f ~/.ssh/gitlab_sync_key -N "" -C "github-to-gitlab-sync"
+#
+# 2. CONFIGURE GITLAB (The Target):
+#    - Go to GitLab project > Settings > Repository > Deploy keys.
+#    - Add the content of '~/.ssh/gitlab_sync_key.pub'.
+#    - IMPORTANT: Check "Allow write access to this repository".
+#
+# 3. CONFIGURE GITHUB (The Source):
+#    - Go to GitHub repo > Settings > Secrets and variables > Actions.
+#    - Add a new Repository Secret:
+#      - Name: GITLAB_SSH_PRIVATE_KEY
+#      - Value: Paste the entire content of '~/.ssh/gitlab_sync_key'.
+#
+
 name: Sync to GitLab and Run GPU CI
 
 on:
