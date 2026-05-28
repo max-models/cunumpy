@@ -12,9 +12,11 @@
 #
 # 3. CONFIGURE GITHUB (The Source):
 #    - Go to GitHub repo > Settings > Secrets and variables > Actions.
-#    - Add a new Repository Secret:
+#    - Add new Repository Secrets:
 #      - Name: GITLAB_SSH_PRIVATE_KEY
-#      - Value: Paste the entire content of '~/.ssh/gitlab_sync_key'.
+#        Value: Paste the entire content of '~/.ssh/gitlab_sync_key'.
+#      - Name: GITLAB_TOKEN
+#        Value: Your GitLab Personal Access Token (with 'api' and 'read_repository' scopes).
 #
 
 name: Sync to GitLab and Run GPU CI
@@ -41,6 +43,7 @@ jobs:
           ssh-private-key: ${{ secrets.GITLAB_SSH_PRIVATE_KEY }}
 
       - name: Push to GitLab via SSH & Provide Link
+        id: push
         run: |
           # 1. Setup SSH known hosts
           mkdir -p ~/.ssh
@@ -52,6 +55,7 @@ jobs:
           else
             TARGET_BRANCH="${{ github.ref_name }}"
           fi
+          echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
 
           # 3. Add GitLab SSH remote
           git remote add gitlab git@gitlab.mpcdf.mpg.de:maxlin/cunumpy.git
@@ -60,9 +64,17 @@ jobs:
           git push -f gitlab HEAD:refs/heads/$TARGET_BRANCH
 
           # 5. Provide the direct link
-          # We construct the URL manually since the push triggers the pipeline automatically
           PIPELINE_URL="https://gitlab.mpcdf.mpg.de/maxlin/cunumpy/-/pipelines?ref=$TARGET_BRANCH"
 
           echo "::notice::GitLab GPU CI Pipeline started automatically via Push!"
           echo "::notice::View Pipeline: $PIPELINE_URL"
+
+      - name: Wait for GitLab Pipeline
+        uses: docker://gitlab/glab:latest
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+          GITLAB_HOST: gitlab.mpcdf.mpg.de
+        with:
+          entrypoint: glab
+          args: ci status --wait --branch ${{ env.TARGET_BRANCH }} --repo maxlin/cunumpy
 
