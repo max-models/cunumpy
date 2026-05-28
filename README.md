@@ -40,6 +40,7 @@ arr_xp = xp.to_cunumpy(arr)
 # Inspect backend
 print(xp.get_backend(arr))
 print(xp.is_gpu(arr))
+print(xp.is_cpu(arr))
 ```
 
 # Build docs

@@ -95,6 +95,11 @@ def is_gpu(array: Any) -> bool:
     return get_backend(array) == "cupy"
 
 
+def is_cpu(array: Any) -> bool:
+    """Check if the array is stored on a CPU (NumPy)."""
+    return get_backend(array) == "numpy"
+
+
 # TYPE_CHECKING is True when type checking (e.g., mypy), but False at runtime.
 # This allows us to use autocompletion for xp (i.e., numpy/cupy) as if numpy was imported.
 if TYPE_CHECKING:

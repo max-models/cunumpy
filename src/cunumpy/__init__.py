@@ -1,8 +1,16 @@
 # cunumpy/__init__.py
 from . import xp
-from .xp import get_backend, is_gpu, to_cunumpy, to_cupy, to_numpy
+from .xp import get_backend, is_cpu, is_gpu, to_cunumpy, to_cupy, to_numpy
 
-__all__ = ["xp", "to_numpy", "to_cupy", "to_cunumpy", "get_backend", "is_gpu"]
+__all__ = [
+    "xp",
+    "to_numpy",
+    "to_cupy",
+    "to_cunumpy",
+    "get_backend",
+    "is_gpu",
+    "is_cpu",
+]
 
 
 def __getattr__(name: str):

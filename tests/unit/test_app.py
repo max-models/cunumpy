@@ -25,6 +25,7 @@ def test_numpy_symbols_accessible():
         "to_cunumpy",
         "get_backend",
         "is_gpu",
+        "is_cpu",
         "xp",
     ]
     missing = [
@@ -64,10 +65,11 @@ def test_to_cunumpy():
     assert isinstance(arr_xp, (np.ndarray, xp.ndarray))
 
 
-def test_get_backend_and_is_gpu():
+def test_get_backend_and_is_gpu_cpu():
     arr = np.array([1, 2, 3])
     assert xp.get_backend(arr) == "numpy"
     assert xp.is_gpu(arr) is False
+    assert xp.is_cpu(arr) is True
 
 
 if __name__ == "__main__":
