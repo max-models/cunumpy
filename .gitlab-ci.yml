@@ -1,57 +1,57 @@
-# This file is a template, and might need editing before it works on your project.
-# To contribute improvements to CI/CD templates, please follow the Development guide at:
-# https://docs.gitlab.com/ee/development/cicd/templates.html
-# This specific template is located at:
-# https://gitlab.com/gitlab-org/gitlab/-/blob/master/lib/gitlab/ci/templates/Python.gitlab-ci.yml
-
-# Official language image. Look for the different tagged releases at:
-# https://hub.docker.com/r/library/python/tags/
-image: python:latest
-
-# Change pip's cache directory to be inside the project directory since we can
-# only cache local items.
 variables:
-  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  # Base image with CUDA and C++ tools
+  CUDA_IMAGE: "nvidia/cuda:12.4.1-devel-ubuntu22.04"
 
-# https://pip.pypa.io/en/stable/topics/caching/
-cache:
-  paths:
-    - .cache/pip
+stages:
+  - checkout
+  - test
 
-before_script:
-  - python --version ; pip --version  # For debugging
-  - pip install virtualenv
-  - virtualenv venv
-  - source venv/bin/activate
-
-test:
+# 1. Checkout Step: Clone the canonical GitHub repo at the exact SHA
+checkout_github:
+  stage: checkout
+  image: alpine:latest
+  tags:
+    - mpcdf-shared
   script:
-    - pip install ruff tox  # you can also use tox
-    - pip install --editable ".[test]"
-    - tox -e py,ruff
-
-run:
-  script:
-    - pip install .
-    # run the command here
+    - apk add --no-cache git
+    - echo "Cloning GitHub repo ${GH_REPO} at SHA ${GH_SHA}"
+    - git clone https://x-access-token:${GH_PAT}@github.com/${GH_REPO}.git workspace
+    - cd workspace
+    - git checkout ${GH_SHA}
   artifacts:
     paths:
-      - build/*
+      - workspace/
+    expire_in: 1 hour
 
-pages:
+# 2. GPU Test Step: Run CUDA sanity checks, build, and test
+gpu_tests:
+  stage: test
+  image: ${CUDA_IMAGE}
+  tags:
+    - gpu-nvidia
+    - gpu-nvidia-cc80
+  dependencies:
+    - checkout_github
+  before_script:
+    - apt-get update && apt-get install -y cmake python3-pip git
+    - cd workspace
   script:
-    - pip install sphinx sphinx-rtd-theme
-    - cd doc
-    - make html
-    - mv build/html/ ../public/
-  artifacts:
-    paths:
-      - public
-  rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-
-deploy:
-  stage: deploy
-  script: echo "Define your deployment script!"
-  environment: production
-
+    - echo "--- CUDA Sanity Check ---"
+    - nvidia-smi
+    
+    - echo "--- Detect Compute Capability ---"
+    # Simple check for CC 8.0 (A100)
+    - nvidia-smi --query-gpu=compute_cap --format=csv,noheader
+    
+    - echo "--- CMake Build ---"
+    # Example for C++ components if they exist
+    - if [ -f "CMakeLists.txt" ]; then
+        mkdir build && cd build;
+        cmake ..;
+        make -j$(nproc);
+        cd ..;
+      fi
+    
+    - echo "--- Pytest Execution ---"
+    - pip3 install .[test]
+    - pytest tests/unit/
