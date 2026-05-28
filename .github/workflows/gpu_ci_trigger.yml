@@ -51,9 +51,11 @@ jobs:
 
           # 2. Determine target branch
           if [ "${{ github.event_name }}" == "pull_request" ]; then
-            TARGET_BRANCH="pr-${{ github.event.number }}"
+            TARGET_BRANCH="gpu-test-pr-${{ github.event.number }}"
           else
-            TARGET_BRANCH="${{ github.ref_name }}"
+            SOURCE_REF="${{ github.ref_name }}"
+            SAFE_REF="${SOURCE_REF//\//-}"
+            TARGET_BRANCH="gpu-test-${SAFE_REF}"
           fi
           echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
 
