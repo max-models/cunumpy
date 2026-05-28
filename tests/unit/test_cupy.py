@@ -5,7 +5,7 @@ import cunumpy as xp
 
 
 def test_to_cupy_available():
-    if not xp.has_cupy():
+    if not xp.cupy_available():
         pytest.skip("CuPy not installed or not functional")
 
     import cupy as cp
@@ -17,7 +17,7 @@ def test_to_cupy_available():
 
 
 def test_to_cupy_not_available():
-    if xp.has_cupy():
+    if xp.cupy_available():
         pytest.skip("CuPy is installed and functional, cannot test missing cupy error")
 
     with xp.use_backend("cupy"):
@@ -38,7 +38,7 @@ def test_synchronize():
 
 
 def test_xp_array_cupy():
-    if not xp.has_cupy():
+    if not xp.cupy_available():
         pytest.skip("CuPy not installed or not functional")
 
     import cupy as cp

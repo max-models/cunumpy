@@ -6,7 +6,7 @@ import cunumpy as xp
 
 def test_data_movement_chain():
     """Test CPU -> GPU -> CPU multi-hop movement."""
-    if not xp.has_cupy():
+    if not xp.cupy_available():
         pytest.skip("CuPy not installed or not functional")
 
     # 1. Start on CPU
@@ -31,7 +31,7 @@ def test_synchronize_logic():
     # This is more of a smoke test to ensure the path doesn't crash
     xp.synchronize()
 
-    if xp.has_cupy():
+    if xp.cupy_available():
         import cupy as cp
 
         with xp.use_backend("cupy"):
@@ -42,7 +42,7 @@ def test_synchronize_logic():
 
 def test_fft_interop():
     """Test FFT between backends."""
-    if not xp.has_cupy():
+    if not xp.cupy_available():
         pytest.skip("CuPy not installed or not functional")
 
     # Create signal on CPU
@@ -61,7 +61,7 @@ def test_fft_interop():
 
 def test_mixed_backend_errors():
     """Verify that mixing backends in operations raises errors (standard NumPy/CuPy behavior)."""
-    if not xp.has_cupy():
+    if not xp.cupy_available():
         pytest.skip("CuPy not installed or not functional")
 
     a_cpu = np.array([1, 2, 3])

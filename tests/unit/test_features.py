@@ -6,7 +6,7 @@ import cunumpy as xp
 
 @pytest.mark.parametrize("backend", ["numpy", "cupy"])
 def test_matrix_multiplication(backend):
-    if backend == "cupy" and not xp.has_cupy():
+    if backend == "cupy" and not xp.cupy_available():
         pytest.skip("CuPy not installed or not functional")
 
     with xp.use_backend(backend):
@@ -25,7 +25,7 @@ def test_matrix_multiplication(backend):
 
 @pytest.mark.parametrize("backend", ["numpy", "cupy"])
 def test_reductions_and_axes(backend):
-    if backend == "cupy" and not xp.has_cupy():
+    if backend == "cupy" and not xp.cupy_available():
         pytest.skip("CuPy not installed or not functional")
 
     with xp.use_backend(backend):
@@ -39,7 +39,7 @@ def test_reductions_and_axes(backend):
 
 @pytest.mark.parametrize("backend", ["numpy", "cupy"])
 def test_complex_elementwise(backend):
-    if backend == "cupy" and not xp.has_cupy():
+    if backend == "cupy" and not xp.cupy_available():
         pytest.skip("CuPy not installed or not functional")
 
     with xp.use_backend(backend):
@@ -56,7 +56,7 @@ def test_complex_elementwise(backend):
 
 @pytest.mark.parametrize("backend", ["numpy", "cupy"])
 def test_broadcasting_logic(backend):
-    if backend == "cupy" and not xp.has_cupy():
+    if backend == "cupy" and not xp.cupy_available():
         pytest.skip("CuPy not installed or not functional")
 
     with xp.use_backend(backend):
@@ -72,7 +72,7 @@ def test_broadcasting_logic(backend):
 
 @pytest.mark.parametrize("backend", ["numpy", "cupy"])
 def test_fft_parity(backend):
-    if backend == "cupy" and not xp.has_cupy():
+    if backend == "cupy" and not xp.cupy_available():
         pytest.skip("CuPy not installed or not functional")
 
     with xp.use_backend(backend):
@@ -90,7 +90,7 @@ def test_fft_parity(backend):
 @pytest.mark.parametrize("backend", ["numpy", "cupy"])
 def test_realistic_normalization_workflow(backend):
     """Workflow: Load data -> Compute Stats -> Normalize -> Mask Outliers."""
-    if backend == "cupy" and not xp.has_cupy():
+    if backend == "cupy" and not xp.cupy_available():
         pytest.skip("CuPy not installed or not functional")
 
     with xp.use_backend(backend):
@@ -113,7 +113,7 @@ def test_realistic_normalization_workflow(backend):
 
 @pytest.mark.parametrize("backend", ["numpy", "cupy"])
 def test_stacking_and_concatenation(backend):
-    if backend == "cupy" and not xp.has_cupy():
+    if backend == "cupy" and not xp.cupy_available():
         pytest.skip("CuPy not installed or not functional")
 
     with xp.use_backend(backend):
@@ -130,7 +130,7 @@ def test_stacking_and_concatenation(backend):
 
 @pytest.mark.parametrize("backend", ["numpy", "cupy"])
 def test_advanced_indexing(backend):
-    if backend == "cupy" and not xp.has_cupy():
+    if backend == "cupy" and not xp.cupy_available():
         pytest.skip("CuPy not installed or not functional")
 
     with xp.use_backend(backend):
@@ -146,7 +146,7 @@ def test_advanced_indexing(backend):
 
 @pytest.mark.parametrize("backend", ["numpy", "cupy"])
 def test_random_generation(backend):
-    if backend == "cupy" and not xp.has_cupy():
+    if backend == "cupy" and not xp.cupy_available():
         pytest.skip("CuPy not installed or not functional")
 
     with xp.use_backend(backend):
