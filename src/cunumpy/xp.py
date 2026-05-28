@@ -8,6 +8,36 @@ import numpy as np
 BackendType = Literal["numpy", "cupy"]
 
 
+_HAS_CUPY_CACHE = None
+
+
+def has_cupy() -> bool:
+    """Check if CuPy is available and functional."""
+    global _HAS_CUPY_CACHE
+    if _HAS_CUPY_CACHE is not None:
+        return _HAS_CUPY_CACHE
+
+    try:
+        import cupy as cp
+
+        # Check if a GPU is available
+        if not cp.is_available():
+            _HAS_CUPY_CACHE = False
+            return False
+
+        # Verify that essential libraries are loadable by performing a small operation.
+        # This prevents failures in environments where CuPy is installed but CUDA
+        # libraries (like libcublas or libcufft) are missing.
+        a = cp.array([1.0], dtype=cp.float32)
+        _ = a @ a
+
+        _HAS_CUPY_CACHE = True
+        return True
+    except (ImportError, Exception):
+        _HAS_CUPY_CACHE = False
+        return False
+
+
 class ArrayBackend:
     def __init__(
         self,
@@ -90,36 +120,6 @@ def set_backend(backend: BackendType) -> None:
     """Set the backend globally."""
     array_backend._backend = backend
     array_backend._xp = array_backend._load_backend(backend)
-
-
-_HAS_CUPY_CACHE = None
-
-
-def has_cupy() -> bool:
-    """Check if CuPy is available and functional."""
-    global _HAS_CUPY_CACHE
-    if _HAS_CUPY_CACHE is not None:
-        return _HAS_CUPY_CACHE
-
-    try:
-        import cupy as cp
-
-        # Check if a GPU is available
-        if not cp.is_available():
-            _HAS_CUPY_CACHE = False
-            return False
-
-        # Verify that essential libraries are loadable by performing a small operation.
-        # This prevents failures in environments where CuPy is installed but CUDA
-        # libraries (like libcublas or libcufft) are missing.
-        a = cp.array([1.0], dtype=cp.float32)
-        _ = a @ a
-
-        _HAS_CUPY_CACHE = True
-        return True
-    except (ImportError, Exception):
-        _HAS_CUPY_CACHE = False
-        return False
 
 
 def _cupy_backend() -> bool:
