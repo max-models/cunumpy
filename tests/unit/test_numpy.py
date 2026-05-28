@@ -1,6 +1,8 @@
 import numpy as np
 import pytest
+
 import cunumpy as xp
+
 
 def test_xp_array():
     with xp.use_backend("numpy"):
@@ -8,6 +10,7 @@ def test_xp_array():
         arr *= 2
         assert isinstance(arr, np.ndarray)
         assert np.array_equal(arr, [2, 4])
+
 
 def test_numpy_symbols_accessible():
     """All public numpy symbols must be reachable via cunumpy.
