@@ -51,3 +51,6 @@ where = [ "src" ]
 
 [tool.setuptools.package-data]
 cunumpy = [ "py.typed", "*.pyi" ]
+
+[tool.isort]
+profile = "black"
