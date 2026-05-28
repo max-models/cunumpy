@@ -24,6 +24,12 @@ Returns `True` if the array is stored on a CPU (NumPy).
 
 ## Global Configuration
 
+### `numpy_backend`
+Boolean property that returns `True` if the currently active global backend is NumPy.
+
+### `cupy_backend`
+Boolean property that returns `True` if the currently active global backend is CuPy.
+
 ### `set_backend(backend_name)`
 Globally sets the active backend for all `cunumpy` operations. `backend_name` should be `"numpy"` or `"cupy"`.
 

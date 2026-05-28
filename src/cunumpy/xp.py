@@ -92,6 +92,16 @@ def set_backend(backend: BackendType) -> None:
     array_backend._xp = array_backend._load_backend(backend)
 
 
+def _cupy_backend() -> bool:
+    """Check if the active global backend is CuPy."""
+    return array_backend.backend == "cupy"
+
+
+def _numpy_backend() -> bool:
+    """Check if the active global backend is NumPy."""
+    return array_backend.backend == "numpy"
+
+
 def synchronize() -> None:
     """Wait for all kernels in all streams on current device to complete."""
     if array_backend.backend == "cupy":
@@ -153,4 +163,8 @@ else:
     def __getattr__(name):
         if name == "xp":
             return array_backend.xp
+        if name == "numpy_backend":
+            return _numpy_backend()
+        if name == "cupy_backend":
+            return _cupy_backend()
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
