@@ -49,6 +49,9 @@ with xp.use_backend("numpy"):
 
 # Set backend globally
 xp.set_backend("cupy")
+
+# Synchronize GPU operations (no-op on CPU)
+xp.synchronize()
 ```
 
 # Build docs

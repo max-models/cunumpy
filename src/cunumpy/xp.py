@@ -92,6 +92,17 @@ def set_backend(backend: BackendType) -> None:
     array_backend._xp = array_backend._load_backend(backend)
 
 
+def synchronize() -> None:
+    """Wait for all kernels in all streams on current device to complete."""
+    if array_backend.backend == "cupy":
+        try:
+            import cupy as cp
+
+            cp.cuda.Device().synchronize()
+        except (ImportError, AttributeError):
+            pass
+
+
 def to_numpy(array: Any) -> np.ndarray:
     """Convert an array to a NumPy array."""
     if hasattr(array, "get"):

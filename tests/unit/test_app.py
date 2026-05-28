@@ -28,6 +28,7 @@ def test_numpy_symbols_accessible():
         "is_cpu",
         "use_backend",
         "set_backend",
+        "synchronize",
         "xp",
     ]
     missing = [
@@ -100,6 +101,17 @@ def test_set_backend():
     # We just verify it doesn't crash and we can still call things
     arr2 = xp.array([2])
     assert arr2 is not None
+
+
+def test_synchronize():
+    # Should not crash on any backend
+    xp.synchronize()
+
+    with xp.use_backend("numpy"):
+        xp.synchronize()
+
+    with xp.use_backend("cupy"):
+        xp.synchronize()
 
 
 if __name__ == "__main__":
