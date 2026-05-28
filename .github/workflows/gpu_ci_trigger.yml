@@ -14,27 +14,30 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Fetch all history for all branches and tags
+          fetch-depth: 0
 
-      - name: Push to GitLab
-        env:
-          # You will need to add this secret to GitHub
-          GITLAB_PUSH_TOKEN: ${{ secrets.GITLAB_PUSH_TOKEN }}
+      - name: Install SSH Key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.GITLAB_SSH_PRIVATE_KEY }}
+
+      - name: Push to GitLab via SSH
         run: |
-          # Determine the branch name
-          # For PRs, we push to a branch named 'pr-<number>' on GitLab
-          # For regular pushes, we use the actual branch name
+          # 1. Setup SSH known hosts to prevent interactive prompts
+          mkdir -p ~/.ssh
+          ssh-keyscan gitlab.mpcdf.mpg.de >> ~/.ssh/known_hosts
+
+          # 2. Determine target branch
           if [ "${{ github.event_name }}" == "pull_request" ]; then
             TARGET_BRANCH="pr-${{ github.event.number }}"
           else
             TARGET_BRANCH="${{ github.ref_name }}"
           fi
-          
+
           echo "Pushing to GitLab branch: $TARGET_BRANCH"
-          
-          # Add GitLab as a remote using the Project Access Token
-          # Format: https://oauth2:TOKEN@gitlab.mpcdf.mpg.de/path/to/repo.git
-          git remote add gitlab "https://oauth2:${GITLAB_PUSH_TOKEN}@gitlab.mpcdf.mpg.de/maxlin/cunumpy.git"
-          
-          # Force push the current HEAD to the target branch on GitLab
+
+          # 3. Add GitLab SSH remote
+          git remote add gitlab git@gitlab.mpcdf.mpg.de:maxlin/cunumpy.git
+
+          # 4. Force push
           git push -f gitlab HEAD:refs/heads/$TARGET_BRANCH
