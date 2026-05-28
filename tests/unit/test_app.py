@@ -29,6 +29,8 @@ def test_numpy_symbols_accessible():
         "use_backend",
         "set_backend",
         "synchronize",
+        "numpy_backend",
+        "cupy_backend",
         "xp",
     ]
     missing = [
@@ -112,6 +114,16 @@ def test_synchronize():
 
     with xp.use_backend("cupy"):
         xp.synchronize()
+
+
+def test_backend_bools():
+    with xp.use_backend("numpy"):
+        assert xp.numpy_backend is True
+        assert xp.cupy_backend is False
+
+    # Note: in test env without cupy, cupy_backend might be false
+    # even inside use_backend('cupy') if fallback occurs.
+    # Our implementation of use_backend calls _load_backend which returns np if cp missing.
 
 
 if __name__ == "__main__":
