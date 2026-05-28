@@ -92,13 +92,21 @@ def set_backend(backend: BackendType) -> None:
     array_backend._xp = array_backend._load_backend(backend)
 
 
+_HAS_CUPY_CACHE = None
+
+
 def has_cupy() -> bool:
     """Check if CuPy is available and functional."""
+    global _HAS_CUPY_CACHE
+    if _HAS_CUPY_CACHE is not None:
+        return _HAS_CUPY_CACHE
+
     try:
         import cupy as cp
 
         # Check if a GPU is available
         if not cp.is_available():
+            _HAS_CUPY_CACHE = False
             return False
 
         # Verify that essential libraries are loadable by performing a small operation.
@@ -107,8 +115,10 @@ def has_cupy() -> bool:
         a = cp.array([1.0], dtype=cp.float32)
         _ = a @ a
 
+        _HAS_CUPY_CACHE = True
         return True
     except (ImportError, Exception):
+        _HAS_CUPY_CACHE = False
         return False
 
 
@@ -143,12 +153,12 @@ def to_numpy(array: Any) -> np.ndarray:
 
 def to_cupy(array: Any) -> Any:
     """Convert an array to a CuPy array."""
-    try:
-        import cupy as cp
+    if not has_cupy():
+        raise ImportError("CuPy is not available or not functional.")
 
-        return cp.asarray(array)
-    except ImportError:
-        raise ImportError("CuPy is not available.")
+    import cupy as cp
+
+    return cp.asarray(array)
 
 
 def to_cunumpy(array: Any) -> Any:
