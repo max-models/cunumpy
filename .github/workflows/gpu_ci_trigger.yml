@@ -76,5 +76,4 @@ jobs:
           GITLAB_HOST: gitlab.mpcdf.mpg.de
         with:
           entrypoint: glab
-          args: ci status --wait --branch ${{ env.TARGET_BRANCH }} --repo maxlin/cunumpy
-
+          args: ci status --live --branch ${{ env.TARGET_BRANCH }} --repo maxlin/cunumpy
