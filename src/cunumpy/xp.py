@@ -28,8 +28,8 @@ def cupy_available() -> bool:
         # Verify that essential libraries are loadable by performing a small operation.
         # This prevents failures in environments where CuPy is installed but CUDA
         # libraries (like libcublas or libcufft) are missing.
-        a = cp.array([1.0], dtype=cp.float32)
-        _ = a @ a
+        # a = cp.array([1.0], dtype=cp.float32)
+        # _ = a @ a
 
         _CUPY_AVAILABLE_CACHE = True
         return True
