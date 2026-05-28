@@ -30,6 +30,12 @@ arr = xp.array([1,2])
 
 print(type(arr))
 print(xp.__version__)
+
+# Convert to NumPy
+arr_np = xp.to_numpy(arr)
+
+# Convert to CuPy (requires CuPy installed)
+# arr_cp = xp.to_cupy(arr)
 ```
 
 # Build docs

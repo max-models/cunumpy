@@ -1,6 +1,8 @@
 import os
 from types import ModuleType
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+import numpy as np
 
 BackendType = Literal["numpy", "cupy"]
 
@@ -55,6 +57,25 @@ array_backend = ArrayBackend(
     ),
     verbose=False,
 )
+
+
+def to_numpy(array: Any) -> np.ndarray:
+    """Convert an array to a NumPy array."""
+    if hasattr(array, "get"):
+        return array.get()
+
+    return np.asarray(array)
+
+
+def to_cupy(array: Any) -> Any:
+    """Convert an array to a CuPy array."""
+    try:
+        import cupy as cp
+
+        return cp.asarray(array)
+    except ImportError:
+        raise ImportError("CuPy is not available.")
+
 
 # TYPE_CHECKING is True when type checking (e.g., mypy), but False at runtime.
 # This allows us to use autocompletion for xp (i.e., numpy/cupy) as if numpy was imported.

@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 import cunumpy as xp
 
@@ -17,8 +18,36 @@ def test_numpy_symbols_accessible():
     This validates the runtime behaviour that the stub file (__init__.pyi)
     declares to Pylance so that `xp.<Tab>` shows numpy completions in VS Code.
     """
-    missing = [name for name in np.__all__ if not hasattr(xp, name)]
+    # Exclude our custom methods from the numpy check
+    custom_methods = ["to_numpy", "to_cupy", "xp"]
+    missing = [
+        name
+        for name in np.__all__
+        if not hasattr(xp, name) and name not in custom_methods
+    ]
     assert missing == [], f"Symbols not accessible via cunumpy: {missing}"
+
+
+def test_to_numpy():
+    arr = xp.array([1, 2, 3])
+    # Even if it's already numpy, to_numpy should work
+    arr_np = xp.to_numpy(arr)
+    assert isinstance(arr_np, np.ndarray)
+    assert np.array_equal(arr_np, [1, 2, 3])
+
+
+def test_to_cupy_not_available():
+    try:
+        import cupy
+
+        pytest.skip("CuPy is installed, cannot test missing cupy error")
+    except ImportError:
+        pass
+
+    arr = np.array([1, 2, 3])
+
+    with pytest.raises(ImportError):
+        xp.to_cupy(arr)
 
 
 if __name__ == "__main__":
