@@ -21,9 +21,9 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.GITLAB_SSH_PRIVATE_KEY }}
 
-      - name: Push to GitLab via SSH
+      - name: Push to GitLab via SSH & Provide Link
         run: |
-          # 1. Setup SSH known hosts to prevent interactive prompts
+          # 1. Setup SSH known hosts
           mkdir -p ~/.ssh
           ssh-keyscan gitlab.mpcdf.mpg.de >> ~/.ssh/known_hosts
 
@@ -34,41 +34,16 @@ jobs:
             TARGET_BRANCH="${{ github.ref_name }}"
           fi
 
-          echo "Pushing to GitLab branch: $TARGET_BRANCH"
-
           # 3. Add GitLab SSH remote
           git remote add gitlab git@gitlab.mpcdf.mpg.de:maxlin/cunumpy.git
 
-          # 4. Force push
+          # 4. Force push (This automatically starts the GitLab Pipeline)
           git push -f gitlab HEAD:refs/heads/$TARGET_BRANCH
-          
-          # Store branch for next step
-          echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
 
-      - name: Trigger GitLab Pipeline & Provide Link
-        run: |
-          # Give GitLab a moment to index the newly pushed branch
-          sleep 10
-          
-          # Trigger the pipeline and capture the JSON response
-          # We use -w to get the HTTP status code as well
-          RESPONSE_DATA=$(curl --silent --show-error --write-out "\n%{http_code}" --request POST \
-            --form token=${{ secrets.GITLAB_TRIGGER_TOKEN }} \
-            --form "ref=$TARGET_BRANCH" \
-            "https://gitlab.mpcdf.mpg.de/api/v4/projects/${{ secrets.GITLAB_PROJECT_ID }}/trigger/pipeline")
-          
-          HTTP_STATUS=$(echo "$RESPONSE_DATA" | tail -n1)
-          RESPONSE_BODY=$(echo "$RESPONSE_DATA" | sed '$d')
-          
-          if [ "$HTTP_STATUS" != "201" ]; then
-            echo "::error::GitLab API returned $HTTP_STATUS"
-            echo "::error::Response: $RESPONSE_BODY"
-            echo "::error::Check if GITLAB_PROJECT_ID (${{ secrets.GITLAB_PROJECT_ID }}) and GITLAB_TRIGGER_TOKEN are correct."
-            exit 1
-          fi
-          
-          # Extract the pipeline web_url
-          PIPELINE_URL=$(echo $RESPONSE_BODY | python3 -c "import sys, json; print(json.load(sys.stdin).get('web_url', ''))")
-          
-          echo "::notice::GitLab GPU CI Pipeline triggered successfully!"
+          # 5. Provide the direct link
+          # We construct the URL manually since the push triggers the pipeline automatically
+          PIPELINE_URL="https://gitlab.mpcdf.mpg.de/maxlin/cunumpy/-/pipelines?ref=$TARGET_BRANCH"
+
+          echo "::notice::GitLab GPU CI Pipeline started automatically via Push!"
           echo "::notice::View Pipeline: $PIPELINE_URL"
+
