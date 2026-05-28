@@ -36,8 +36,8 @@ def test_reductions_and_axes(backend):
         a = xp.array([[1, 10, 100], [2, 20, 200]], dtype=float)
         
         assert xp.sum(a) == 333
-        assert xp.array_equal(xp.to_numpy(xp.max(a, axis=0)), [2, 20, 200])
-        assert xp.array_equal(xp.to_numpy(xp.min(a, axis=1)), [1, 2])
+        assert np.array_equal(xp.to_numpy(xp.max(a, axis=0)), [2, 20, 200])
+        assert np.array_equal(xp.to_numpy(xp.min(a, axis=1)), [1, 2])
         assert xp.mean(a) == 333 / 6
 
 @pytest.mark.parametrize("backend", ["numpy", "cupy"])
@@ -68,8 +68,8 @@ def test_broadcasting_logic(backend):
         c = a * b
         
         assert c.shape == (2, 3, 4)
-        assert xp.array_equal(xp.to_numpy(c[0, 0]), [0, 1, 2, 3])
-        assert xp.array_equal(xp.to_numpy(c[1, 2]), [0, 1, 2, 3])
+        assert np.array_equal(xp.to_numpy(c[0, 0]), [0, 1, 2, 3])
+        assert np.array_equal(xp.to_numpy(c[1, 2]), [0, 1, 2, 3])
 
 @pytest.mark.parametrize("backend", ["numpy", "cupy"])
 def test_fft_parity(backend):
@@ -120,11 +120,11 @@ def test_stacking_and_concatenation(backend):
         b = xp.array([4, 5, 6])
         
         res_cat = xp.concatenate([a, b])
-        assert xp.array_equal(xp.to_numpy(res_cat), [1, 2, 3, 4, 5, 6])
+        assert np.array_equal(xp.to_numpy(res_cat), [1, 2, 3, 4, 5, 6])
         
         res_stack = xp.stack([a, b])
         assert res_stack.shape == (2, 3)
-        assert xp.array_equal(xp.to_numpy(res_stack[1]), [4, 5, 6])
+        assert np.array_equal(xp.to_numpy(res_stack[1]), [4, 5, 6])
 
 @pytest.mark.parametrize("backend", ["numpy", "cupy"])
 def test_advanced_indexing(backend):
@@ -139,7 +139,7 @@ def test_advanced_indexing(backend):
         cols = xp.array([1, 3])
         
         indexed = a[rows, cols]
-        assert xp.array_equal(xp.to_numpy(indexed), [1, 8])
+        assert np.array_equal(xp.to_numpy(indexed), [1, 8])
 
 @pytest.mark.parametrize("backend", ["numpy", "cupy"])
 def test_random_generation(backend):
