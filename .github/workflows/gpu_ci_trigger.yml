@@ -13,11 +13,13 @@ jobs:
     steps:
       - name: Trigger GitLab Pipeline
         run: |
-          # Use curl to call the GitLab Trigger API
-          # We pass the GitHub SHA and Repository to GitLab so it knows exactly what to clone.
+          # Use the branch name that triggered this workflow
+          # github.head_ref is used for PRs, github.ref_name for pushes
+          BRANCH_NAME="${{ github.head_ref || github.ref_name }}"
+          
           curl --request POST \
             --form token=${{ secrets.GITLAB_TRIGGER_TOKEN }} \
-            --form ref=main \
+            --form "ref=$BRANCH_NAME" \
             --form "variables[GH_SHA]=${{ github.event.pull_request.head.sha || github.sha }}" \
             --form "variables[GH_REPO]=${{ github.repository }}" \
             "https://gitlab.mpcdf.mpg.de/api/v4/projects/${{ secrets.GITLAB_PROJECT_ID }}/trigger/pipeline"
