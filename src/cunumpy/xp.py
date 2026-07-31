@@ -30,13 +30,16 @@ class ArrayBackend:
             try:
                 import cupy as cp
 
+                self._backend = "cupy"
                 return cp
             except ImportError:
                 if verbose:
-                    print("CuPy not available.")
+                    print("CuPy not available. Falling back to NumPy.")
+                self._backend = "numpy"
                 return np
         import numpy as np_mod
 
+        self._backend = "numpy"
         return np_mod
 
     def __init_post__(self, verbose: bool = False) -> None:
@@ -115,7 +118,7 @@ def synchronize() -> None:
 
 def to_numpy(array: Any) -> np.ndarray:
     """Convert an array to a NumPy array."""
-    if hasattr(array, "get"):
+    if get_backend(array) == "cupy":
         return array.get()
 
     return np.asarray(array)
