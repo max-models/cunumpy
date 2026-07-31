@@ -5,10 +5,10 @@ import cunumpy as xp
 
 
 def test_to_cupy_available():
-    try:
-        import cupy as cp
-    except ImportError:
-        pytest.skip("CuPy not installed")
+    if not xp.cupy_available():
+        pytest.skip("CuPy not installed or not functional")
+
+    import cupy as cp
 
     with xp.use_backend("cupy"):
         arr = np.array([1, 2, 3])
@@ -17,12 +17,8 @@ def test_to_cupy_available():
 
 
 def test_to_cupy_not_available():
-    try:
-        import cupy
-
-        pytest.skip("CuPy is installed, cannot test missing cupy error")
-    except ImportError:
-        pass
+    if xp.cupy_available():
+        pytest.skip("CuPy is installed and functional, cannot test missing cupy error")
 
     with xp.use_backend("cupy"):
         arr = np.array([1, 2, 3])
@@ -42,10 +38,10 @@ def test_synchronize():
 
 
 def test_xp_array_cupy():
-    try:
-        import cupy as cp
-    except ImportError:
-        pytest.skip("CuPy not installed")
+    if not xp.cupy_available():
+        pytest.skip("CuPy not installed or not functional")
+
+    import cupy as cp
 
     with xp.use_backend("cupy"):
         arr = xp.array([1, 2])

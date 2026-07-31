@@ -8,6 +8,26 @@ import numpy as np
 BackendType = Literal["numpy", "cupy"]
 
 
+_CUPY_AVAILABLE_CACHE = None
+
+
+def cupy_available() -> bool:
+    """Check if CuPy is available and functional."""
+    global _CUPY_AVAILABLE_CACHE
+    if _CUPY_AVAILABLE_CACHE is not None:
+        return _CUPY_AVAILABLE_CACHE
+
+    try:
+        import cupy as cp
+
+        # Check if a GPU is available
+        _CUPY_AVAILABLE_CACHE = cp.is_available()
+        return _CUPY_AVAILABLE_CACHE
+    except (ImportError, Exception):
+        _CUPY_AVAILABLE_CACHE = False
+        return False
+
+
 class ArrayBackend:
     """Holds the process-wide active backend (NumPy or CuPy).
 
@@ -33,14 +53,14 @@ class ArrayBackend:
 
     def _load_backend(self, backend: BackendType, verbose: bool = False) -> ModuleType:
         if backend == "cupy":
-            try:
+            if cupy_available():
                 import cupy as cp
 
                 self._backend = "cupy"
                 return cp
-            except ImportError:
+            else:
                 if verbose:
-                    print("CuPy not available. Falling back to NumPy.")
+                    print("CuPy not available or not functional. Falling back to NumPy.")
                 self._backend = "numpy"
                 return np
         import numpy as np_mod
@@ -130,17 +150,17 @@ def to_numpy(array: Any) -> np.ndarray:
 
 def to_cupy(array: Any) -> Any:
     """Convert an array to a CuPy array."""
-    try:
-        import cupy as cp
+    if not cupy_available():
+        raise ImportError("CuPy is not available or not functional.")
 
-        return cp.asarray(array)
-    except ImportError:
-        raise ImportError("CuPy is not available.")
+    import cupy as cp
+
+    return cp.asarray(array)
 
 
 def to_cunumpy(array: Any) -> Any:
     """Convert an array to the currently active backend."""
-    if array_backend.backend == "cupy":
+    if array_backend.backend == "cupy" and cupy_available():
         return to_cupy(array)
     return to_numpy(array)
 

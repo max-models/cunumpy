@@ -3,6 +3,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 from . import xp
 from .xp import (
+    cupy_available,
     get_backend,
     is_cpu,
     is_gpu,
@@ -22,6 +23,7 @@ except PackageNotFoundError:
 
 __all__ = [
     "__version__",
+    "cupy_available",
     "cupy_backend",
     "get_backend",
     "is_cpu",
