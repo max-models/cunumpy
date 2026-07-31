@@ -1,6 +1,5 @@
 import time
 
-import numpy as np
 import pytest
 
 import cunumpy as xp
@@ -19,7 +18,7 @@ def test_benchmark_matmul():
         b_np = xp.random.rand(size, size).astype(xp.float32)
 
         start_np = time.perf_counter()
-        c_np = a_np @ b_np
+        _ = a_np @ b_np
         # No sync needed for NumPy as it is synchronous
         end_np = time.perf_counter()
         t_np = end_np - start_np
@@ -34,7 +33,7 @@ def test_benchmark_matmul():
         xp.synchronize()
 
         start_cp = time.perf_counter()
-        c_cp = a_cp @ b_cp
+        _ = a_cp @ b_cp
         xp.synchronize()  # CRITICAL for benchmarking GPU
         end_cp = time.perf_counter()
         t_cp = end_cp - start_cp
