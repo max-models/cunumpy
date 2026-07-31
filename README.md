@@ -16,7 +16,8 @@ export ARRAY_BACKEND=cupy
 
 ```python
 import cunumpy as xp
-arr = xp.array([1,2])
+
+arr = xp.array([1, 2])
 
 print(type(arr))
 print(xp.__version__)

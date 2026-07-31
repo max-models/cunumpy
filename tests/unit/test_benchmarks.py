@@ -42,7 +42,7 @@ def test_benchmark_matmul():
     print(f"\n[Benchmark] Size: {size}x{size}")
     print(f"NumPy time: {t_np:.4f}s")
     print(f"CuPy time:  {t_cp:.4f}s")
-    print(f"Speedup:    {t_np/t_cp:.2f}x")
+    print(f"Speedup:    {t_np / t_cp:.2f}x")
 
     # On a real GPU (A100/A30), CuPy should be significantly faster
     # We use a conservative threshold of 1.5x for the test to pass on various hardware
@@ -76,5 +76,5 @@ def test_benchmark_fft():
     print(f"\n[Benchmark] FFT Size: {size}")
     print(f"NumPy time: {t_np:.4f}s")
     print(f"CuPy time:  {t_cp:.4f}s")
-    print(f"Speedup:    {t_np/t_cp:.2f}x")
+    print(f"Speedup:    {t_np / t_cp:.2f}x")
     assert t_cp < t_np
