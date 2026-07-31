@@ -22,3 +22,4 @@ def synchronize() -> None: ...
 
 numpy_backend: bool
 cupy_backend: bool
+__version__: str

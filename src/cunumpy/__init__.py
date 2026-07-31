@@ -1,4 +1,6 @@
 # cunumpy/__init__.py
+from importlib.metadata import PackageNotFoundError, version
+
 from . import xp
 from .xp import (
     get_backend,
@@ -12,8 +14,14 @@ from .xp import (
     use_backend,
 )
 
+try:
+    __version__ = version("cunumpy")
+except PackageNotFoundError:
+    __version__ = "0.0.0+unknown"
+
 __all__ = [
     "xp",
+    "__version__",
     "to_numpy",
     "to_cupy",
     "to_cunumpy",
