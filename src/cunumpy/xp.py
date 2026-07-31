@@ -1,4 +1,5 @@
 import os
+import warnings
 from contextlib import contextmanager
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Generator, Literal
@@ -8,16 +9,42 @@ import numpy as np
 BackendType = Literal["numpy", "cupy"]
 
 
+_CUPY_AVAILABLE_CACHE = None
+
+
+def cupy_available() -> bool:
+    """Check if CuPy is available and functional."""
+    global _CUPY_AVAILABLE_CACHE
+    if _CUPY_AVAILABLE_CACHE is not None:
+        return _CUPY_AVAILABLE_CACHE
+
+    try:
+        import cupy as cp
+
+        # Check if a GPU is available
+        _CUPY_AVAILABLE_CACHE = cp.is_available()
+        return _CUPY_AVAILABLE_CACHE
+    except Exception:  # noqa: BLE001 - tolerate any driver/runtime failure
+        _CUPY_AVAILABLE_CACHE = False
+        return False
+
+
 class ArrayBackend:
+    """Holds the process-wide active backend (NumPy or CuPy).
+
+    Not thread-safe: `set_backend`/`use_backend` mutate this single shared
+    instance in place, so concurrent code (threads, async tasks) switching
+    backends independently will race. Safe for the typical single-threaded
+    script/notebook usage this library targets.
+    """
+
     def __init__(
         self,
         backend: BackendType = "numpy",
         verbose: bool = False,
     ) -> None:
-        assert backend.lower() in [
-            "numpy",
-            "cupy",
-        ], "Array backend must be either 'numpy' or 'cupy'."
+        if backend.lower() not in ("numpy", "cupy"):
+            raise ValueError("Array backend must be either 'numpy' or 'cupy'.")
 
         self._backend: BackendType = "cupy" if backend.lower() == "cupy" else "numpy"
         self._xp: ModuleType = np  # Placeholder
@@ -27,24 +54,25 @@ class ArrayBackend:
 
     def _load_backend(self, backend: BackendType, verbose: bool = False) -> ModuleType:
         if backend == "cupy":
-            try:
+            if cupy_available():
                 import cupy as cp
 
+                self._backend = "cupy"
                 return cp
-            except ImportError:
+            else:
                 if verbose:
-                    print("CuPy not available.")
+                    print(
+                        "CuPy not available or not functional. Falling back to NumPy."
+                    )
+                self._backend = "numpy"
                 return np
         import numpy as np_mod
 
+        self._backend = "numpy"
         return np_mod
 
-    def __init_post__(self, verbose: bool = False) -> None:
-        # This is now redundant but kept for compatibility if called
-        self._xp = self._load_backend(self._backend, verbose)
-        assert isinstance(self._xp, ModuleType)
-        if verbose:
-            print(f"Using {self._xp.__name__} backend.")
+    def __repr__(self) -> str:
+        return f"ArrayBackend(backend={self._backend!r}, module={self._xp.__name__!r})"
 
     @property
     def backend(self) -> BackendType:
@@ -70,15 +98,12 @@ class ArrayBackend:
             self._xp = old_xp
 
 
-# TODO: Make this configurable via environment variable or config file.
 array_backend = ArrayBackend(
     backend=(
         "cupy" if os.getenv("ARRAY_BACKEND", "numpy").lower() == "cupy" else "numpy"
     ),
     verbose=False,
 )
-# Re-run initialization logic properly after backend selection
-array_backend.__init_post__(verbose=False)
 
 
 def use_backend(backend: BackendType) -> Generator[None, None, None]:
@@ -102,6 +127,14 @@ def _numpy_backend() -> bool:
     return array_backend.backend == "numpy"
 
 
+def set_device(device_id: int) -> None:
+    """Select the active CUDA device for the current process (no-op on NumPy)."""
+    if array_backend.backend == "cupy":
+        import cupy as cp
+
+        cp.cuda.Device(device_id).use()
+
+
 def synchronize() -> None:
     """Wait for all kernels in all streams on current device to complete."""
     if array_backend.backend == "cupy":
@@ -109,13 +142,20 @@ def synchronize() -> None:
             import cupy as cp
 
             cp.cuda.Device().synchronize()
-        except (ImportError, AttributeError):
+        except ImportError:
             pass
+        except AttributeError as e:
+            warnings.warn(
+                f"CuPy synchronize() failed unexpectedly, this may indicate a "
+                f"CuPy API mismatch: {e}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
 
 def to_numpy(array: Any) -> np.ndarray:
     """Convert an array to a NumPy array."""
-    if hasattr(array, "get"):
+    if get_backend(array) == "cupy":
         return array.get()
 
     return np.asarray(array)
@@ -123,17 +163,17 @@ def to_numpy(array: Any) -> np.ndarray:
 
 def to_cupy(array: Any) -> Any:
     """Convert an array to a CuPy array."""
-    try:
-        import cupy as cp
+    if not cupy_available():
+        raise ImportError("CuPy is not available or not functional.")
 
-        return cp.asarray(array)
-    except ImportError:
-        raise ImportError("CuPy is not available.")
+    import cupy as cp
+
+    return cp.asarray(array)
 
 
 def to_cunumpy(array: Any) -> Any:
     """Convert an array to the currently active backend."""
-    if array_backend.backend == "cupy":
+    if array_backend.backend == "cupy" and cupy_available():
         return to_cupy(array)
     return to_numpy(array)
 
@@ -157,7 +197,7 @@ def is_cpu(array: Any) -> bool:
 # TYPE_CHECKING is True when type checking (e.g., mypy), but False at runtime.
 # This allows us to use autocompletion for xp (i.e., numpy/cupy) as if numpy was imported.
 if TYPE_CHECKING:
-    import numpy as xp
+    import numpy as xp  # noqa: F401 - type-checker-only alias for autocompletion
 else:
     # Use module-level __getattr__ for dynamic xp (Python 3.7+)
     def __getattr__(name):

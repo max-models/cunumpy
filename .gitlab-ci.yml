@@ -1,57 +1,46 @@
-# This file is a template, and might need editing before it works on your project.
-# To contribute improvements to CI/CD templates, please follow the Development guide at:
-# https://docs.gitlab.com/ee/development/cicd/templates.html
-# This specific template is located at:
-# https://gitlab.com/gitlab-org/gitlab/-/blob/master/lib/gitlab/ci/templates/Python.gitlab-ci.yml
-
-# Official language image. Look for the different tagged releases at:
-# https://hub.docker.com/r/library/python/tags/
-image: python:latest
-
-# Change pip's cache directory to be inside the project directory since we can
-# only cache local items.
 variables:
-  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  # Use the specialized MPCDF HPC image
+  CUDA_IMAGE: "gitlab-registry.mpcdf.mpg.de/mpcdf/ci-module-image/nvhpcsdk_26:2026"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
-# https://pip.pypa.io/en/stable/topics/caching/
-cache:
-  paths:
-    - .cache/pip
+stages:
+  - test
 
-before_script:
-  - python --version ; pip --version  # For debugging
-  - pip install virtualenv
-  - virtualenv venv
-  - source venv/bin/activate
-
-test:
+gpu_tests:
+  stage: test
+  image: ${CUDA_IMAGE}
+  tags:
+    - gpu-nvidia
+    - gpu-nvidia-cc80
+  before_script:
+    - module load python-waterboa/2025.06
+    - module load nvhpcsdk/26
+    - module load fftw-serial/3.3.10
   script:
-    - pip install ruff tox  # you can also use tox
-    - pip install --editable ".[test]"
-    - tox -e py,ruff
-
-run:
-  script:
-    - pip install .
-    # run the command here
-  artifacts:
-    paths:
-      - build/*
-
-pages:
-  script:
-    - pip install sphinx sphinx-rtd-theme
-    - cd doc
-    - make html
-    - mv build/html/ ../public/
-  artifacts:
-    paths:
-      - public
-  rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-
-deploy:
-  stage: deploy
-  script: echo "Define your deployment script!"
-  environment: production
-
+    - echo "--- CUDA Sanity Check ---"
+    - nvidia-smi
+    
+    - echo "--- Detect Compute Capability ---"
+    - nvidia-smi --query-gpu=compute_cap --format=csv,noheader
+    
+    - echo "--- Tool Versions ---"
+    - cmake --version
+    - python3 --version
+    - git --version
+    
+    - echo "--- Pytest Execution ---"
+    # The MPCDF image likely has a specific python environment. 
+    # We install our dependencies into the user directory or a virtualenv.
+    - python3 -m pip install --user cupy-cuda12x
+    - python3 -m pip install --user nvidia-cublas-cu12 nvidia-cufft-cu12 nvidia-curand-cu12 nvidia-cusolver-cu12 nvidia-cusparse-cu12
+    - python3 -m pip install --user -e .
+    
+    # Add the user bin to PATH for pytest
+    - export PATH="$HOME/.local/bin:$PATH"
+    
+    # Try to find libcublas and other libraries in the HPC environment
+    - export LD_LIBRARY_PATH=$(find /mpcdf/soft /opt/nvidia -name libcublas.so.12 -exec dirname {} \; 2>/dev/null | head -n 1):$LD_LIBRARY_PATH
+    
+    - export ARRAY_BACKEND=cupy
+    
+    - pytest -xvs .

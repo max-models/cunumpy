@@ -1,0 +1,82 @@
+import numpy as np
+import pytest
+
+import cunumpy as xp
+
+
+def test_data_movement_chain():
+    """Test CPU -> GPU -> CPU multi-hop movement."""
+    if not xp.cupy_available():
+        pytest.skip("CuPy not installed or not functional")
+
+    # 1. Start on CPU
+    data_orig = np.random.rand(100, 100).astype(np.float32)
+
+    # 2. Move to GPU
+    data_gpu = xp.to_cupy(data_orig)
+    assert xp.is_gpu(data_gpu)
+
+    # 3. Do operation on GPU
+    with xp.use_backend("cupy"):
+        res_gpu = xp.sin(data_gpu) ** 2 + xp.cos(data_gpu) ** 2
+
+    # 4. Move back to CPU
+    res_cpu = xp.to_numpy(res_gpu)
+    assert isinstance(res_cpu, np.ndarray)
+    assert np.allclose(res_cpu, 1.0)
+
+
+def test_synchronize_logic():
+    """Verify synchronize can be called and handles errors gracefully."""
+    # This is more of a smoke test to ensure the path doesn't crash
+    xp.synchronize()
+
+    if xp.cupy_available():
+        import cupy as cp
+
+        with xp.use_backend("cupy"):
+            a = xp.random.rand(100)
+            xp.synchronize()
+            assert xp.is_gpu(a)
+            assert isinstance(a, cp.ndarray)
+
+
+def test_fft_interop():
+    """Test FFT between backends."""
+    if not xp.cupy_available():
+        pytest.skip("CuPy not installed or not functional")
+
+    # Create signal on CPU
+    sig_cpu = np.random.rand(1024).astype(np.complex128)
+
+    # Move to GPU and transform
+    sig_gpu = xp.to_cupy(sig_cpu)
+    freq_gpu = xp.fft.fft(sig_gpu)
+
+    # Move frequencies to CPU and transform back
+    freq_cpu = xp.to_numpy(freq_gpu)
+    sig_reconstructed = np.fft.ifft(freq_cpu)
+
+    assert np.allclose(sig_cpu, sig_reconstructed)
+
+
+def test_mixed_backend_errors():
+    """Verify that mixing backends in operations raises errors (standard NumPy/CuPy behavior)."""
+    if not xp.cupy_available():
+        pytest.skip("CuPy not installed or not functional")
+
+    a_cpu = np.array([1, 2, 3])
+    a_gpu = xp.to_cupy(a_cpu)
+
+    # This should fail because you can't add CPU and GPU arrays directly.
+    # The exact exception type is NumPy/CuPy-version dependent, hence the broad catch.
+    with pytest.raises(Exception):  # noqa: B017
+        _ = a_cpu + a_gpu
+
+    # But to_cunumpy should fix it: it must run inside the cupy backend context
+    # so it actually converts a_cpu to a CuPy array, not whatever the global
+    # backend happened to be left as by an earlier test.
+    with xp.use_backend("cupy"):
+        a_gpu_fixed = xp.to_cunumpy(a_cpu)
+        res = a_gpu + a_gpu_fixed
+        assert xp.is_gpu(res)
