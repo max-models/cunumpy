@@ -1,6 +1,5 @@
 import time
 
-import numpy as np
 import pytest
 
 import cunumpy as xp
@@ -19,7 +18,7 @@ def test_benchmark_matmul():
         b_np = xp.random.rand(size, size).astype(xp.float32)
 
         start_np = time.perf_counter()
-        c_np = a_np @ b_np
+        _ = a_np @ b_np
         # No sync needed for NumPy as it is synchronous
         end_np = time.perf_counter()
         t_np = end_np - start_np
@@ -34,7 +33,7 @@ def test_benchmark_matmul():
         xp.synchronize()
 
         start_cp = time.perf_counter()
-        c_cp = a_cp @ b_cp
+        _ = a_cp @ b_cp
         xp.synchronize()  # CRITICAL for benchmarking GPU
         end_cp = time.perf_counter()
         t_cp = end_cp - start_cp
@@ -42,7 +41,7 @@ def test_benchmark_matmul():
     print(f"\n[Benchmark] Size: {size}x{size}")
     print(f"NumPy time: {t_np:.4f}s")
     print(f"CuPy time:  {t_cp:.4f}s")
-    print(f"Speedup:    {t_np/t_cp:.2f}x")
+    print(f"Speedup:    {t_np / t_cp:.2f}x")
 
     # On a real GPU (A100/A30), CuPy should be significantly faster
     # We use a conservative threshold of 1.5x for the test to pass on various hardware
@@ -76,5 +75,5 @@ def test_benchmark_fft():
     print(f"\n[Benchmark] FFT Size: {size}")
     print(f"NumPy time: {t_np:.4f}s")
     print(f"CuPy time:  {t_cp:.4f}s")
-    print(f"Speedup:    {t_np/t_cp:.2f}x")
+    print(f"Speedup:    {t_np / t_cp:.2f}x")
     assert t_cp < t_np

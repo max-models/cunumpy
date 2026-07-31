@@ -41,7 +41,7 @@ xp.set_backend("cupy")
 # Scoped backend switching
 with xp.use_backend("numpy"):
     arr_cpu = xp.zeros(10)
-    print(xp.is_cpu(arr_cpu)) # True
+    print(xp.is_cpu(arr_cpu))  # True
 
 # Explicit conversion
 arr_np = xp.to_numpy(arr)

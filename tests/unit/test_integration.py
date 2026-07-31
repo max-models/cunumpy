@@ -38,6 +38,7 @@ def test_synchronize_logic():
             a = xp.random.rand(100)
             xp.synchronize()
             assert xp.is_gpu(a)
+            assert isinstance(a, cp.ndarray)
 
 
 def test_fft_interop():
@@ -67,12 +68,15 @@ def test_mixed_backend_errors():
     a_cpu = np.array([1, 2, 3])
     a_gpu = xp.to_cupy(a_cpu)
 
-    # This should fail because you can't add CPU and GPU arrays directly
-    with pytest.raises(Exception):
+    # This should fail because you can't add CPU and GPU arrays directly.
+    # The exact exception type is NumPy/CuPy-version dependent, hence the broad catch.
+    with pytest.raises(Exception):  # noqa: B017
         _ = a_cpu + a_gpu
 
-    # But to_cunumpy should fix it
-    a_gpu_fixed = xp.to_cunumpy(a_cpu)
+    # But to_cunumpy should fix it: it must run inside the cupy backend context
+    # so it actually converts a_cpu to a CuPy array, not whatever the global
+    # backend happened to be left as by an earlier test.
     with xp.use_backend("cupy"):
+        a_gpu_fixed = xp.to_cunumpy(a_cpu)
         res = a_gpu + a_gpu_fixed
         assert xp.is_gpu(res)
