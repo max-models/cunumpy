@@ -1,3 +1,5 @@
+import sys
+
 import numpy as np
 import pytest
 
@@ -146,3 +148,31 @@ def test_set_device_selects_cuda_device():
     with xp.use_backend("cupy"):
         xp.set_device(0)
         assert cp.cuda.Device().id == 0
+
+
+def test_array_backend_repr_reports_active_backend():
+    with xp.use_backend("numpy"):
+        assert (
+            repr(cxp.array_backend) == "ArrayBackend(backend='numpy', module='numpy')"
+        )
+
+
+def test_synchronize_warns_on_attribute_error(monkeypatch):
+    """An AttributeError from CuPy's synchronize call (e.g. API mismatch)
+    must surface as a warning, not be swallowed silently."""
+
+    class BrokenDevice:
+        def synchronize(self):
+            raise AttributeError("simulated CuPy API mismatch")
+
+    class FakeCupy:
+        cuda = type("cuda", (), {"Device": staticmethod(lambda: BrokenDevice())})
+
+    monkeypatch.setitem(sys.modules, "cupy", FakeCupy)
+    monkeypatch.setattr(cxp.array_backend, "_backend", "cupy")
+
+    try:
+        with pytest.warns(RuntimeWarning, match="CuPy API mismatch"):
+            xp.synchronize()
+    finally:
+        monkeypatch.setattr(cxp.array_backend, "_backend", "numpy")

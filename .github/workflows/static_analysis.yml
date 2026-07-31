@@ -78,7 +78,6 @@ jobs:
 
   ruff:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - name: Checkout the code
         uses: actions/checkout@v4
@@ -86,7 +85,7 @@ jobs:
       - name: Linting with ruff
         run: |
           pip install ruff
-          ruff check src/ || true
+          ruff check src/
 
   pylint:
     runs-on: ubuntu-latest

@@ -1,4 +1,5 @@
 import os
+import warnings
 from contextlib import contextmanager
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Generator, Literal
@@ -23,7 +24,7 @@ def cupy_available() -> bool:
         # Check if a GPU is available
         _CUPY_AVAILABLE_CACHE = cp.is_available()
         return _CUPY_AVAILABLE_CACHE
-    except (ImportError, Exception):
+    except Exception:  # noqa: BLE001 - tolerate any driver/runtime failure
         _CUPY_AVAILABLE_CACHE = False
         return False
 
@@ -60,13 +61,18 @@ class ArrayBackend:
                 return cp
             else:
                 if verbose:
-                    print("CuPy not available or not functional. Falling back to NumPy.")
+                    print(
+                        "CuPy not available or not functional. Falling back to NumPy."
+                    )
                 self._backend = "numpy"
                 return np
         import numpy as np_mod
 
         self._backend = "numpy"
         return np_mod
+
+    def __repr__(self) -> str:
+        return f"ArrayBackend(backend={self._backend!r}, module={self._xp.__name__!r})"
 
     @property
     def backend(self) -> BackendType:
@@ -136,8 +142,15 @@ def synchronize() -> None:
             import cupy as cp
 
             cp.cuda.Device().synchronize()
-        except (ImportError, AttributeError):
+        except ImportError:
             pass
+        except AttributeError as e:
+            warnings.warn(
+                f"CuPy synchronize() failed unexpectedly, this may indicate a "
+                f"CuPy API mismatch: {e}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
 
 def to_numpy(array: Any) -> np.ndarray:
@@ -184,7 +197,7 @@ def is_cpu(array: Any) -> bool:
 # TYPE_CHECKING is True when type checking (e.g., mypy), but False at runtime.
 # This allows us to use autocompletion for xp (i.e., numpy/cupy) as if numpy was imported.
 if TYPE_CHECKING:
-    import numpy as xp
+    import numpy as xp  # noqa: F401 - type-checker-only alias for autocompletion
 else:
     # Use module-level __getattr__ for dynamic xp (Python 3.7+)
     def __getattr__(name):

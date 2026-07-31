@@ -5,6 +5,22 @@ All notable changes to the `cunumpy` library are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-07-31
+
+### Added
+- `xp.set_device(device_id)`: Select the active CUDA device for the current process (no-op on the NumPy backend).
+- `xp.__version__`: Reports the installed `cunumpy` package version.
+
+### Fixed
+- `ArrayBackend` no longer silently reports `"cupy"` as the active backend when CuPy was requested but is unavailable; it now correctly falls back to reporting `"numpy"` so `xp.cupy_backend`/`xp.numpy_backend` reflect what actually loaded.
+- `to_numpy()` no longer misdetects CPU objects that merely expose a `.get` method (e.g. dict-like objects) as CuPy arrays; it now checks `get_backend()` instead of `hasattr(array, "get")`.
+- Invalid backend names now raise `ValueError` instead of relying on a bare `assert`, which was previously stripped under `python -O`.
+
+### Changed
+- Removed the redundant `ArrayBackend.__init_post__` double-initialization path.
+- `ArrayBackend` documents that it is not thread-safe (global mutable backend state).
+- CI now runs the test suite across a Python 3.8/3.10/3.13 matrix instead of only 3.10, and `ruff` is now an enforced check rather than advisory.
+
 ## [0.1.2] - 2026-05-27
 
 ### Added
