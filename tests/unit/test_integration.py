@@ -73,8 +73,10 @@ def test_mixed_backend_errors():
     with pytest.raises(Exception):  # noqa: B017
         _ = a_cpu + a_gpu
 
-    # But to_cunumpy should fix it
-    a_gpu_fixed = xp.to_cunumpy(a_cpu)
+    # But to_cunumpy should fix it: it must run inside the cupy backend context
+    # so it actually converts a_cpu to a CuPy array, not whatever the global
+    # backend happened to be left as by an earlier test.
     with xp.use_backend("cupy"):
+        a_gpu_fixed = xp.to_cunumpy(a_cpu)
         res = a_gpu + a_gpu_fixed
         assert xp.is_gpu(res)
