@@ -42,13 +42,6 @@ class ArrayBackend:
         self._backend = "numpy"
         return np_mod
 
-    def __init_post__(self, verbose: bool = False) -> None:
-        # This is now redundant but kept for compatibility if called
-        self._xp = self._load_backend(self._backend, verbose)
-        assert isinstance(self._xp, ModuleType)
-        if verbose:
-            print(f"Using {self._xp.__name__} backend.")
-
     @property
     def backend(self) -> BackendType:
         return self._backend
@@ -73,15 +66,12 @@ class ArrayBackend:
             self._xp = old_xp
 
 
-# TODO: Make this configurable via environment variable or config file.
 array_backend = ArrayBackend(
     backend=(
         "cupy" if os.getenv("ARRAY_BACKEND", "numpy").lower() == "cupy" else "numpy"
     ),
     verbose=False,
 )
-# Re-run initialization logic properly after backend selection
-array_backend.__init_post__(verbose=False)
 
 
 def use_backend(backend: BackendType) -> Generator[None, None, None]:
