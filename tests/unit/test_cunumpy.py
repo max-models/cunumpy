@@ -124,3 +124,25 @@ def test_to_numpy_does_not_misdetect_get_method_as_gpu_array():
     arr = xp.to_numpy(MappingLike())
     assert isinstance(arr, np.ndarray)
     assert np.array_equal(arr, [1, 2, 3])
+
+
+def test_invalid_backend_raises_value_error():
+    with pytest.raises(ValueError):
+        cxp.ArrayBackend(backend="tensorflow")
+
+
+def test_set_device_is_noop_on_numpy():
+    with xp.use_backend("numpy"):
+        # Must not raise even though there's no GPU to select on the CPU backend.
+        xp.set_device(0)
+
+
+def test_set_device_selects_cuda_device():
+    try:
+        import cupy as cp
+    except ImportError:
+        pytest.skip("CuPy not installed")
+
+    with xp.use_backend("cupy"):
+        xp.set_device(0)
+        assert cp.cuda.Device().id == 0

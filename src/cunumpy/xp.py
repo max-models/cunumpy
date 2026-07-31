@@ -9,15 +9,21 @@ BackendType = Literal["numpy", "cupy"]
 
 
 class ArrayBackend:
+    """Holds the process-wide active backend (NumPy or CuPy).
+
+    Not thread-safe: `set_backend`/`use_backend` mutate this single shared
+    instance in place, so concurrent code (threads, async tasks) switching
+    backends independently will race. Safe for the typical single-threaded
+    script/notebook usage this library targets.
+    """
+
     def __init__(
         self,
         backend: BackendType = "numpy",
         verbose: bool = False,
     ) -> None:
-        assert backend.lower() in [
-            "numpy",
-            "cupy",
-        ], "Array backend must be either 'numpy' or 'cupy'."
+        if backend.lower() not in ("numpy", "cupy"):
+            raise ValueError("Array backend must be either 'numpy' or 'cupy'.")
 
         self._backend: BackendType = "cupy" if backend.lower() == "cupy" else "numpy"
         self._xp: ModuleType = np  # Placeholder
@@ -93,6 +99,14 @@ def _cupy_backend() -> bool:
 def _numpy_backend() -> bool:
     """Check if the active global backend is NumPy."""
     return array_backend.backend == "numpy"
+
+
+def set_device(device_id: int) -> None:
+    """Select the active CUDA device for the current process (no-op on NumPy)."""
+    if array_backend.backend == "cupy":
+        import cupy as cp
+
+        cp.cuda.Device(device_id).use()
 
 
 def synchronize() -> None:
