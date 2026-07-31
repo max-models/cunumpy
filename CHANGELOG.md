@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed the redundant `ArrayBackend.__init_post__` double-initialization path.
 - `ArrayBackend` documents that it is not thread-safe (global mutable backend state).
 - CI now runs the test suite across a Python 3.8/3.10/3.13 matrix instead of only 3.10, and `ruff` is now an enforced check rather than advisory.
+- Added [`array-api-compat`](https://github.com/data-apis/array-api-compat) as a core dependency:
+    - `get_backend()`/`is_gpu()`/`is_cpu()` now use `array_api_compat.is_cupy_array()` instead of sniffing `type(array).__module__` for the substring `"cupy"`.
+    - The active backend module (`xp.xp`) and array conversions (`to_numpy()`, `to_cupy()`) now resolve through `array_api_compat.numpy`/`array_api_compat.cupy` instead of the raw modules, for standard-conformant behavior across backends (e.g. `xp.xp.__name__` is now `"array_api_compat.numpy"`/`"array_api_compat.cupy"` rather than `"numpy"`/`"cupy"`). Device/synchronization control (`set_device()`, `synchronize()`, `cupy_available()`) still uses raw `cupy`, since CUDA device management isn't part of the Array API standard.
 
 ## [0.1.2] - 2026-05-27
 
