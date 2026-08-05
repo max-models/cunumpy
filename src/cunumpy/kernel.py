@@ -38,6 +38,20 @@ class PyccelKernel:
         Module prefixes (e.g. ``("struphy.", "feectools.")``) whose instances
         should be traversed attribute-by-attribute when looking for arrays to
         convert. Objects from other modules are passed through untouched.
+    outputs : sequence of int or str, optional
+        Which arguments the kernel writes to. Only those are copied back to the
+        device after the call, which avoids pointless device transfers for the
+        (usually much larger) read-only inputs. Positional arguments are named
+        by index, keyword arguments by name::
+
+            interpolate = PyccelKernel(some_interpolation_kernel, outputs=(5,))
+            interpolate(x, y, z, basis, coeffs, out)  # `out` is argument 5
+
+        Pyccel-compiled kernels are builtins with no introspectable signature,
+        so an index and a name are *not* interchangeable: declare the form you
+        actually call with. An empty sequence declares that the kernel writes to
+        none of its arguments. By default (``None``) every converted array is
+        copied back, which is always correct but does more work.
 
     Examples
     --------
@@ -51,13 +65,34 @@ class PyccelKernel:
         kernel: Callable[..., Any],
         use_cupy: bool | None = None,
         object_modules: Sequence[str] = (),
+        outputs: Sequence[int | str] | None = None,
     ) -> None:
         self._kernel = kernel
         self._use_cupy = use_cupy
         self._object_modules = tuple(object_modules)
 
+        if outputs is None:
+            self._outputs: tuple[int | str, ...] | None = None
+        else:
+            if isinstance(outputs, (int, str)):
+                raise TypeError(
+                    "outputs must be a sequence of argument indices/names, "
+                    f"not a bare {type(outputs).__name__} "
+                    f"(did you mean outputs=({outputs!r},)?)"
+                )
+            for entry in outputs:
+                if not isinstance(entry, (int, str)) or isinstance(entry, bool):
+                    raise TypeError(
+                        "outputs entries must be argument indices (int) or "
+                        f"names (str), got {entry!r}"
+                    )
+            self._outputs = tuple(outputs)
+
     def __repr__(self) -> str:
-        return f"PyccelKernel(kernel={self.name!r}, use_cupy={self.use_cupy!r})"
+        return (
+            f"PyccelKernel(kernel={self.name!r}, use_cupy={self.use_cupy!r}, "
+            f"outputs={self._outputs!r})"
+        )
 
     def _convert_to_numpy(
         self,
@@ -138,6 +173,77 @@ class PyccelKernel:
             return [PyccelKernel._convert_from_numpy(item) for item in value]
         return value
 
+    def _collect_host_arrays(self, value: Any, found: set[int], seen: set[int]) -> None:
+        """Record the id of every host array reachable from `value`.
+
+        Runs over the *converted* arguments, using the same traversal rules as
+        :meth:`_convert_to_numpy`, so that an output declared as a container or
+        an object contributes the arrays nested inside it.
+        """
+        if isinstance(value, np.ndarray):
+            found.add(id(value))
+            return
+
+        if id(value) in seen:
+            return
+
+        if isinstance(value, (tuple, list)):
+            seen.add(id(value))
+            for item in value:
+                self._collect_host_arrays(item, found, seen)
+            return
+
+        if isinstance(value, dict):
+            seen.add(id(value))
+            for item in value.values():
+                self._collect_host_arrays(item, found, seen)
+            return
+
+        if hasattr(value, "__dict__") and value.__class__.__module__.startswith(
+            self._object_modules
+        ):
+            seen.add(id(value))
+            for attr in vars(value).values():
+                self._collect_host_arrays(attr, found, seen)
+
+    def _output_host_arrays(
+        self, args_np: list[Any], kwargs_np: dict[str, Any]
+    ) -> set[int]:
+        """Ids of the host arrays reachable from the declared output arguments.
+
+        Raises
+        ------
+        IndexError, KeyError
+            If a declared output does not correspond to an argument of this
+            call -- typically because an argument declared by index was passed
+            as a keyword, or vice versa.
+        """
+        found: set[int] = set()
+        seen: set[int] = set()
+
+        for entry in self._outputs or ():
+            if isinstance(entry, int):
+                index = entry + len(args_np) if entry < 0 else entry
+                if not 0 <= index < len(args_np):
+                    raise IndexError(
+                        f"{self.name}() was declared with output argument "
+                        f"{entry}, but was called with {len(args_np)} "
+                        "positional argument(s). Note that an output passed as "
+                        "a keyword must be declared by name, not by index."
+                    )
+                self._collect_host_arrays(args_np[index], found, seen)
+            else:
+                if entry not in kwargs_np:
+                    raise KeyError(
+                        f"{self.name}() was declared with output argument "
+                        f"{entry!r}, but no such keyword argument was passed. "
+                        "Note that an output passed positionally must be "
+                        "declared by index, not by name."
+                    )
+                self._collect_host_arrays(kwargs_np[entry], found, seen)
+
+        return found
+
     def _contains_cupy(self, value: Any, seen: set[int] | None = None) -> bool:
         """Whether `value` holds a CuPy array, following the same traversal
         rules as :meth:`_convert_to_numpy`.
@@ -192,11 +298,21 @@ class PyccelKernel:
             k: self._convert_to_numpy(v, converted, memo) for k, v in kwargs.items()
         }
 
+        # Which arrays the kernel may have written to is resolved before the
+        # call, so a mis-declared output is reported even if the kernel itself
+        # would have raised first.
+        writeable = (
+            None
+            if self._outputs is None
+            else self._output_host_arrays(args_np, kwargs_np)
+        )
+
         result = self._kernel(*args_np, **kwargs_np)
 
         # Copy in-place kernel updates back to the device arrays.
         for device_array, host_array in converted:
-            device_array[...] = to_cupy(host_array)
+            if writeable is None or id(host_array) in writeable:
+                device_array[...] = to_cupy(host_array)
 
         return self._convert_from_numpy(result)
 
@@ -221,3 +337,8 @@ class PyccelKernel:
     def object_modules(self) -> tuple[str, ...]:
         """Module prefixes whose instances are traversed for arrays."""
         return self._object_modules
+
+    @property
+    def outputs(self) -> tuple[int | str, ...] | None:
+        """Declared output arguments, or ``None`` if every array is copied back."""
+        return self._outputs

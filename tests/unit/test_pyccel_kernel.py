@@ -72,7 +72,10 @@ def test_name_kernel_and_repr():
     assert wrapped.name == "my_kernel"
     assert wrapped.kernel is my_kernel
     assert wrapped.use_cupy is False
-    assert repr(wrapped) == "PyccelKernel(kernel='my_kernel', use_cupy=False)"
+    assert wrapped.outputs is None
+    assert repr(wrapped) == (
+        "PyccelKernel(kernel='my_kernel', use_cupy=False, outputs=None)"
+    )
 
 
 def test_numpy_backend_calls_kernel_unchanged():
@@ -280,6 +283,124 @@ def test_unlisted_objects_are_passed_through_untouched():
 
 
 # ---------------------------------------------------------------------------
+# Declared outputs
+# ---------------------------------------------------------------------------
+
+
+def test_outputs_restricts_write_back_to_declared_arguments():
+    """Inputs must not be copied back, even if the kernel writes to them."""
+    _skip_without_cupy()
+
+    def kernel(x, y, out):
+        x[:] = 999.0  # a stray write to an input
+        out[:] = x[0] + y[0]
+
+    x = xp.to_cupy(np.ones(3))
+    y = xp.to_cupy(np.full(3, 2.0))
+    out = xp.to_cupy(np.zeros(3))
+
+    PyccelKernel(kernel, outputs=(2,))(x, y, out)
+
+    assert np.array_equal(xp.to_numpy(x), np.ones(3))
+    assert np.array_equal(xp.to_numpy(out), np.full(3, 1001.0))
+
+
+def test_outputs_accepts_negative_indices_and_keyword_names():
+    _skip_without_cupy()
+
+    def kernel(x, out):
+        out[:] = 7.0
+
+    positional = xp.to_cupy(np.zeros(2))
+    PyccelKernel(kernel, outputs=(-1,))(xp.to_cupy(np.ones(2)), positional)
+    assert np.array_equal(xp.to_numpy(positional), np.full(2, 7.0))
+
+    keyword = xp.to_cupy(np.zeros(2))
+    PyccelKernel(kernel, outputs=("out",))(xp.to_cupy(np.ones(2)), out=keyword)
+    assert np.array_equal(xp.to_numpy(keyword), np.full(2, 7.0))
+
+
+def test_empty_outputs_copies_nothing_back():
+    _skip_without_cupy()
+
+    def kernel(out):
+        out[:] = 5.0
+
+    arr = xp.to_cupy(np.zeros(2))
+    PyccelKernel(kernel, outputs=())(arr)
+
+    assert np.array_equal(xp.to_numpy(arr), np.zeros(2))
+
+
+def test_outputs_traverse_nested_containers_and_objects():
+    _skip_without_cupy()
+
+    class Container:
+        def __init__(self, data):
+            self.data = data
+
+    nested = xp.to_cupy(np.zeros(2))
+    held = xp.to_cupy(np.zeros(2))
+
+    def kernel(inp, pack, obj):
+        pack[0]["m"][:] = 1.0
+        obj.data[:] = 2.0
+
+    PyccelKernel(kernel, object_modules=(Container.__module__,), outputs=(1, 2))(
+        xp.to_cupy(np.ones(2)), [{"m": nested}], Container(held)
+    )
+
+    assert np.array_equal(xp.to_numpy(nested), np.full(2, 1.0))
+    assert np.array_equal(xp.to_numpy(held), np.full(2, 2.0))
+
+
+def test_array_aliased_into_an_output_is_written_back():
+    """An input that is also the output must still come back."""
+    _skip_without_cupy()
+
+    def kernel(inp, out):
+        out[:] = 6.0
+
+    shared = xp.to_cupy(np.zeros(2))
+    PyccelKernel(kernel, outputs=(1,))(shared, shared)
+
+    assert np.array_equal(xp.to_numpy(shared), np.full(2, 6.0))
+
+
+def test_misdeclared_output_index_raises():
+    """`use_cupy=True` exercises the conversion path without needing a GPU:
+    NumPy arguments need no conversion, so nothing is sent to a device."""
+    wrapped = PyccelKernel(lambda out: None, use_cupy=True, outputs=(5,))
+
+    with pytest.raises(IndexError, match="positional argument"):
+        wrapped(np.zeros(2))
+
+
+def test_misdeclared_output_name_raises():
+    wrapped = PyccelKernel(lambda out: None, use_cupy=True, outputs=("nope",))
+
+    with pytest.raises(KeyError, match="no such keyword argument"):
+        wrapped(np.zeros(2))
+
+
+@pytest.mark.parametrize("bad", [5, "out", (None,), (1.5,), (True,)])
+def test_invalid_outputs_rejected_at_construction(bad):
+    with pytest.raises(TypeError):
+        PyccelKernel(lambda: None, outputs=bad)
+
+
+def test_outputs_is_ignored_on_the_numpy_path():
+    """Without conversion there is no copy-back to skip: the kernel writes
+    straight into the caller's arrays."""
+    arr = np.zeros(2)
+
+    with xp.use_backend("numpy"):
+        PyccelKernel(lambda out: out.__setitem__(slice(None), 4.0), outputs=())(arr)
+
+    assert np.array_equal(arr, np.full(2, 4.0))
+
+
+# ---------------------------------------------------------------------------
 # End-to-end with real pyccel-compiled kernels
 # ---------------------------------------------------------------------------
 
@@ -345,6 +466,43 @@ def test_compiled_matvec(kernels, backend):
         PyccelKernel(kernels.matvec)(mat, vec, out)
 
         assert np.allclose(xp.to_numpy(out), mat_np @ vec_np)
+
+
+@pytest.mark.parametrize("backend", ["numpy", "cupy"])
+def test_compiled_axpy_with_declared_output(kernels, backend):
+    """The `outputs=` form from the issue: only `out` is copied back."""
+    if backend == "cupy":
+        _skip_without_cupy()
+
+    axpy = PyccelKernel(kernels.axpy, outputs=(3,))
+
+    with xp.use_backend(backend):
+        x = xp.asarray(np.arange(6, dtype=np.float64))
+        y = xp.asarray(np.ones(6, dtype=np.float64))
+        out = xp.zeros(6, dtype=np.float64)
+
+        axpy(2.5, x, y, out)
+
+        assert np.allclose(xp.to_numpy(out), 2.5 * np.arange(6) + 1.0)
+        # The inputs are untouched either way, but assert it explicitly since
+        # they are the arrays whose copy-back we skipped.
+        assert np.allclose(xp.to_numpy(x), np.arange(6))
+        assert np.allclose(xp.to_numpy(y), np.ones(6))
+
+
+def test_compiled_scale_inplace_needs_its_argument_declared(kernels):
+    """`scale_inplace` writes to argument 0; declaring no outputs loses that
+    update on the GPU, which is exactly what the declaration is for."""
+    _skip_without_cupy()
+
+    with xp.use_backend("cupy"):
+        declared = xp.asarray(np.arange(4, dtype=np.float64))
+        PyccelKernel(kernels.scale_inplace, outputs=(0,))(declared, 3.0)
+        assert np.allclose(xp.to_numpy(declared), 3.0 * np.arange(4))
+
+        undeclared = xp.asarray(np.arange(4, dtype=np.float64))
+        PyccelKernel(kernels.scale_inplace, outputs=())(undeclared, 3.0)
+        assert np.allclose(xp.to_numpy(undeclared), np.arange(4))
 
 
 def test_compiled_kernel_matches_pure_python(kernels):

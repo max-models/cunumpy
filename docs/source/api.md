@@ -49,7 +49,7 @@ Blocks until all preceding GPU operations are complete. This is a no-op when usi
 
 ## Compiled Kernels
 
-### `PyccelKernel(kernel, use_cupy=None, object_modules=())`
+### `PyccelKernel(kernel, use_cupy=None, object_modules=(), outputs=None)`
 Wraps a kernel compiled with [pyccel](https://github.com/pyccel/pyccel) — which only accepts NumPy arrays — so that it can be called with CuPy arrays as well.
 
 On the CuPy backend the arguments are copied to the host before the call, any in-place updates the kernel makes are copied back to the device afterwards, and arrays returned by the kernel are moved back to the device. On the NumPy backend the kernel is called directly, without any conversion.
@@ -68,6 +68,24 @@ with xp.use_backend("cupy"):
 ```
 
 Tuples, lists and dicts are traversed recursively. Pass `object_modules` to also traverse the attributes of your own objects, e.g. `object_modules=("struphy.", "feectools.")`; instances from other modules are handed to the kernel untouched.
+
+#### Declaring outputs
+
+By default every array that was copied to the host is copied back afterwards, since the wrapper cannot know which ones the kernel wrote to. Most pyccel kernels write to one `out` argument and only read the rest, so `outputs` lets you skip the needless transfers:
+
+```python
+interpolate = xp.PyccelKernel(some_interpolation_kernel, outputs=(5,))
+
+interpolate(x, y, z, basis, coeffs, out)  # `out` is argument 5
+```
+
+Only the declared arguments are copied back; `basis` and `coeffs` make the trip to the host and no further. Containers and traversed objects may be declared too — every array nested inside them is copied back. An array that is *also* reachable from a declared output (e.g. passed as both an input and the output) is still copied back.
+
+Declare positional arguments by index (negatives count from the end) and keyword arguments by name, e.g. `outputs=("out",)` for `interpolate(..., out=out)`. The two are not interchangeable: pyccel-compiled kernels are builtins with no introspectable signature, so the wrapper cannot map a name onto a position. A declaration that matches no argument of the call raises `IndexError`/`KeyError` rather than silently copying nothing back.
+
+`outputs=()` declares that the kernel writes to none of its arguments. Leaving `outputs` unset keeps the always-correct default. Note that a *wrong* declaration is a silent-wrong-answer bug: an argument the kernel writes to but that you did not declare keeps its stale values on the GPU.
+
+#### Aliasing and cycles
 
 Conversion is identity-aware: an array reachable by several paths — passed as two arguments, or both directly and as an attribute of a traversed object — becomes a single array on the host, so the kernel sees the aliasing the caller intended and no in-place update is lost on the way back. Reference cycles are handled rather than recursed into.
 
