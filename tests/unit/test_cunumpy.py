@@ -152,8 +152,8 @@ def test_set_device_selects_cuda_device():
 
 def test_array_backend_repr_reports_active_backend():
     with xp.use_backend("numpy"):
-        assert (
-            repr(cxp.array_backend) == "ArrayBackend(backend='numpy', module='numpy')"
+        assert repr(cxp.array_backend) == (
+            "ArrayBackend(backend='numpy', module='array_api_compat.numpy')"
         )
 
 
