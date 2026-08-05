@@ -172,3 +172,8 @@ cython_debug/
 
 # Unit test output
 junit/
+
+# Pyccel build artefacts and lock files
+__pyccel__/
+.lock_acquisition.lock
+stc.lock

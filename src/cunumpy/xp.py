@@ -4,7 +4,8 @@ from contextlib import contextmanager
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Generator, Literal
 
-import numpy as np
+import array_api_compat
+import array_api_compat.numpy as np
 
 BackendType = Literal["numpy", "cupy"]
 
@@ -55,7 +56,7 @@ class ArrayBackend:
     def _load_backend(self, backend: BackendType, verbose: bool = False) -> ModuleType:
         if backend == "cupy":
             if cupy_available():
-                import cupy as cp
+                import array_api_compat.cupy as cp
 
                 self._backend = "cupy"
                 return cp
@@ -66,10 +67,8 @@ class ArrayBackend:
                     )
                 self._backend = "numpy"
                 return np
-        import numpy as np_mod
-
         self._backend = "numpy"
-        return np_mod
+        return np
 
     def __repr__(self) -> str:
         return f"ArrayBackend(backend={self._backend!r}, module={self._xp.__name__!r})"
@@ -166,7 +165,7 @@ def to_cupy(array: Any) -> Any:
     if not cupy_available():
         raise ImportError("CuPy is not available or not functional.")
 
-    import cupy as cp
+    import array_api_compat.cupy as cp
 
     return cp.asarray(array)
 
@@ -180,8 +179,7 @@ def to_cunumpy(array: Any) -> Any:
 
 def get_backend(array: Any) -> BackendType:
     """Return 'cupy' or 'numpy' depending on the array type."""
-    module = getattr(type(array), "__module__", "")
-    return "cupy" if "cupy" in module else "numpy"
+    return "cupy" if array_api_compat.is_cupy_array(array) else "numpy"
 
 
 def is_gpu(array: Any) -> bool:

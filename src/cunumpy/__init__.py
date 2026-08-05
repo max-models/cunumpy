@@ -2,6 +2,7 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from . import xp
+from .kernel import PyccelKernel
 from .xp import (
     cupy_available,
     get_backend,
@@ -22,6 +23,7 @@ except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
 
 __all__ = [
+    "PyccelKernel",
     "__version__",
     "cupy_available",
     "cupy_backend",

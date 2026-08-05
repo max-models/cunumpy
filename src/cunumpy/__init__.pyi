@@ -8,6 +8,7 @@ import numpy as np
 from numpy import *
 
 from . import xp as xp
+from .kernel import PyccelKernel as PyccelKernel
 
 def to_numpy(array: Any) -> np.ndarray: ...
 def to_cupy(array: Any) -> Any: ...
