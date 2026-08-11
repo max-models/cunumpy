@@ -47,6 +47,16 @@ xp.set_backend("cupy")
 xp.synchronize()
 ```
 
+Output:
+
+```
+type(arr) = <class 'cupy.ndarray'>
+xp.__version__ = '0.1.4'
+xp.get_backend(arr) = 'cupy'
+xp.is_gpu(arr) = True
+xp.is_cpu(arr) = False
+```
+
 # Build docs
 
 
