@@ -17,10 +17,12 @@ export ARRAY_BACKEND=cupy
 ```python
 import cunumpy as xp
 
+xp.set_backend("cupy")
+
 arr = xp.array([1, 2])
 
-print(type(arr))
-print(xp.__version__)
+print(f"{type(arr) = }")
+print(f"{xp.__version__ = }")
 
 # Convert to NumPy
 arr_np = xp.to_numpy(arr)
@@ -29,9 +31,9 @@ arr_np = xp.to_numpy(arr)
 arr_xp = xp.to_cunumpy(arr)
 
 # Inspect backend
-print(xp.get_backend(arr))
-print(xp.is_gpu(arr))
-print(xp.is_cpu(arr))
+print(f"{xp.get_backend(arr) = }")
+print(f"{xp.is_gpu(arr) = }")
+print(f"{xp.is_cpu(arr) = }")
 
 # Temporarily switch backend
 with xp.use_backend("numpy"):
