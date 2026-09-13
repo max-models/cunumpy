@@ -192,6 +192,34 @@ def is_cpu(array: Any) -> bool:
     return get_backend(array) == "numpy"
 
 
+def same_backend(*arrays: Any) -> bool:
+    """Return True if all given arrays live on the same backend.
+
+    Trivially True for zero or one array.
+    """
+    if len(arrays) <= 1:
+        return True
+    backends = {get_backend(array) for array in arrays}
+    return len(backends) == 1
+
+
+def assert_same_backend(*arrays: Any) -> None:
+    """Raise TypeError if the given arrays don't all live on the same backend.
+
+    Mixing NumPy and CuPy arrays in an operation typically fails with a
+    confusing, backend-internal error (e.g. a CuPy kernel dispatch error
+    complaining about an "unsupported type"). Call this upfront to fail
+    with a clear message instead. Use `to_cunumpy()`/`to_numpy()`/`to_cupy()`
+    to align mismatched arrays onto one backend first.
+    """
+    if not same_backend(*arrays):
+        backends = [get_backend(array) for array in arrays]
+        raise TypeError(
+            f"Arrays are on mismatched backends: {backends}. Use "
+            "xp.to_cunumpy()/xp.to_numpy()/xp.to_cupy() to align them first."
+        )
+
+
 # TYPE_CHECKING is True when type checking (e.g., mypy), but False at runtime.
 # This allows us to use autocompletion for xp (i.e., numpy/cupy) as if numpy was imported.
 if TYPE_CHECKING:
