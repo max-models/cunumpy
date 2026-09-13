@@ -8,6 +8,9 @@ made by the kernel are copied back to the device afterwards, and any arrays
 returned by the kernel are moved back to the device.
 
 On the NumPy backend the wrapper is a no-op and the kernel is called directly.
+Ordinary Python callables are supported, including in Pyodide. This module
+neither imports Pyccel nor compiles kernels; compilation, if desired, is the
+caller's responsibility.
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ __all__ = ["PyccelKernel"]
 
 
 class PyccelKernel:
-    """Call a Pyccel-compiled kernel with NumPy or CuPy arrays.
+    """Call a NumPy callable or Pyccel-compiled kernel with NumPy or CuPy arrays.
 
     Parameters
     ----------

@@ -17,6 +17,7 @@ print(type(arr))
 :caption: Contents:
 
 quickstart
+pyodide
 tutorials
 api
 ```
