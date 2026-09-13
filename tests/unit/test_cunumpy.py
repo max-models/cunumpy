@@ -29,6 +29,44 @@ def test_get_backend_and_is_gpu_cpu():
     assert xp.is_cpu(arr) is True
 
 
+def test_same_backend_trivially_true_for_zero_or_one_array():
+    assert xp.same_backend() is True
+    assert xp.same_backend(np.array([1, 2, 3])) is True
+
+
+def test_same_backend_true_for_multiple_numpy_arrays():
+    a = np.array([1, 2, 3])
+    b = np.array([4, 5, 6])
+    assert xp.same_backend(a, b) is True
+
+
+def test_assert_same_backend_does_not_raise_when_consistent():
+    a = np.array([1, 2, 3])
+    b = np.array([4, 5, 6])
+    xp.assert_same_backend(a, b)  # must not raise
+
+
+def test_same_backend_false_when_mismatched():
+    if not xp.cupy_available():
+        pytest.skip("CuPy not installed or not functional")
+
+    a_cpu = np.array([1, 2, 3])
+    a_gpu = xp.to_cupy(a_cpu)
+
+    assert xp.same_backend(a_cpu, a_gpu) is False
+
+
+def test_assert_same_backend_raises_with_informative_message_when_mismatched():
+    if not xp.cupy_available():
+        pytest.skip("CuPy not installed or not functional")
+
+    a_cpu = np.array([1, 2, 3])
+    a_gpu = xp.to_cupy(a_cpu)
+
+    with pytest.raises(TypeError, match="mismatched backends"):
+        xp.assert_same_backend(a_cpu, a_gpu)
+
+
 def test_use_backend():
     # Initial backend should be numpy (default) in this test environment
     assert "numpy" in xp.xp.__name__

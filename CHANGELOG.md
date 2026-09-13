@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Pyodide NumPy support documentation and CI that installs the built wheel in Pyodide's WebAssembly runtime and runs compiler-free tests for arrays, conversions, contexts, and Python kernels without CuPy or Pyccel imports.
+- `test-compiled` extra for native Pyccel tests. The `test` extra is now compiler-free; `dev` continues to include compiled-test dependencies.
+- `xp.same_backend(*arrays)`: Return `True` if all given arrays live on the same backend.
+- `xp.assert_same_backend(*arrays)`: Raise `TypeError` with a clear message if the given arrays don't all live on the same backend, instead of letting a mixed-backend operation fail with a confusing backend-internal error.
 - `xp.PyccelKernel`: Wraps a kernel compiled with [pyccel](https://github.com/pyccel/pyccel) (which only accepts NumPy arrays) so it can be called with CuPy arrays. Arguments are copied to the host before the call, in-place kernel updates are copied back to the device, and returned arrays are moved back to the device. On the NumPy backend the kernel is called directly, without conversion. Tuples, lists and dicts are traversed recursively; pass `object_modules=("your_package.",)` to also traverse the attributes of your own objects. Pass `outputs=(5,)` (indices for positional arguments, names for keyword arguments) to declare which arguments the kernel writes to, so only those are copied back to the device instead of every converted array; `outputs=()` declares none. Conversion is identity-aware: an array reachable by several paths (passed twice, or both directly and as an object attribute) becomes a single host array, so the kernel sees the aliasing the caller intended and in-place updates are not lost; reference cycles are handled rather than recursed into.
 
 ## [0.1.3] - 2026-07-31
