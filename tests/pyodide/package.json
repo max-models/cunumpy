@@ -1,0 +1,7 @@
+{
+  "name": "cunumpy-pyodide-tests",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node run.mjs" },
+  "devDependencies": { "pyodide": "314.0.6" }
+}
