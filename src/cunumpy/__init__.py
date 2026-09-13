@@ -4,10 +4,12 @@ from importlib.metadata import PackageNotFoundError, version
 from . import xp
 from .kernel import PyccelKernel
 from .xp import (
+    assert_same_backend,
     cupy_available,
     get_backend,
     is_cpu,
     is_gpu,
+    same_backend,
     set_backend,
     set_device,
     synchronize,
@@ -25,12 +27,14 @@ except PackageNotFoundError:
 __all__ = [
     "PyccelKernel",
     "__version__",
+    "assert_same_backend",
     "cupy_available",
     "cupy_backend",
     "get_backend",
     "is_cpu",
     "is_gpu",
     "numpy_backend",
+    "same_backend",
     "set_backend",
     "set_device",
     "synchronize",
