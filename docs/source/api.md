@@ -56,6 +56,40 @@ with xp.use_backend("numpy"):
 ### `synchronize()`
 Blocks until all preceding GPU operations are complete. This is a no-op when using the NumPy backend.
 
+### `device_count()`
+Returns the number of visible CUDA devices. Returns `0` on the NumPy backend or if CuPy/CUDA is unavailable. Independent of the currently active backend.
+
+### `set_device_for_rank(rank, devices_per_node=None)`
+Convenience for one-MPI-rank-per-GPU codes: selects device `rank % devices_per_node` via `set_device()` and returns the device id chosen. `devices_per_node` defaults to `device_count()`. No-op (returns `0`) with no visible devices.
+
+```python
+xp.set_device_for_rank(mpi_rank)  # each rank picks its own GPU
+```
+
+### `memory_info()`
+Returns `(free, total)` bytes of memory on the active CUDA device, or `None` on the NumPy backend.
+
+### `free_memory()`
+Releases all free blocks held by CuPy's device and pinned-host memory pools. No-op on the NumPy backend. CuPy caches freed memory rather than returning it to the driver immediately, which can look like a leak in long-running processes.
+
+### `pin_memory(array)`
+Copies a host array into pinned (page-locked) CUDA host memory, which transfers to/from the GPU faster than regular pageable memory. Raises `ImportError` if CuPy is unavailable.
+
+### `stream()`
+Context manager for a CUDA stream, to overlap transfers and compute. No-op (yields `None`) on the NumPy backend.
+
+```python
+with xp.stream() as s:
+    arr = xp.to_cupy(host_array)  # enqueued on the new stream
+xp.synchronize()  # wait for it before reading results
+```
+
+### `get_rng(seed=None)`
+Returns a `numpy.random.Generator` or `cupy.random.Generator` matching the active backend, so callers don't have to branch on the backend themselves.
+
+### `default_float_dtype()`
+Returns the active backend's `float64` dtype object. NumPy and CuPy resolve Python literals and the bare `dtype=float` spelling to a platform- or backend-dependent default; pass this explicitly when a specific, portable precision matters.
+
 ## Compiled Kernels
 
 ### `PyccelKernel(kernel, use_cupy=None, object_modules=(), outputs=None)`
@@ -77,6 +111,8 @@ with xp.use_backend("cupy"):
 ```
 
 Tuples, lists and dicts are traversed recursively. Pass `object_modules` to also traverse the attributes of your own objects, e.g. `object_modules=("struphy.", "feectools.")`; instances from other modules are handed to the kernel untouched.
+
+By default, only `numpy.ndarray` values are recognized as arrays to convert back to the device. Pass `is_array` to recognize a different (or additional) host array type instead, e.g. `is_array=lambda v: isinstance(v, (np.ndarray, np.ma.MaskedArray))`.
 
 #### Declaring outputs
 

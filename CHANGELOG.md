@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `xp.get_array_module(array)`: Return the array-api-compat module (`numpy`/`cupy`) matching a given array's own backend, regardless of the process-wide active backend. Mirrors `cupy.get_array_module`, but works in Pyodide and returns array-api-compat modules for consistency with `xp.xp`.
+- `xp.get_rng(seed=None)`: Return a `numpy.random.Generator`/`cupy.random.Generator` matching the active backend, without having to branch on the backend yourself.
+- `xp.device_count()`: Number of visible CUDA devices (`0` on the NumPy backend or without a functional CuPy/CUDA install), independent of the currently active backend.
+- `xp.set_device_for_rank(rank, devices_per_node=None)`: Convenience for one-MPI-rank-per-GPU codes; selects `rank % devices_per_node` (defaulting `devices_per_node` to `device_count()`) via `set_device()` and returns the chosen device id.
+- `xp.memory_info()`: `(free, total)` bytes of memory on the active CUDA device, or `None` on the NumPy backend.
+- `xp.free_memory()`: Release all free blocks held by CuPy's device and pinned-host memory pools (no-op on the NumPy backend).
+- `xp.default_float_dtype()`: Return the active backend's `float64` dtype object, for pinning a portable float precision instead of the backend/platform-dependent `dtype=float`.
+- `xp.stream()`: Context manager for a CUDA stream, to overlap host/device transfers with compute (no-op, yielding `None`, on the NumPy backend).
+- `xp.pin_memory(array)`: Copy a host array into pinned (page-locked) CUDA host memory for faster transfers.
+- `PyccelKernel(..., is_array=...)`: Extension point overriding the default `isinstance(value, np.ndarray)` check used to decide which host values returned by (or reachable from a declared output of) the wrapped kernel are converted back to the device -- for kernels that return/mutate a NumPy subclass or other custom host array type.
 - Pyodide NumPy support documentation and CI that installs the built wheel in Pyodide's WebAssembly runtime and runs compiler-free tests for arrays, conversions, contexts, and Python kernels without CuPy or Pyccel imports.
 - `test-compiled` extra for native Pyccel tests. The `test` extra is now compiler-free; `dev` continues to include compiled-test dependencies.
 - `xp.same_backend(*arrays)`: Return `True` if all given arrays live on the same backend.
