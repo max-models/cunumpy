@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import warnings
 from contextlib import contextmanager
@@ -132,6 +134,141 @@ def set_device(device_id: int) -> None:
         import cupy as cp
 
         cp.cuda.Device(device_id).use()
+
+
+def device_count() -> int:
+    """Number of visible CUDA devices.
+
+    Returns 0 on the NumPy backend, or if CuPy/CUDA is not available.
+    Independent of the currently active backend -- this reports what
+    hardware is visible, not what `xp.xp` currently dispatches to.
+    """
+    if not cupy_available():
+        return 0
+
+    import cupy as cp
+
+    try:
+        return cp.cuda.runtime.getDeviceCount()
+    except Exception:  # noqa: BLE001 - tolerate any driver/runtime failure
+        return 0
+
+
+def set_device_for_rank(rank: int, devices_per_node: int | None = None) -> int:
+    """Select a CUDA device for an MPI rank, round-robin across the node.
+
+    Convenience for one-rank-per-GPU codes: computes
+    ``device_id = rank % devices_per_node`` and calls `set_device()` with
+    it. `devices_per_node` defaults to `device_count()`. Returns the
+    selected device id, or 0 as a no-op if there are no visible devices.
+
+    This assumes ranks map to devices in contiguous blocks per node (i.e.
+    local rank == ``rank % devices_per_node``); codes with a different
+    rank-to-device layout should call `set_device()` directly instead.
+    """
+    n = devices_per_node if devices_per_node is not None else device_count()
+    if n == 0:
+        return 0
+
+    device_id = rank % n
+    set_device(device_id)
+    return device_id
+
+
+def memory_info() -> tuple[int, int] | None:
+    """Return `(free, total)` bytes of memory on the active CUDA device.
+
+    Returns `None` on the NumPy backend. Queries the CUDA runtime directly,
+    so it reflects the whole device rather than just CuPy's memory pool.
+    """
+    if array_backend.backend != "cupy":
+        return None
+
+    import cupy as cp
+
+    return cp.cuda.runtime.memGetInfo()
+
+
+def free_memory() -> None:
+    """Release all free blocks held by CuPy's memory pools (no-op on NumPy).
+
+    CuPy caches freed device (and pinned host) memory in pools rather than
+    returning it to the driver/OS immediately, which can look like a leak
+    in long-running processes. Call this to give it back.
+    """
+    if array_backend.backend == "cupy":
+        import cupy as cp
+
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+
+
+def pin_memory(array: Any) -> Any:
+    """Copy a host array into pinned (page-locked) CUDA host memory.
+
+    Pinned memory transfers to/from the GPU faster than regular pageable
+    memory, since the driver can DMA it directly. `array` must already be
+    on the host (use `to_numpy()` first if it may be on the GPU). Raises
+    `ImportError` if CuPy is not available.
+    """
+    if not cupy_available():
+        raise ImportError("CuPy is not available or not functional.")
+
+    import cupy as cp
+
+    array = np.asarray(array)
+    mem = cp.cuda.alloc_pinned_memory(array.nbytes)
+    pinned = np.frombuffer(mem, array.dtype, array.size).reshape(array.shape)
+    pinned[...] = array
+    return pinned
+
+
+@contextmanager
+def stream() -> Generator[Any, None, None]:
+    """Context manager for a CUDA stream, to overlap transfers and compute.
+
+    On the CuPy backend, operations issued inside the block are enqueued on
+    a new, non-blocking stream rather than the default one. Call
+    `xp.synchronize()` (or the yielded stream's own `.synchronize()`) before
+    reading results computed inside the block. No-op on the NumPy backend,
+    where it yields `None`.
+    """
+    if array_backend.backend == "cupy":
+        import cupy as cp
+
+        with cp.cuda.Stream(non_blocking=True) as s:
+            yield s
+    else:
+        yield None
+
+
+def get_rng(seed: int | None = None) -> Any:
+    """Return a random Generator matching the active backend.
+
+    NumPy and CuPy both provide `default_rng(seed)`, returning a
+    `Generator` with a largely-compatible distribution API, but picking the
+    right one requires branching on the backend -- this does that for you.
+    """
+    if array_backend.backend == "cupy":
+        import cupy as cp
+
+        return cp.random.default_rng(seed)
+
+    import numpy as numpy_raw
+
+    return numpy_raw.random.default_rng(seed)
+
+
+def default_float_dtype() -> Any:
+    """Return the active backend's `float64` dtype object.
+
+    NumPy and CuPy resolve Python `int`/`float` literals and the bare
+    `dtype=float` spelling to a platform- or backend-dependent default
+    (e.g. NumPy's default integer width differs between Windows and
+    Linux/macOS). Use ``dtype=xp.default_float_dtype()`` instead of
+    ``dtype=float`` when a specific, portable precision matters.
+    """
+    return array_backend.xp.float64
 
 
 def synchronize() -> None:
