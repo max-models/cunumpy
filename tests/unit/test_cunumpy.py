@@ -29,6 +29,29 @@ def test_get_backend_and_is_gpu_cpu():
     assert xp.is_cpu(arr) is True
 
 
+def test_get_array_module_numpy():
+    arr = np.array([1, 2, 3])
+    mod = xp.get_array_module(arr)
+    assert "numpy" in mod.__name__
+    assert mod.asarray(arr) is not None
+
+
+def test_get_array_module_matches_array_not_global_backend():
+    if not xp.cupy_available():
+        pytest.skip("CuPy not installed or not functional")
+
+    a_cpu = np.array([1, 2, 3])
+    a_gpu = xp.to_cupy(a_cpu)
+
+    with xp.use_backend("cupy"):
+        # Global backend is cupy, but the array itself is on the host.
+        assert "numpy" in xp.get_array_module(a_cpu).__name__
+
+    with xp.use_backend("numpy"):
+        # Global backend is numpy, but the array itself is on the device.
+        assert "cupy" in xp.get_array_module(a_gpu).__name__
+
+
 def test_same_backend_trivially_true_for_zero_or_one_array():
     assert xp.same_backend() is True
     assert xp.same_backend(np.array([1, 2, 3])) is True

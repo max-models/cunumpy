@@ -16,6 +16,15 @@ Converts an array to the currently active backend.
 ### `get_backend(array)`
 Returns the name of the backend (`"numpy"` or `"cupy"`) for the given array.
 
+### `get_array_module(array)`
+Returns the array-api-compat module (`numpy` or `cupy`) matching the given array's own backend — not necessarily the currently active global backend. Useful for writing functions that dispatch correctly on whatever array they receive, independent of `set_backend`/`use_backend`:
+
+```python
+def norm(array):
+    xp_ = xp.get_array_module(array)
+    return xp_.sqrt(xp_.sum(array**2))
+```
+
 ### `is_gpu(array)`
 Returns `True` if the array is stored on a GPU (CuPy).
 
