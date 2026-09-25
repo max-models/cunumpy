@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `xp.get_array_module(array)`: Return the array-api-compat module (`numpy`/`cupy`) matching a given array's own backend, regardless of the process-wide active backend. Mirrors `cupy.get_array_module`, but works in Pyodide and returns array-api-compat modules for consistency with `xp.xp`.
 - Pyodide NumPy support documentation and CI that installs the built wheel in Pyodide's WebAssembly runtime and runs compiler-free tests for arrays, conversions, contexts, and Python kernels without CuPy or Pyccel imports.
 - `test-compiled` extra for native Pyccel tests. The `test` extra is now compiler-free; `dev` continues to include compiled-test dependencies.
 - `xp.same_backend(*arrays)`: Return `True` if all given arrays live on the same backend.

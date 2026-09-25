@@ -182,6 +182,23 @@ def get_backend(array: Any) -> BackendType:
     return "cupy" if array_api_compat.is_cupy_array(array) else "numpy"
 
 
+def get_array_module(array: Any) -> ModuleType:
+    """Return the array-api-compat module matching `array`'s own backend.
+
+    Unlike `xp.xp`, which reflects the process-wide active backend, this
+    dispatches on the array itself -- useful for writing functions that
+    operate correctly regardless of what `set_backend`/`use_backend` last
+    selected. Mirrors `cupy.get_array_module`, but also works in Pyodide
+    (where `cupy` cannot be imported) and returns array-api-compat modules
+    for standard-conformant behavior, consistent with `xp.xp`.
+    """
+    if get_backend(array) == "cupy":
+        import array_api_compat.cupy as cp
+
+        return cp
+    return np
+
+
 def is_gpu(array: Any) -> bool:
     """Check if the array is stored on a GPU (CuPy)."""
     return get_backend(array) == "cupy"

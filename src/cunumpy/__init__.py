@@ -6,6 +6,7 @@ from .kernel import PyccelKernel
 from .xp import (
     assert_same_backend,
     cupy_available,
+    get_array_module,
     get_backend,
     is_cpu,
     is_gpu,
@@ -30,6 +31,7 @@ __all__ = [
     "assert_same_backend",
     "cupy_available",
     "cupy_backend",
+    "get_array_module",
     "get_backend",
     "is_cpu",
     "is_gpu",
