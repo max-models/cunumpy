@@ -18,7 +18,6 @@ print(type(arr))
 
 quickstart
 pyodide
-tutorials
 api
 ```
 
