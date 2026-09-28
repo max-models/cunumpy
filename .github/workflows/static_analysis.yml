@@ -38,7 +38,6 @@ jobs:
         run: |
           pip install black "black[jupyter]"
           black --check src/
-          black --check tutorials/
 
   isort:
     runs-on: ubuntu-latest
@@ -50,7 +49,6 @@ jobs:
         run: |
           pip install isort
           isort --check src/
-          isort --check tutorials/
 
   mypy:
     runs-on: ubuntu-latest

@@ -24,6 +24,7 @@ def test_numpy_symbols_accessible():
             "to_cupy",
             "to_cunumpy",
             "get_backend",
+            "get_array_backend",
             "is_gpu",
             "is_cpu",
             "use_backend",

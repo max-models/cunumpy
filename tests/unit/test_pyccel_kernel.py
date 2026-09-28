@@ -283,6 +283,48 @@ def test_unlisted_objects_are_passed_through_untouched():
 
 
 # ---------------------------------------------------------------------------
+# Custom is_array predicate
+# ---------------------------------------------------------------------------
+
+
+class _HostArrayLike:
+    """Stand-in for a custom host array type that isn't a `np.ndarray`."""
+
+    def __init__(self, data: np.ndarray) -> None:
+        self.data = data
+
+    def __array__(self, dtype=None):
+        return np.asarray(self.data, dtype=dtype)
+
+
+def test_default_is_array_ignores_custom_array_like_return_value():
+    _skip_without_cupy()
+
+    def kernel():
+        return _HostArrayLike(np.ones(3))
+
+    result = PyccelKernel(kernel, use_cupy=True)()
+    assert isinstance(result, _HostArrayLike)
+    assert xp.is_cpu(result.data)  # not moved back: not a np.ndarray
+
+
+def test_custom_is_array_moves_custom_return_value_back_to_device():
+    _skip_without_cupy()
+
+    def kernel():
+        return _HostArrayLike(np.ones(3))
+
+    wrapped = PyccelKernel(
+        kernel,
+        use_cupy=True,
+        is_array=lambda v: isinstance(v, _HostArrayLike),
+    )
+    result = wrapped()
+    assert xp.is_gpu(result)
+    assert wrapped.is_array is wrapped._is_array
+
+
+# ---------------------------------------------------------------------------
 # Declared outputs
 # ---------------------------------------------------------------------------
 
@@ -431,7 +473,7 @@ def test_compiled_scale_inplace(kernels, backend):
 
         PyccelKernel(kernels.scale_inplace)(x, 3.0)
 
-        assert xp.get_backend(x) == backend
+        assert xp.get_array_backend(x) == backend
         assert np.allclose(xp.to_numpy(x), 3.0 * np.arange(4))
 
 

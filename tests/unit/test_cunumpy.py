@@ -24,9 +24,58 @@ def test_to_cunumpy():
 
 def test_get_backend_and_is_gpu_cpu():
     arr = np.array([1, 2, 3])
-    assert xp.get_backend(arr) == "numpy"
+    assert xp.get_array_backend(arr) == "numpy"
     assert xp.is_gpu(arr) is False
     assert xp.is_cpu(arr) is True
+
+
+def test_get_backend_reports_active_selection_independently_of_array():
+    arr = np.array([1, 2, 3])
+    with xp.use_backend("numpy"):
+        assert xp.get_backend() == "numpy"
+        assert xp.get_array_backend(arr) == "numpy"
+
+        with xp.use_backend("cupy"):
+            expected = "cupy" if xp.cupy_available() else "numpy"
+            assert xp.get_backend() == expected
+            assert xp.get_array_backend(arr) == "numpy"
+
+        assert xp.get_backend() == "numpy"
+
+
+def test_invalid_backend_selection_preserves_active_backend():
+    with xp.use_backend("numpy"):
+        with pytest.raises(ValueError, match="Array backend"):
+            xp.set_backend("invalid")
+        assert xp.get_backend() == "numpy"
+
+        with pytest.raises(ValueError, match="Array backend"):
+            with xp.use_backend("invalid"):
+                pass
+        assert xp.get_backend() == "numpy"
+
+
+def test_get_array_module_numpy():
+    arr = np.array([1, 2, 3])
+    mod = xp.get_array_module(arr)
+    assert "numpy" in mod.__name__
+    assert mod.asarray(arr) is not None
+
+
+def test_get_array_module_matches_array_not_global_backend():
+    if not xp.cupy_available():
+        pytest.skip("CuPy not installed or not functional")
+
+    a_cpu = np.array([1, 2, 3])
+    a_gpu = xp.to_cupy(a_cpu)
+
+    with xp.use_backend("cupy"):
+        # Global backend is cupy, but the array itself is on the host.
+        assert "numpy" in xp.get_array_module(a_cpu).__name__
+
+    with xp.use_backend("numpy"):
+        # Global backend is numpy, but the array itself is on the device.
+        assert "cupy" in xp.get_array_module(a_gpu).__name__
 
 
 def test_same_backend_trivially_true_for_zero_or_one_array():
@@ -91,6 +140,135 @@ def test_set_backend():
     # If cupy is not installed, xp.xp will be numpy module
     arr2 = xp.array([2])
     assert arr2 is not None
+
+
+def test_device_count_is_zero_without_cupy():
+    if xp.cupy_available():
+        pytest.skip("CuPy is installed/functional; device_count() may be > 0")
+    assert xp.device_count() == 0
+
+
+def test_device_count_matches_cupy_when_available():
+    if not xp.cupy_available():
+        pytest.skip("CuPy not installed or not functional")
+    import cupy as cp
+
+    assert xp.device_count() == cp.cuda.runtime.getDeviceCount()
+
+
+def test_set_device_for_rank_is_noop_without_gpus():
+    if xp.cupy_available():
+        pytest.skip("CuPy is installed/functional")
+    assert xp.set_device_for_rank(3) == 0
+
+
+def test_set_device_for_rank_wraps_around_devices_per_node():
+    if not xp.cupy_available():
+        pytest.skip("CuPy not installed or not functional")
+    n = xp.device_count()
+    assert xp.set_device_for_rank(n, devices_per_node=n) == 0
+    assert xp.set_device_for_rank(n + 1, devices_per_node=n) == 1 % n
+
+
+def test_memory_info_is_none_on_numpy_backend():
+    with xp.use_backend("numpy"):
+        assert xp.memory_info() is None
+
+
+def test_memory_info_returns_free_and_total_on_cupy():
+    if not xp.cupy_available():
+        pytest.skip("CuPy not installed or not functional")
+    with xp.use_backend("cupy"):
+        free, total = xp.memory_info()
+        assert 0 <= free <= total
+
+
+def test_free_memory_is_noop_on_numpy_backend():
+    with xp.use_backend("numpy"):
+        xp.free_memory()  # must not raise
+
+
+def test_free_memory_does_not_increase_cupy_pool_cache():
+    if not xp.cupy_available():
+        pytest.skip("CuPy not installed or not functional")
+    import cupy as cp
+
+    with xp.use_backend("cupy"):
+        array = xp.to_cupy(np.ones(1_000))
+        del array
+        pool = cp.get_default_memory_pool()
+        cached_before = pool.free_bytes()
+        xp.free_memory()  # must not raise
+        # CuPy can retain split blocks even after free_all_blocks().
+        assert pool.free_bytes() <= cached_before
+
+
+def test_pin_memory_requires_cupy():
+    if xp.cupy_available():
+        pytest.skip("CuPy is installed/functional")
+    with pytest.raises(ImportError):
+        xp.pin_memory(np.ones(3))
+
+
+def test_pin_memory_round_trips_values():
+    if not xp.cupy_available():
+        pytest.skip("CuPy not installed or not functional")
+    arr = np.array([1.0, 2.0, 3.0])
+    pinned = xp.pin_memory(arr)
+    assert np.array_equal(pinned, arr)
+
+
+def test_stream_is_noop_on_numpy_backend():
+    with xp.use_backend("numpy"), xp.stream() as s:
+        assert s is None
+
+
+def test_stream_yields_a_cupy_stream_on_cupy_backend():
+    if not xp.cupy_available():
+        pytest.skip("CuPy not installed or not functional")
+    import cupy as cp
+
+    with xp.use_backend("cupy"):
+        with xp.stream() as s:
+            assert isinstance(s, cp.cuda.Stream)
+            arr = xp.zeros(10)
+            assert xp.is_gpu(arr)
+        xp.synchronize()
+
+
+def test_get_rng_returns_numpy_generator_on_numpy_backend():
+    with xp.use_backend("numpy"):
+        rng = xp.get_rng(42)
+        assert isinstance(rng, np.random.Generator)
+        assert rng.random(3).shape == (3,)
+
+
+def test_get_rng_returns_cupy_generator_on_cupy_backend():
+    if not xp.cupy_available():
+        pytest.skip("CuPy not installed or not functional")
+    import cupy as cp
+
+    with xp.use_backend("cupy"):
+        rng = xp.get_rng(42)
+        assert isinstance(rng, cp.random.Generator)
+
+
+def test_get_rng_is_reproducible_given_a_seed():
+    with xp.use_backend("numpy"):
+        a = xp.get_rng(123).random(5)
+        b = xp.get_rng(123).random(5)
+        assert np.array_equal(a, b)
+
+
+def test_default_float_dtype_matches_active_backend():
+    with xp.use_backend("numpy"):
+        assert xp.default_float_dtype() == np.float64
+
+    if xp.cupy_available():
+        import cupy as cp
+
+        with xp.use_backend("cupy"):
+            assert xp.default_float_dtype() == cp.float64
 
 
 def test_backend_bools():

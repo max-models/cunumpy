@@ -41,6 +41,12 @@ class PyccelKernel:
         Module prefixes (e.g. ``("struphy.", "feectools.")``) whose instances
         should be traversed attribute-by-attribute when looking for arrays to
         convert. Objects from other modules are passed through untouched.
+    is_array : callable, optional
+        Predicate deciding whether a host-side value returned by the kernel
+        (or reachable from a declared output) counts as an array to move
+        back to the device. Defaults to ``isinstance(value, np.ndarray)``.
+        Override this if the kernel returns/mutates a NumPy subclass or a
+        custom host array type that should also be converted back to CuPy.
     outputs : sequence of int or str, optional
         Which arguments the kernel writes to. Only those are copied back to the
         device after the call, which avoids pointless device transfers for the
@@ -68,11 +74,13 @@ class PyccelKernel:
         kernel: Callable[..., Any],
         use_cupy: bool | None = None,
         object_modules: Sequence[str] = (),
+        is_array: Callable[[Any], bool] | None = None,
         outputs: Sequence[int | str] | None = None,
     ) -> None:
         self._kernel = kernel
         self._use_cupy = use_cupy
         self._object_modules = tuple(object_modules)
+        self._is_array = is_array or (lambda value: isinstance(value, np.ndarray))
 
         if outputs is None:
             self._outputs: tuple[int | str, ...] | None = None
@@ -165,15 +173,14 @@ class PyccelKernel:
 
         return value
 
-    @staticmethod
-    def _convert_from_numpy(value: Any) -> Any:
-        """Move NumPy arrays returned by the kernel back to the device."""
-        if isinstance(value, np.ndarray):
+    def _convert_from_numpy(self, value: Any) -> Any:
+        """Move host arrays returned by the kernel back to the device."""
+        if self._is_array(value):
             return to_cupy(value)
         if isinstance(value, tuple):
-            return tuple(PyccelKernel._convert_from_numpy(item) for item in value)
+            return tuple(self._convert_from_numpy(item) for item in value)
         if isinstance(value, list):
-            return [PyccelKernel._convert_from_numpy(item) for item in value]
+            return [self._convert_from_numpy(item) for item in value]
         return value
 
     def _collect_host_arrays(self, value: Any, found: set[int], seen: set[int]) -> None:
@@ -183,7 +190,7 @@ class PyccelKernel:
         :meth:`_convert_to_numpy`, so that an output declared as a container or
         an object contributes the arrays nested inside it.
         """
-        if isinstance(value, np.ndarray):
+        if self._is_array(value):
             found.add(id(value))
             return
 
@@ -340,6 +347,11 @@ class PyccelKernel:
     def object_modules(self) -> tuple[str, ...]:
         """Module prefixes whose instances are traversed for arrays."""
         return self._object_modules
+
+    @property
+    def is_array(self) -> Callable[[Any], bool]:
+        """Predicate identifying host values to convert back to the device."""
+        return self._is_array
 
     @property
     def outputs(self) -> tuple[int | str, ...] | None:
