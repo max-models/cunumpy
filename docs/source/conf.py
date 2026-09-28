@@ -3,27 +3,6 @@
 # For the full list of built-in configuration values, see the documentation:
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
-import os
-import shutil
-
-
-def copy_tutorials(app):
-    src = os.path.abspath("../tutorials")
-    dst = os.path.abspath("source/tutorials")
-
-    # Remove existing target directory if it exists
-    if os.path.exists(dst):
-        shutil.rmtree(dst)
-
-    shutil.copytree(src, dst)
-
-
-def setup(app):
-    app.connect("builder-inited", copy_tutorials)
-    # app.add_stylesheet("my-styles.css")
-    app.add_css_file("custom.css")
-
-
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
