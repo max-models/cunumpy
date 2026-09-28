@@ -44,11 +44,10 @@ def test_backend_context_restoration(raises):
 
     original = backend.array_backend.xp
     try:
-        with xp.use_backend("numpy"):
-            with xp.use_backend("numpy"):
-                xp.set_backend("numpy")
-                if raises:
-                    raise RuntimeError("kernel failed")
+        with xp.use_backend("numpy"), xp.use_backend("numpy"):
+            xp.set_backend("numpy")
+            if raises:
+                raise RuntimeError("kernel failed")
     except RuntimeError:
         assert raises
     assert backend.array_backend.xp is original

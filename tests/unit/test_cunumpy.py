@@ -189,9 +189,8 @@ def test_pin_memory_round_trips_values():
 
 
 def test_stream_is_noop_on_numpy_backend():
-    with xp.use_backend("numpy"):
-        with xp.stream() as s:
-            assert s is None
+    with xp.use_backend("numpy"), xp.stream() as s:
+        assert s is None
 
 
 def test_stream_yields_a_cupy_stream_on_cupy_backend():
