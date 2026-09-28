@@ -22,6 +22,7 @@ NumPy if CuPy cannot be used.
 :caption: Guides and reference:
 
 quickstart
+array-api-compat
 api
 pyodide
 ```
