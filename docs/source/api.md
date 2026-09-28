@@ -1,137 +1,357 @@
-# API
+# API reference
 
-The `cunumpy` package exposes the following helper functions in addition to the standard NumPy/CuPy API.
+CuNumpy exports the active NumPy-like namespace and a set of helpers for
+backend selection, array inspection and conversion, hardware control, and
+host-only kernels. Most examples use `import cunumpy as xp`.
 
-## Backend Management
-
-### `to_numpy(array)`
-Converts an array to a NumPy array on the CPU.
-
-### `to_cupy(array)`
-Converts an array to a CuPy array on the GPU. Raises `ImportError` if CuPy is not available.
-
-### `to_cunumpy(array)`
-Converts an array to the currently active backend.
-
-### `get_backend(array)`
-Returns the name of the backend (`"numpy"` or `"cupy"`) for the given array.
-
-### `get_array_module(array)`
-Returns the array-api-compat module (`numpy` or `cupy`) matching the given array's own backend — not necessarily the currently active global backend. Useful for writing functions that dispatch correctly on whatever array they receive, independent of `set_backend`/`use_backend`:
-
-```python
-def norm(array):
-    xp_ = xp.get_array_module(array)
-    return xp_.sqrt(xp_.sum(array**2))
-```
-
-### `is_gpu(array)`
-Returns `True` if the array is stored on a GPU (CuPy).
-
-### `is_cpu(array)`
-Returns `True` if the array is stored on a CPU (NumPy).
-
-## Global Configuration
-
-### `numpy_backend`
-Boolean property that returns `True` if the currently active global backend is NumPy.
-
-### `cupy_backend`
-Boolean property that returns `True` if the currently active global backend is CuPy.
-
-### `set_backend(backend_name)`
-Globally sets the active backend for all `cunumpy` operations. `backend_name` should be `"numpy"` or `"cupy"`.
-
-### `use_backend(backend_name)`
-A context manager that temporarily sets the active backend.
-
-```python
-with xp.use_backend("numpy"):
-    # Operations here use NumPy
-    pass
-```
-
-## Hardware Control
-
-### `synchronize()`
-Blocks until all preceding GPU operations are complete. This is a no-op when using the NumPy backend.
-
-### `device_count()`
-Returns the number of visible CUDA devices. Returns `0` on the NumPy backend or if CuPy/CUDA is unavailable. Independent of the currently active backend.
-
-### `set_device_for_rank(rank, devices_per_node=None)`
-Convenience for one-MPI-rank-per-GPU codes: selects device `rank % devices_per_node` via `set_device()` and returns the device id chosen. `devices_per_node` defaults to `device_count()`. No-op (returns `0`) with no visible devices.
-
-```python
-xp.set_device_for_rank(mpi_rank)  # each rank picks its own GPU
-```
-
-### `memory_info()`
-Returns `(free, total)` bytes of memory on the active CUDA device, or `None` on the NumPy backend.
-
-### `free_memory()`
-Releases all free blocks held by CuPy's device and pinned-host memory pools. No-op on the NumPy backend. CuPy caches freed memory rather than returning it to the driver immediately, which can look like a leak in long-running processes.
-
-### `pin_memory(array)`
-Copies a host array into pinned (page-locked) CUDA host memory, which transfers to/from the GPU faster than regular pageable memory. Raises `ImportError` if CuPy is unavailable.
-
-### `stream()`
-Context manager for a CUDA stream, to overlap transfers and compute. No-op (yields `None`) on the NumPy backend.
-
-```python
-with xp.stream() as s:
-    arr = xp.to_cupy(host_array)  # enqueued on the new stream
-xp.synchronize()  # wait for it before reading results
-```
-
-### `get_rng(seed=None)`
-Returns a `numpy.random.Generator` or `cupy.random.Generator` matching the active backend, so callers don't have to branch on the backend themselves.
-
-### `default_float_dtype()`
-Returns the active backend's `float64` dtype object. NumPy and CuPy resolve Python literals and the bare `dtype=float` spelling to a platform- or backend-dependent default; pass this explicitly when a specific, portable precision matters.
-
-## Compiled Kernels
-
-### `PyccelKernel(kernel, use_cupy=None, object_modules=(), outputs=None)`
-Wraps a kernel compiled with [pyccel](https://github.com/pyccel/pyccel) — which only accepts NumPy arrays — so that it can be called with CuPy arrays as well.
-
-On the CuPy backend the arguments are copied to the host before the call, any in-place updates the kernel makes are copied back to the device afterwards, and arrays returned by the kernel are moved back to the device. On the NumPy backend the kernel is called directly, without any conversion.
+## NumPy-like namespace
 
 ```python
 import cunumpy as xp
-from my_package.kernels import axpy  # pyccelized kernel
 
-axpy = xp.PyccelKernel(axpy)
-
-with xp.use_backend("cupy"):
-    x = xp.arange(10, dtype=xp.float64)
-    y = xp.ones(10, dtype=xp.float64)
-    out = xp.zeros(10, dtype=xp.float64)
-    axpy(2.0, x, y, out)  # `out` is updated in place, on the GPU
+values = xp.arange(5)
+total = xp.sum(values)
 ```
 
-Tuples, lists and dicts are traversed recursively. Pass `object_modules` to also traverse the attributes of your own objects, e.g. `object_modules=("struphy.", "feectools.")`; instances from other modules are handed to the kernel untouched.
+At runtime, NumPy-like attributes such as `array`, `sum`, `fft`, and `linalg`
+are forwarded to the currently selected `array-api-compat` NumPy or CuPy
+module. CuNumpy does not wrap every operation individually. The available
+operations and some details can therefore vary with the installed NumPy and
+CuPy versions. In normal use, access those operations through the top-level
+`cunumpy` namespace, commonly imported as `xp`.
 
-By default, only `numpy.ndarray` values are recognized as arrays to convert back to the device. Pass `is_array` to recognize a different (or additional) host array type instead, e.g. `is_array=lambda v: isinstance(v, (np.ndarray, np.ma.MaskedArray))`.
+NumPy and CuPy are not interchangeable for every function or object. A
+function that needs to follow an input array's location should use
+`get_array_module(array)` instead of assuming the global backend matches it.
 
-#### Declaring outputs
+## Backend selection
 
-By default every array that was copied to the host is copied back afterwards, since the wrapper cannot know which ones the kernel wrote to. Most pyccel kernels write to one `out` argument and only read the rest, so `outputs` lets you skip the needless transfers:
+### `set_backend(backend)`
+
+Selects the process-wide backend used for new NumPy-like operations. Supported
+values are `"numpy"` and `"cupy"`:
 
 ```python
-interpolate = xp.PyccelKernel(some_interpolation_kernel, outputs=(5,))
-
-interpolate(x, y, z, basis, coeffs, out)  # `out` is argument 5
+xp.set_backend("cupy")
+values = xp.arange(10)
 ```
 
-Only the declared arguments are copied back; `basis` and `coeffs` make the trip to the host and no further. Containers and traversed objects may be declared too — every array nested inside them is copied back. An array that is *also* reachable from a declared output (e.g. passed as both an input and the output) is still copied back.
+Requesting CuPy selects it only when CuPy and its CUDA runtime are functional;
+otherwise CuNumpy falls back to NumPy. Check `get_backend()` to inspect the
+effective selection. Changing the selection does not move arrays that have
+already been created.
 
-Declare positional arguments by index (negatives count from the end) and keyword arguments by name, e.g. `outputs=("out",)` for `interpolate(..., out=out)`. The two are not interchangeable: pyccel-compiled kernels are builtins with no introspectable signature, so the wrapper cannot map a name onto a position. A declaration that matches no argument of the call raises `IndexError`/`KeyError` rather than silently copying nothing back.
+The initial backend is NumPy unless `ARRAY_BACKEND=cupy` is set before CuNumpy
+is imported. Other values of this environment variable result in the NumPy
+default.
 
-`outputs=()` declares that the kernel writes to none of its arguments. Leaving `outputs` unset keeps the always-correct default. Note that a *wrong* declaration is a silent-wrong-answer bug: an argument the kernel writes to but that you did not declare keeps its stale values on the GPU.
+Backend state is shared process-wide and `set_backend()` is not thread-safe.
+Concurrent tasks that change the backend may race.
 
-#### Aliasing and cycles
+### `get_backend()`
 
-Conversion is identity-aware: an array reachable by several paths — passed as two arguments, or both directly and as an attribute of a traversed object — becomes a single array on the host, so the kernel sees the aliasing the caller intended and no in-place update is lost on the way back. Reference cycles are handled rather than recursed into.
+Returns the active global backend name, either `"numpy"` or `"cupy"`. This is
+the getter paired with `set_backend()`:
 
-Set `use_cupy` explicitly to force conversion on or off. By default it is decided per call: conversion happens when the active backend is CuPy, or when a CuPy array is passed in.
+```python
+xp.set_backend("numpy")
+assert xp.get_backend() == "numpy"
+```
+
+### `use_backend(backend)`
+
+Context manager that temporarily selects a backend and restores the previous
+backend on exit, even if the block raises an exception:
+
+```python
+with xp.use_backend("numpy"):
+    reference = xp.zeros(10)
+```
+
+As backend selection is shared process state, this context manager is suited
+to sequential use rather than concurrent backend switching.
+
+### `numpy_backend`, `cupy_backend`
+
+Boolean properties indicating whether the currently selected global backend
+is NumPy or CuPy:
+
+```python
+if xp.cupy_backend:
+    print("new arrays are being created on the GPU")
+```
+
+For a string value, prefer `get_backend()`.
+
+## Inspect arrays and select operations
+
+### `get_array_backend(array)`
+
+Returns `"numpy"` or `"cupy"` according to the given array's type. It reports
+the array's location, not the active global selection:
+
+```python
+xp.set_backend("numpy")
+values_gpu = xp.to_cupy([1, 2, 3])
+assert xp.get_backend() == "numpy"
+assert xp.get_array_backend(values_gpu) == "cupy"
+```
+
+### `get_array_module(array)`
+
+Returns the `array-api-compat` module matching the array: the NumPy module for
+a NumPy array or the CuPy module for a CuPy array. This supports functions
+that dispatch based on their input rather than global state:
+
+```python
+def standardize(values):
+    array_xp = xp.get_array_module(values)
+    mean = array_xp.mean(values)
+    scale = array_xp.std(values)
+    return (values - mean) / scale
+```
+
+The returned module is an `array-api-compat` module, consistent with the
+active module used by CuNumpy. It is not necessarily identical to importing
+raw `numpy` or raw `cupy`.
+
+### `is_cpu(array)`, `is_gpu(array)`
+
+Return booleans indicating whether an array is a NumPy (CPU) or CuPy (GPU)
+array. They are convenience checks equivalent to comparing
+`get_array_backend(array)` with `"numpy"` or `"cupy"`.
+
+### `same_backend(*arrays)`
+
+Returns `True` if all provided arrays have the same backend. Zero or one
+argument is considered to match:
+
+```python
+if xp.same_backend(position, velocity):
+    update(position, velocity)
+```
+
+### `assert_same_backend(*arrays)`
+
+Raises `TypeError` with the detected backend names if arrays do not all share
+a backend. Use it at API boundaries to provide a clear error before a mixed
+NumPy/CuPy operation fails deeper in a library:
+
+```python
+def combine(left, right):
+    xp.assert_same_backend(left, right)
+    return left + right
+```
+
+## Convert arrays
+
+### `to_numpy(array)`
+
+Converts to a host-side NumPy array. CuPy arrays are copied from device to
+host. Other array-like inputs are passed through `numpy.asarray`; NumPy arrays
+may therefore be returned as-is rather than copied.
+
+### `to_cupy(array)`
+
+Converts an array-like input to a CuPy array. Raises `ImportError` if CuPy or
+CUDA is unavailable or not functional. The source is not modified.
+
+### `to_cunumpy(array)`
+
+Converts to the currently active backend. This is convenient at an API
+boundary when an input should be normalized to the configured backend:
+
+```python
+normalized = xp.to_cunumpy(input_array)
+assert xp.get_array_backend(normalized) == xp.get_backend()
+```
+
+Each conversion returns a suitable array; it does not change the active
+backend or mutate the source.
+
+## Random numbers and dtype
+
+### `get_rng(seed=None)`
+
+Returns a NumPy or CuPy `Generator` matching the active backend:
+
+```python
+rng = xp.get_rng(seed=7)
+samples = rng.uniform(size=100)
+```
+
+The generator APIs are similar, but seeds do not guarantee identical random
+sequences across NumPy and CuPy.
+
+### `default_float_dtype()`
+
+Returns the active backend module's `float64` dtype object. Pass it to array
+creation when code requires an explicit precision:
+
+```python
+values = xp.asarray([0.1, 0.2], dtype=xp.default_float_dtype())
+```
+
+## CUDA devices and memory
+
+### `cupy_available()`
+
+Returns whether CuPy can be imported and reports itself functional. The result
+is cached for the process. This checks availability, not whether every
+GPU-specific operation will succeed later.
+
+### `device_count()`
+
+Returns the number of visible CUDA devices. Returns zero when CuPy/CUDA is
+unavailable or querying the runtime fails. This is independent of the active
+backend, so it may return a positive number while NumPy is selected.
+
+### `set_device(device_id)`
+
+Selects a CUDA device when CuPy is active; it is a no-op on NumPy. The device
+must be valid for the current CUDA process.
+
+### `set_device_for_rank(rank, devices_per_node=None)`
+
+Selects a device using `rank % devices_per_node` and returns its ID. If
+`devices_per_node` is omitted, it uses `device_count()`. When no devices are
+visible, it returns `0` without selecting a device. This helper assumes
+contiguous rank-to-device mapping on each node, suitable for a common
+one-rank-per-GPU MPI layout. Use `set_device()` directly when the scheduler's
+mapping differs:
+
+```python
+device_id = xp.set_device_for_rank(mpi_rank)
+```
+
+### `memory_info()`
+
+Returns `(free_bytes, total_bytes)` reported by the CUDA runtime for the
+active device, or `None` on NumPy. The values cover the device, not only
+allocations owned by CuPy.
+
+### `free_memory()`
+
+Releases currently free blocks in CuPy's device and pinned-host memory pools.
+It is a no-op on NumPy. It does not release blocks still referenced by live
+arrays. CuPy normally caches freed allocations for reuse, so cached memory
+does not necessarily indicate a leak.
+
+### `pin_memory(array)`
+
+Copies a host array to page-locked (pinned) host memory. Pinned memory can
+improve host/device transfer throughput in suitable asynchronous workloads.
+Raises `ImportError` if CuPy is unavailable. If the input may be a CuPy array,
+first transfer it with `to_numpy()`.
+
+### `synchronize()`
+
+Waits for queued work on the current CUDA device to finish. This is useful
+before reading asynchronously computed results from host code. It is a no-op
+on NumPy.
+
+### `stream()`
+
+Context manager that creates a non-blocking CuPy stream and yields it. Work
+issued in the block is enqueued on that stream. On NumPy, yields `None` and
+does nothing:
+
+```python
+with xp.stream() as work_stream:
+    result = xp.to_cupy(host_values) * 2
+
+work_stream.synchronize()  # on CuPy; the yielded value is None on NumPy
+```
+
+Do not call methods on the yielded value without checking the backend. Use
+`xp.synchronize()` for code that should work on both backends.
+
+## `PyccelKernel`
+
+### Constructor
+
+```python
+xp.PyccelKernel(
+    kernel,
+    use_cupy=None,
+    object_modules=(),
+    is_array=None,
+    outputs=None,
+)
+```
+
+Wraps a callable expecting host NumPy arrays so it can be used with CuPy
+arrays. This can adapt a Pyccel-compiled kernel or an ordinary Python
+callable. CuNumpy does not compile the callable or import Pyccel.
+
+When no conversion is needed, the original callable is invoked directly. If
+conversion is needed, CuNumpy recursively replaces CuPy arrays in supported
+arguments with NumPy host copies, calls the kernel, copies in-place updates
+back to the corresponding CuPy arrays, and converts returned NumPy arrays to
+CuPy arrays.
+
+### Parameters
+
+* `kernel`: callable that accepts the host-side arguments.
+* `use_cupy`: `None` (default) chooses conversion for each call when the
+  global backend is CuPy or a CuPy array is present. `True` forces conversion;
+  `False` disables it.
+* `object_modules`: module prefixes whose instances should be shallow-copied
+  and traversed by attributes. For example,
+  `object_modules=("my_project.",)`.
+* `is_array`: predicate for host array values to convert back to CuPy. The
+  default is `isinstance(value, numpy.ndarray)`.
+* `outputs`: sequence of arguments the kernel may write to. Entries are
+  positional indices or keyword names. If omitted, every converted array is
+  copied back.
+
+### Example and output declarations
+
+```python
+def scale_and_shift(scale, values, out):
+    out[:] = scale * values + 1
+    return out
+
+kernel = xp.PyccelKernel(scale_and_shift, outputs=(2,))
+
+with xp.use_backend("cupy"):
+    values = xp.arange(8, dtype=xp.float64)
+    out = xp.empty_like(values)
+    result = kernel(2.0, values, out)
+```
+
+`outputs=(2,)` marks only `out` for copy-back. Read-only `values` is copied
+to the host for the call but not transferred back. Declare a positional
+argument by index (negative indices count from the end), and a keyword
+argument by its name, such as `outputs=("out",)` for `kernel(..., out=out)`.
+The forms are not interchangeable because compiled builtins may not expose a
+Python signature. Invalid declarations raise `IndexError` or `KeyError`.
+
+An incorrect declaration is a correctness bug: if the kernel writes an
+argument that was not declared, the device array will not receive that
+update. Use `outputs=()` only when no converted input is mutated. Containers
+and selected objects can be declared as outputs; every nested supported
+array is then copied back. If an array is reachable through multiple paths,
+declaring any path that includes it is sufficient.
+
+### Supported containers, aliasing, and returns
+
+Tuples, lists, and dictionaries are traversed recursively. Objects are
+traversed only when their class module starts with one of the configured
+`object_modules` prefixes; those objects are shallow-copied, and their
+attributes are converted on the copy. Other objects are passed to the kernel
+unchanged.
+
+The wrapper memoizes conversions within a call. If the same device array is
+passed more than once or appears inside a supported container, the host kernel
+sees the same NumPy array object, preserving aliasing. Supported reference
+cycles terminate safely. Returned NumPy arrays (and arrays inside tuples or
+lists) are converted back using `is_array`; dictionaries in return values are
+not recursively converted. On the NumPy path, the original return value and
+normal Python mutation and exception behavior are preserved.
+
+## Version
+
+`xp.__version__` is the installed package version. When package metadata is
+not available (for example, some source-tree imports), it is
+`"0.0.0+unknown"`.

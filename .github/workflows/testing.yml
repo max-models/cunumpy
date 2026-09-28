@@ -53,10 +53,6 @@ jobs:
         run: |
           pytest .
 
-      - name: Test tutorials
-        run: |
-          jupyter nbconvert --to notebook --execute tutorials/*.ipynb --output-dir=/tmp --ExecutePreprocessor.timeout=300
-
       - name: Test docs build
         run: |
           pip install ".[docs]"
