@@ -24,7 +24,7 @@ def test_to_cunumpy():
 
 def test_get_backend_and_is_gpu_cpu():
     arr = np.array([1, 2, 3])
-    assert xp.get_backend(arr) == "numpy"
+    assert xp.get_array_backend(arr) == "numpy"
     assert xp.is_gpu(arr) is False
     assert xp.is_cpu(arr) is True
 

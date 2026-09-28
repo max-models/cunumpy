@@ -77,23 +77,23 @@ def test_round_trip_preserves_shape(shape):
     assert np.allclose(back, original)
 
 
-def test_get_backend_is_gpu_is_cpu_consistency():
+def test_get_array_backend_is_gpu_is_cpu_consistency():
     _skip_without_cupy()
 
     arr_cpu = np.array([1, 2, 3])
     arr_gpu = xp.to_cupy(arr_cpu)
 
-    assert xp.get_backend(arr_cpu) == "numpy"
+    assert xp.get_array_backend(arr_cpu) == "numpy"
     assert xp.is_cpu(arr_cpu) is True
     assert xp.is_gpu(arr_cpu) is False
 
-    assert xp.get_backend(arr_gpu) == "cupy"
+    assert xp.get_array_backend(arr_gpu) == "cupy"
     assert xp.is_gpu(arr_gpu) is True
     assert xp.is_cpu(arr_gpu) is False
 
 
 def test_array_api_compat_agrees_with_cunumpy_on_real_gpu_array():
-    """Sanity-check our get_backend() against array_api_compat's own
+    """Sanity-check our get_array_backend() against array_api_compat's own
     detector directly, on a real (non-mocked) GPU array."""
     _skip_without_cupy()
 

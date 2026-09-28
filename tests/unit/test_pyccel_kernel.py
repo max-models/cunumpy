@@ -470,7 +470,7 @@ def test_compiled_scale_inplace(kernels, backend):
 
         PyccelKernel(kernels.scale_inplace)(x, 3.0)
 
-        assert xp.get_backend(x) == backend
+        assert xp.get_array_backend(x) == backend
         assert np.allclose(xp.to_numpy(x), 3.0 * np.arange(4))
 
 

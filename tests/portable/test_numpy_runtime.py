@@ -18,7 +18,7 @@ def test_array_operations():
     np.testing.assert_array_equal(a @ a.T, [[5, 14], [14, 50]])
     np.testing.assert_allclose(xp.linalg.solve(xp.eye(2), xp.ones(2)), [1, 1])
     assert xp.numpy_backend and not xp.cupy_backend
-    assert xp.get_backend(a) == "numpy"
+    assert xp.get_array_backend(a) == "numpy"
     assert xp.is_cpu(a) and not xp.is_gpu(a)
     assert xp.same_backend(a, xp.ones(2))
     xp.assert_same_backend(a, xp.ones(2))

@@ -118,6 +118,11 @@ def set_backend(backend: BackendType) -> None:
     array_backend._xp = array_backend._load_backend(backend)
 
 
+def get_backend() -> BackendType:
+    """Return the currently active global backend name."""
+    return array_backend.backend
+
+
 def _cupy_backend() -> bool:
     """Check if the active global backend is CuPy."""
     return array_backend.backend == "cupy"
@@ -291,7 +296,7 @@ def synchronize() -> None:
 
 def to_numpy(array: Any) -> np.ndarray:
     """Convert an array to a NumPy array."""
-    if get_backend(array) == "cupy":
+    if get_array_backend(array) == "cupy":
         return array.get()
 
     return np.asarray(array)
@@ -314,8 +319,8 @@ def to_cunumpy(array: Any) -> Any:
     return to_numpy(array)
 
 
-def get_backend(array: Any) -> BackendType:
-    """Return 'cupy' or 'numpy' depending on the array type."""
+def get_array_backend(array: Any) -> BackendType:
+    """Return 'cupy' or 'numpy' depending on the array's type."""
     return "cupy" if array_api_compat.is_cupy_array(array) else "numpy"
 
 
@@ -329,7 +334,7 @@ def get_array_module(array: Any) -> ModuleType:
     (where `cupy` cannot be imported) and returns array-api-compat modules
     for standard-conformant behavior, consistent with `xp.xp`.
     """
-    if get_backend(array) == "cupy":
+    if get_array_backend(array) == "cupy":
         import array_api_compat.cupy as cp
 
         return cp
@@ -338,12 +343,12 @@ def get_array_module(array: Any) -> ModuleType:
 
 def is_gpu(array: Any) -> bool:
     """Check if the array is stored on a GPU (CuPy)."""
-    return get_backend(array) == "cupy"
+    return get_array_backend(array) == "cupy"
 
 
 def is_cpu(array: Any) -> bool:
     """Check if the array is stored on a CPU (NumPy)."""
-    return get_backend(array) == "numpy"
+    return get_array_backend(array) == "numpy"
 
 
 def same_backend(*arrays: Any) -> bool:
@@ -353,7 +358,7 @@ def same_backend(*arrays: Any) -> bool:
     """
     if len(arrays) <= 1:
         return True
-    backends = {get_backend(array) for array in arrays}
+    backends = {get_array_backend(array) for array in arrays}
     return len(backends) == 1
 
 
@@ -367,7 +372,7 @@ def assert_same_backend(*arrays: Any) -> None:
     to align mismatched arrays onto one backend first.
     """
     if not same_backend(*arrays):
-        backends = [get_backend(array) for array in arrays]
+        backends = [get_array_backend(array) for array in arrays]
         raise TypeError(
             f"Arrays are on mismatched backends: {backends}. Use "
             "xp.to_cunumpy()/xp.to_numpy()/xp.to_cupy() to align them first."

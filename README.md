@@ -31,7 +31,8 @@ arr_np = xp.to_numpy(arr)
 arr_xp = xp.to_cunumpy(arr)
 
 # Inspect backend
-print(f"{xp.get_backend(arr) = }")
+print(f"{xp.get_backend() = }")
+print(f"{xp.get_array_backend(arr) = }")
 print(f"{xp.is_gpu(arr) = }")
 print(f"{xp.is_cpu(arr) = }")
 
@@ -52,7 +53,8 @@ Output:
 ```
 type(arr) = <class 'cupy.ndarray'>
 xp.__version__ = '0.1.4'
-xp.get_backend(arr) = 'cupy'
+xp.get_backend() = 'cupy'
+xp.get_array_backend(arr) = 'cupy'
 xp.is_gpu(arr) = True
 xp.is_cpu(arr) = False
 ```

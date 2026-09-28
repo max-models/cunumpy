@@ -19,7 +19,8 @@ import cunumpy as xp
 arr = xp.array([1, 2, 3])
 
 print(f"Array type: {type(arr)}")
-print(f"Active backend: {xp.get_backend(arr)}")
+print(f"Active backend: {xp.get_backend()}")
+print(f"Array backend: {xp.get_array_backend(arr)}")
 ```
 
 ## Backend Control

@@ -13,7 +13,10 @@ Converts an array to a CuPy array on the GPU. Raises `ImportError` if CuPy is no
 ### `to_cunumpy(array)`
 Converts an array to the currently active backend.
 
-### `get_backend(array)`
+### `get_backend()`
+Returns the name of the currently active global backend (`"numpy"` or `"cupy"`). This is the counterpart to `set_backend()`.
+
+### `get_array_backend(array)`
 Returns the name of the backend (`"numpy"` or `"cupy"`) for the given array.
 
 ### `get_array_module(array)`
