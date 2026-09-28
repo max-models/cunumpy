@@ -293,6 +293,9 @@ class _HostArrayLike:
     def __init__(self, data: np.ndarray) -> None:
         self.data = data
 
+    def __array__(self, dtype=None):
+        return np.asarray(self.data, dtype=dtype)
+
 
 def test_default_is_array_ignores_custom_array_like_return_value():
     _skip_without_cupy()

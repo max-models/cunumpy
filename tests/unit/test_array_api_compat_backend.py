@@ -69,7 +69,7 @@ def test_round_trip_preserves_values_and_dtype(dtype):
 def test_round_trip_preserves_shape(shape):
     _skip_without_cupy()
 
-    original = np.random.rand(*shape).astype(np.float64)
+    original = np.asarray(np.random.rand(*shape), dtype=np.float64)
     gpu = xp.to_cupy(original)
     back = xp.to_numpy(gpu)
 
