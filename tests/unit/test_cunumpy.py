@@ -29,6 +29,32 @@ def test_get_backend_and_is_gpu_cpu():
     assert xp.is_cpu(arr) is True
 
 
+def test_get_backend_reports_active_selection_independently_of_array():
+    arr = np.array([1, 2, 3])
+    with xp.use_backend("numpy"):
+        assert xp.get_backend() == "numpy"
+        assert xp.get_array_backend(arr) == "numpy"
+
+        with xp.use_backend("cupy"):
+            expected = "cupy" if xp.cupy_available() else "numpy"
+            assert xp.get_backend() == expected
+            assert xp.get_array_backend(arr) == "numpy"
+
+        assert xp.get_backend() == "numpy"
+
+
+def test_invalid_backend_selection_preserves_active_backend():
+    with xp.use_backend("numpy"):
+        with pytest.raises(ValueError, match="Array backend"):
+            xp.set_backend("invalid")
+        assert xp.get_backend() == "numpy"
+
+        with pytest.raises(ValueError, match="Array backend"):
+            with xp.use_backend("invalid"):
+                pass
+        assert xp.get_backend() == "numpy"
+
+
 def test_get_array_module_numpy():
     arr = np.array([1, 2, 3])
     mod = xp.get_array_module(arr)
@@ -162,15 +188,19 @@ def test_free_memory_is_noop_on_numpy_backend():
         xp.free_memory()  # must not raise
 
 
-def test_free_memory_releases_cupy_pool():
+def test_free_memory_does_not_increase_cupy_pool_cache():
     if not xp.cupy_available():
         pytest.skip("CuPy not installed or not functional")
     import cupy as cp
 
     with xp.use_backend("cupy"):
-        _ = xp.to_cupy(np.ones(1_000))
+        array = xp.to_cupy(np.ones(1_000))
+        del array
+        pool = cp.get_default_memory_pool()
+        cached_before = pool.free_bytes()
         xp.free_memory()  # must not raise
-        assert cp.get_default_memory_pool().n_free_blocks() == 0
+        # CuPy can retain split blocks even after free_all_blocks().
+        assert pool.free_bytes() <= cached_before
 
 
 def test_pin_memory_requires_cupy():

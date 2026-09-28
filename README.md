@@ -29,6 +29,12 @@ install a CuPy package compatible with your CUDA environment as well. CuPy
 installation depends on the CUDA version and platform; follow the CuPy
 installation instructions for your system. CuNumpy does not install CUDA.
 
+`array-api-compat` supplies NumPy and CuPy compatibility modules with more
+consistent behavior for shared array operations. CuNumpy uses them internally;
+your arrays remain ordinary NumPy or CuPy arrays. See [why CuNumpy uses
+`array-api-compat`](docs/source/array-api-compat.md) for a plain-language
+explanation and examples.
+
 ## Choose a backend
 
 CuNumpy starts with NumPy unless `ARRAY_BACKEND=cupy` is set before import.

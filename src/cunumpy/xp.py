@@ -86,6 +86,8 @@ class ArrayBackend:
     @contextmanager
     def use_backend(self, backend: BackendType) -> Generator[None, None, None]:
         """Temporarily change the backend."""
+        if backend not in ("numpy", "cupy"):
+            raise ValueError("Array backend must be either 'numpy' or 'cupy'.")
         old_backend = self._backend
         old_xp = self._xp
 
@@ -114,6 +116,8 @@ def use_backend(backend: BackendType) -> Generator[None, None, None]:
 
 def set_backend(backend: BackendType) -> None:
     """Set the backend globally."""
+    if backend not in ("numpy", "cupy"):
+        raise ValueError("Array backend must be either 'numpy' or 'cupy'.")
     array_backend._backend = backend
     array_backend._xp = array_backend._load_backend(backend)
 

@@ -7,10 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-28
+
+### Changed
+- `xp.get_backend()` now returns the active global backend, mirroring `xp.set_backend()`. Use the new `xp.get_array_backend(array)` to inspect an individual array. Calls to the former `xp.get_backend(array)` must be updated.
+- Expanded the README and documentation with backend selection, array conversion, GPU controls, kernel adaptation, and Pyodide examples.
+
+### Fixed
+- GPU shape round-trip coverage now creates a zero-dimensional NumPy array for the scalar case instead of calling `.astype()` on a Python float.
+- GPU tests now account for CuPy's retained split memory blocks and provide an array conversion method on the custom host-array test fixture.
+- `set_backend()` and `use_backend()` now reject unsupported backend names with `ValueError` without changing the active selection.
+
 ### Added
-- `xp.get_array_module(array)`: Return the array-api-compat module (`numpy`/`cupy`) matching a given array's own backend, regardless of the process-wide active backend. Mirrors `cupy.get_array_module`, but works in Pyodide and returns array-api-compat modules for consistency with `xp.xp`.
+- `xp.get_array_module(array)`: Return the array-api-compat module (`numpy`/`cupy`) matching a given array's own backend, regardless of the process-wide active backend. Mirrors `cupy.get_array_module` and works in Pyodide.
 - `xp.get_rng(seed=None)`: Return a `numpy.random.Generator`/`cupy.random.Generator` matching the active backend, without having to branch on the backend yourself.
-- `xp.device_count()`: Number of visible CUDA devices (`0` on the NumPy backend or without a functional CuPy/CUDA install), independent of the currently active backend.
+- `xp.device_count()`: Number of visible CUDA devices (`0` without a functional CuPy/CUDA install), independent of the currently active backend.
 - `xp.set_device_for_rank(rank, devices_per_node=None)`: Convenience for one-MPI-rank-per-GPU codes; selects `rank % devices_per_node` (defaulting `devices_per_node` to `device_count()`) via `set_device()` and returns the chosen device id.
 - `xp.memory_info()`: `(free, total)` bytes of memory on the active CUDA device, or `None` on the NumPy backend.
 - `xp.free_memory()`: Release all free blocks held by CuPy's device and pinned-host memory pools (no-op on the NumPy backend).

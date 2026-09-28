@@ -20,6 +20,9 @@ operations and some details can therefore vary with the installed NumPy and
 CuPy versions. In normal use, access those operations through the top-level
 `cunumpy` namespace, commonly imported as `xp`.
 
+For an explanation of what the compatibility module does and why CuNumpy
+uses it, read [Why CuNumpy uses `array-api-compat`](array-api-compat.md).
+
 NumPy and CuPy are not interchangeable for every function or object. A
 function that needs to follow an input array's location should use
 `get_array_module(array)` instead of assuming the global backend matches it.

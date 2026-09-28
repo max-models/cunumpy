@@ -16,6 +16,12 @@ CuNumpy depends on NumPy and `array-api-compat`. To use NVIDIA GPUs, install a
 CuPy distribution that matches your CUDA environment separately. CUDA itself
 is not installed by CuNumpy.
 
+`array-api-compat` is a small adapter that gives NumPy and CuPy a more
+consistent interface for shared array operations. You do not need to import
+it directly when using CuNumpy. See [Why CuNumpy uses
+`array-api-compat`](array-api-compat.md) for a beginner-friendly explanation
+and examples.
+
 Import CuNumpy using the familiar alias `xp`:
 
 ```python
