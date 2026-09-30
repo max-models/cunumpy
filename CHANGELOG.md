@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `xp.local_rank()`: The node-local rank from the MPI launcher's environment (Open MPI, MVAPICH2, Intel MPI/MPICH, PMI, Cray PALS, Slurm, `LOCAL_RANK`), available before `MPI_Init`.
 - `xp.bind_local_device()`: Selects the GPU `local_rank() % device_count()` and creates its context, before `MPI_Init`, for one-rank-per-GPU MPI programs.
 - `xp.synchronize_for_mpi(*arrays)`: Waits for pending work on the current stream before MPI uses device buffers (no-op for host buffers and on the NumPy backend).
+- CUDA debug mode: `CudaKernel(..., debug=True)`, `xp.set_cuda_debug(True)`, the context manager `xp.cuda_debug()` or the environment variable `CUNUMPY_CUDA_DEBUG=1` compile kernels with `-lineinfo` and `-DCUNUMPY_BOUNDS_CHECK` (`xp.DEBUG_OPTIONS`; `-G` is not available with NVRTC) and synchronize the stream after every launch, so an asynchronous CUDA error (illegal memory access, launch failure) is raised as a `RuntimeError` naming the kernel and its launch shape instead of surfacing at a later `.get()` or MPI call. `xp.get_cuda_debug()` reads the global setting, which applies to kernels created with `debug=None` at every launch; `CudaKernel.debug`, `debug_active()` and `compile_options()` expose a kernel's setting and the options a compilation uses.
 
 ## [0.2.0] - 2026-09-28
 

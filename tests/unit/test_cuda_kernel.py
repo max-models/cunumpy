@@ -665,3 +665,208 @@ def test_shared_memory_on_gpu():
     out = cp.zeros(grid)
     kernel(x, out, n, n_threads=n, shared_mem=block * 8)
     assert float(out.sum()) == n * (n - 1) / 2
+
+
+# ---------------------------------------------------------------------------
+# debug mode
+# ---------------------------------------------------------------------------
+
+
+def _run_python(code, env=None):
+    """Run `code` in a fresh interpreter that imports this cunumpy.
+
+    Returns its stdout and stderr."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    environment = {**os.environ, **(env or {})}
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [str(Path(xp.__file__).parents[1]), environment.get("PYTHONPATH", "")]
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, env=environment
+    )
+    return result.stdout, result.stderr
+
+
+@pytest.fixture
+def debug_off():
+    """Global debug mode off during the test, restored afterwards."""
+    previous = xp.get_cuda_debug()
+    xp.set_cuda_debug(False)
+    yield
+    xp.set_cuda_debug(previous)
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        (None, False),
+        ("", False),
+        ("0", False),
+        ("false", False),
+        ("off", False),
+        ("no", False),
+        ("2", False),
+        ("1", True),
+        ("true", True),
+        ("True", True),
+        ("YES", True),
+        ("on", True),
+        (" on ", True),
+    ],
+)
+def test_debug_from_env(value, expected):
+    from cunumpy.xp import _debug_from_env
+
+    assert _debug_from_env(value) is expected
+
+
+@pytest.mark.parametrize(
+    "value, expected", [("1", "True"), ("on", "True"), ("0", "False"), (None, "False")]
+)
+def test_debug_from_env_at_import(monkeypatch, value, expected):
+    """The environment variable is read when cunumpy.xp is imported."""
+    if value is None:
+        monkeypatch.delenv("CUNUMPY_CUDA_DEBUG", raising=False)
+    else:
+        monkeypatch.setenv("CUNUMPY_CUDA_DEBUG", value)
+    code = "import cunumpy as xp; print(xp.get_cuda_debug())"
+    stdout, _ = _run_python(code)
+    assert stdout.strip() == expected
+
+
+def test_set_and_get_cuda_debug(debug_off):
+    assert xp.get_cuda_debug() is False
+    xp.set_cuda_debug(True)
+    assert xp.get_cuda_debug() is True
+    xp.set_cuda_debug(0)
+    assert xp.get_cuda_debug() is False
+
+
+def test_cuda_debug_context_restores(debug_off):
+    with xp.cuda_debug():
+        assert xp.get_cuda_debug() is True
+        with xp.cuda_debug(False):
+            assert xp.get_cuda_debug() is False
+        assert xp.get_cuda_debug() is True
+    assert xp.get_cuda_debug() is False
+
+    with pytest.raises(ValueError):
+        with xp.cuda_debug():
+            raise ValueError
+    assert xp.get_cuda_debug() is False  # restored after an exception too
+
+
+def test_compile_options_follow_the_global_setting(debug_off):
+    kernel = CudaKernel(AXPY, "axpy", options=("-std=c++17",))
+    assert kernel.debug is None
+    assert kernel.debug_active() is False
+    assert kernel.compile_options() == ("-std=c++17",)
+    assert "-lineinfo" not in kernel.compile_options()
+
+    with xp.cuda_debug():
+        # decided at call time: the kernel created before is affected
+        assert kernel.debug_active() is True
+        assert kernel.compile_options() == (
+            "-std=c++17",
+            "-lineinfo",
+            "-DCUNUMPY_BOUNDS_CHECK",
+        )
+    assert kernel.compile_options() == ("-std=c++17",)
+    assert kernel.options == ("-std=c++17",)  # the given options are unchanged
+
+
+def test_compile_options_no_duplicates(debug_off):
+    kernel = CudaKernel(AXPY, "axpy", options=("-lineinfo",), debug=True)
+    assert kernel.compile_options() == ("-lineinfo", "-DCUNUMPY_BOUNDS_CHECK")
+    kernel = CudaKernel(AXPY, "axpy", options=xp.DEBUG_OPTIONS[::-1], debug=True)
+    assert kernel.compile_options() == xp.DEBUG_OPTIONS[::-1]
+
+
+def test_explicit_debug_overrides_the_global_setting(debug_off):
+    on = CudaKernel(AXPY, "axpy", debug=True)
+    off = CudaKernel(AXPY, "axpy", debug=False)
+    assert on.debug is True and off.debug is False
+    assert on.debug_active() is True
+    assert off.debug_active() is False
+    assert set(xp.DEBUG_OPTIONS) <= set(on.compile_options())
+
+    with xp.cuda_debug():
+        assert off.debug_active() is False
+        assert off.compile_options() == ()
+        assert on.compile_options() == xp.DEBUG_OPTIONS
+
+
+def test_debug_options_include_dirs_and_from_file(tmp_path, debug_off):
+    (tmp_path / "axpy_cuda.cu").write_text(AXPY)
+    kernel = CudaKernel.from_file(tmp_path / "axpy_cuda.cu", debug=True)
+    assert kernel.compile_options() == (f"-I{tmp_path}", *xp.DEBUG_OPTIONS)
+
+
+def test_debug_option_is_not_G():
+    """NVRTC does not support -G; it must not be added."""
+    assert "-G" not in xp.DEBUG_OPTIONS
+
+
+def test_debug_on_gpu_compiles_and_synchronizes():
+    _skip_without_cupy()
+    import cupy as cp
+
+    n = 100
+    x, y = cp.arange(n, dtype=cp.float64), cp.ones(n)
+    kernel = CudaKernel(AXPY, "axpy", debug=True)
+    stream = cp.cuda.Stream()
+    kernel(2.0, x, y, n, n_threads=n, stream=stream)  # synchronized already
+    assert cp.allclose(y, 2 * x + 1)
+    kernel(2.0, x, y, n, n_threads=n)  # current stream
+    assert cp.allclose(y, 4 * x + 3)
+
+
+# An out-of-bounds write leaves the CUDA context unusable, so the test runs in
+# a subprocess and checks its output.
+OUT_OF_BOUNDS = r"""
+import cunumpy as xp
+import cupy as cp
+
+SOURCE = r'''
+extern "C" __global__ void smash(double* y, int n) {
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i < n) y[((long long)i + 1) << 36] = 1.0;  // 512 GB and more past y
+}
+'''
+kernel = xp.CudaKernel(SOURCE, "smash", debug=DEBUG)
+y = cp.zeros(64)
+try:
+    kernel(y, 64, n_threads=64)
+    cp.cuda.Device().synchronize()
+except RuntimeError as error:
+    print("RuntimeError:", error)
+    print("cause:", type(error.__cause__).__name__)
+except Exception as error:  # noqa: BLE001
+    print(type(error).__name__ + ":", error)
+else:
+    print("no error")
+"""
+
+
+@pytest.mark.parametrize("debug", [True, False])
+def test_out_of_bounds_write_on_gpu(debug):
+    """Under debug, the error is a RuntimeError naming the kernel and its shape;
+    without debug, it is CuPy's own error (raised at the synchronization)."""
+    _skip_without_cupy()
+    output = "".join(
+        _run_python(
+            OUT_OF_BOUNDS.replace("DEBUG", str(debug)), env={"CUNUMPY_CUDA_DEBUG": "0"}
+        )
+    )
+    assert "no error" not in output, output
+    if debug:
+        assert "RuntimeError: CUDA error after launching kernel 'smash'" in output
+        assert "grid (1,) and block (128,)" in output
+        assert "cause: CUDA" in output  # the CuPy error is chained
+    else:
+        assert "RuntimeError: CUDA error after launching kernel" not in output
+        assert "Error" in output

@@ -3,6 +3,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 from . import xp
 from .cuda_kernel import (
+    DEBUG_OPTIONS,
     CudaArguments,
     CudaKernel,
     CudaKernelVariants,
@@ -17,6 +18,7 @@ from .kernel import PyccelKernel
 from .xp import (
     assert_same_backend,
     bind_local_device,
+    cuda_debug,
     cupy_available,
     default_float_dtype,
     device_count,
@@ -24,6 +26,7 @@ from .xp import (
     get_array_backend,
     get_array_module,
     get_backend,
+    get_cuda_debug,
     get_rng,
     is_cpu,
     is_gpu,
@@ -32,6 +35,7 @@ from .xp import (
     pin_memory,
     same_backend,
     set_backend,
+    set_cuda_debug,
     set_device,
     set_device_for_rank,
     stream,
@@ -55,6 +59,7 @@ __all__ = [
     "CudaParameter",
     "CudaStruct",
     "CudaStructValue",
+    "DEBUG_OPTIONS",
     "Kernel",
     "KernelCatalog",
     "PyccelKernel",
@@ -62,6 +67,7 @@ __all__ = [
     "assert_same_backend",
     "bind_local_device",
     "ctype_of",
+    "cuda_debug",
     "cupy_available",
     "cupy_backend",
     "default_float_dtype",
@@ -70,6 +76,7 @@ __all__ = [
     "get_array_backend",
     "get_array_module",
     "get_backend",
+    "get_cuda_debug",
     "get_rng",
     "is_cpu",
     "is_gpu",
@@ -80,6 +87,7 @@ __all__ = [
     "pin_memory",
     "same_backend",
     "set_backend",
+    "set_cuda_debug",
     "set_device",
     "set_device_for_rank",
     "stream",
