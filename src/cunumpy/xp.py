@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import importlib
 import logging
 import os
+import time
 import warnings
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import ContextDecorator, contextmanager
+from dataclasses import dataclass
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Literal
 
 import array_api_compat
 import array_api_compat.numpy as np
+
+from .transfers import _ACTIVE as _COUNTERS
+from .transfers import _describe, _record
 
 BackendType = Literal["numpy", "cupy"]
 
@@ -515,16 +521,208 @@ def synchronize() -> None:
             )
 
 
-def to_numpy(array: Any) -> np.ndarray:
-    """Convert an array to a NumPy array."""
+def _nvtx_module() -> ModuleType | None:
+    """Return ``cupy.cuda.nvtx`` on the CuPy backend, else None.
+
+    None is also returned when NVTX is not available in this CuPy build, so
+    callers can degrade to a no-op instead of failing.
+    """
+    if array_backend.backend != "cupy":
+        return None
+    try:
+        return importlib.import_module("cupy.cuda.nvtx")
+    except Exception:  # noqa: BLE001 - tolerate any missing/broken NVTX
+        return None
+
+
+class nvtx_range(ContextDecorator):
+    """Mark a code region as an NVTX range, visible in ``nsys`` and Nsight.
+
+    On the CuPy backend the block is wrapped in ``cupy.cuda.nvtx.RangePush``
+    / ``RangePop``, so the region appears on the profiler timeline next to
+    the kernels it launches. On the NumPy backend, or if NVTX is not
+    available, it is a no-op. The range is popped when the block raises.
+
+    It can also be used as a decorator, and the same instance can be nested
+    or re-entered (e.g. on a recursive function).
+
+    Parameters
+    ----------
+    name : str
+        Name shown in the profiler.
+    color : int, optional
+        Index into NVTX's colour table (``id_color`` of ``RangePush``).
+        ``None`` uses the default colour.
+
+    Examples
+    --------
+    >>> with xp.nvtx_range("push markers"):
+    ...     kernel(markers, dt, n_threads=n)
+
+    >>> @xp.nvtx_range("accumulate")
+    ... def accumulate(...):
+    ...     ...
+    """
+
+    def __init__(self, name: str, color: int | None = None) -> None:
+        self.name = str(name)
+        self.color = color
+        self._stack: list[ModuleType | None] = []
+
+    def __enter__(self):
+        nvtx = _nvtx_module()
+        if nvtx is not None:
+            if self.color is None:
+                nvtx.RangePush(self.name)
+            else:
+                nvtx.RangePush(self.name, id_color=int(self.color))
+        self._stack.append(nvtx)
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        nvtx = self._stack.pop()
+        if nvtx is not None:
+            nvtx.RangePop()
+
+    def __repr__(self) -> str:
+        return f"nvtx_range(name={self.name!r}, color={self.color!r})"
+
+
+@dataclass
+class Timing:
+    """Result of a `timed_region()` block.
+
+    Attributes
+    ----------
+    name : str
+        Name of the region.
+    elapsed : float | None
+        Wall-clock seconds spent in the block; ``None`` until the block
+        exits.
+    synced : bool
+        Whether the device was synchronized before the clock was read, i.e.
+        whether `elapsed` includes the queued device work.
+    """
+
+    name: str
+    elapsed: float | None = None
+    synced: bool = False
+
+
+@contextmanager
+def timed_region(name: str, *, sync: bool = True) -> Generator[Timing, None, None]:
+    """Time a code region, including the device work it queues.
+
+    CUDA kernels run asynchronously: a wall-clock timer around a launch
+    measures the launch, not the kernel. On the CuPy backend this context
+    manager synchronizes the device on entry (so earlier queued work is not
+    charged to the region) and, if `sync` is true, again on exit before the
+    clock is read, so the measured time includes the kernels launched in
+    the block. It also pushes an `nvtx_range()` of the same name, so the
+    region shows in ``nsys``. On the NumPy backend it only times the block.
+    The time is recorded when the block raises as well.
+
+    Parameters
+    ----------
+    name : str
+        Name of the region (also the NVTX range name).
+    sync : bool, default True
+        Synchronize the device before reading the clock on exit. With
+        ``False`` the time is the host time only, as for a plain timer.
+
+    Yields
+    ------
+    Timing
+        `elapsed` is set (in seconds, from ``time.perf_counter``) when the
+        block exits; `synced` tells whether the device was synchronized.
+
+    Examples
+    --------
+    >>> with xp.timed_region("push markers") as timing:
+    ...     kernel(markers, dt, n_threads=n)
+    >>> print(f"{timing.name}: {timing.elapsed:.3f} s (synced={timing.synced})")
+    """
+    timing = Timing(name=str(name))
+    on_gpu = array_backend.backend == "cupy"
+    with nvtx_range(timing.name):
+        if sync and on_gpu:
+            synchronize()
+        start = time.perf_counter()
+        try:
+            yield timing
+        finally:
+            if sync and on_gpu:
+                synchronize()
+                timing.synced = True
+            timing.elapsed = time.perf_counter() - start
+
+
+# CUDA debug mode: `CudaKernel` compiles with line information and bounds
+# checks, and synchronizes after every launch so that asynchronous CUDA errors
+# are raised at the kernel that caused them.
+_CUDA_DEBUG_TRUE = ("1", "true", "yes", "on")
+
+
+def _debug_from_env(value: str | None) -> bool:
+    """Whether the value of ``CUNUMPY_CUDA_DEBUG`` enables the debug mode.
+
+    ``"1"``, ``"true"``, ``"yes"`` and ``"on"`` (any case, surrounding
+    whitespace ignored) enable it; anything else, including unset, does not.
+    """
+    if value is None:
+        return False
+    return value.strip().lower() in _CUDA_DEBUG_TRUE
+
+
+_cuda_debug: bool = _debug_from_env(os.getenv("CUNUMPY_CUDA_DEBUG"))
+
+
+def set_cuda_debug(enabled: bool) -> None:
+    """Enable or disable the CUDA debug mode globally.
+
+    In debug mode, `CudaKernel`s created with ``debug=None`` (the default)
+    compile with ``-lineinfo`` and ``-DCUNUMPY_BOUNDS_CHECK``, and synchronize
+    the stream after every launch, re-raising an asynchronous CUDA error as a
+    ``RuntimeError`` naming the kernel that caused it. The setting is read at
+    every launch, so it also applies to kernels created earlier; only their
+    compile options are fixed once they are compiled (call ``compile()`` again
+    or create the kernels after enabling debug mode). Initialised from the
+    environment variable ``CUNUMPY_CUDA_DEBUG`` (``1``, ``true``, ``yes`` or
+    ``on``) at import.
+    """
+    global _cuda_debug
+    _cuda_debug = bool(enabled)
+
+
+def get_cuda_debug() -> bool:
+    """Whether the CUDA debug mode is enabled globally, see `set_cuda_debug`."""
+    return _cuda_debug
+
+
+@contextmanager
+def cuda_debug(enabled: bool = True) -> Generator[None, None, None]:
+    """Temporarily enable (or disable) the CUDA debug mode.
+
+    Restores the previous setting on exit, see `set_cuda_debug`.
+    """
+    previous = _cuda_debug
+    set_cuda_debug(enabled)
+    try:
+        yield
+    finally:
+        set_cuda_debug(previous)
+
+
+def _to_numpy(array: Any) -> np.ndarray:
+    """`to_numpy` without transfer counting, for internal use."""
     if get_array_backend(array) == "cupy":
         return array.get()
 
     return np.asarray(array)
 
 
-def to_cupy(array: Any) -> Any:
-    """Convert an array to a CuPy array."""
+def _to_cupy(array: Any) -> Any:
+    """`to_cupy` without transfer counting, for internal use."""
     if not cupy_available():
         raise ImportError("CuPy is not available or not functional.")
 
@@ -533,8 +731,107 @@ def to_cupy(array: Any) -> Any:
     return cp.asarray(array)
 
 
+def to_numpy(array: Any) -> np.ndarray:
+    """Convert an array to a NumPy array.
+
+    A CuPy array is copied to the host, which `count_transfers()` counts as a
+    ``to_host`` transfer; anything else is passed through `numpy.asarray`.
+    """
+    if _COUNTERS and get_array_backend(array) == "cupy":
+        _record("to_host", f"to_numpy({_describe(array)})")
+    return _to_numpy(array)
+
+
+def to_cupy(array: Any) -> Any:
+    """Convert an array to a CuPy array.
+
+    Anything that is not a CuPy array already is copied to the device, which
+    `count_transfers()` counts as a ``to_device`` transfer.
+    """
+    if _COUNTERS and get_array_backend(array) != "cupy":
+        _record("to_device", f"to_cupy({_describe(array)})")
+    return _to_cupy(array)
+
+
+def as_device_array(
+    value: Any,
+    dtype: Any = None,
+    ndim: int | None = None,
+    *,
+    name: str | None = None,
+) -> Any:
+    """Reference `value` on the device, or make one device copy of it.
+
+    The "reference or copy once" rule for building CUDA argument objects
+    (`CudaArguments` subclasses, `CudaStruct` values): call it once when the
+    argument object is built, never per kernel call. A CuPy array that already
+    has the requested `dtype` (any dtype if `dtype` is None) and is C-contiguous
+    is returned unchanged, the same object without a copy, so kernels write
+    into the caller's array. Anything else is converted with one device copy,
+    ``cupy.ascontiguousarray(cupy.asarray(value, dtype))``: a tuple or list
+    (e.g. ``degree = (3, 3, 3)``), a host NumPy array (one explicit transfer
+    at build time), a device array of another dtype, or a non-contiguous view.
+    The result passes the pointer checks of `CudaKernel` and `CudaStruct`.
+
+    Raises on the NumPy backend: device argument objects are only built when
+    running on CuPy, and host data is never copied to the device implicitly.
+
+    Parameters
+    ----------
+    value : array-like
+        A CuPy array, a NumPy array, or a sequence of numbers.
+    dtype : dtype-like, optional
+        The dtype the kernel expects, e.g. the pointed-to type of the
+        parameter. None keeps the dtype of `value`.
+    ndim : int, optional
+        The expected number of dimensions of the result.
+    name : str, optional
+        Name of the argument, used in error messages.
+
+    Returns
+    -------
+    cupy.ndarray
+        `value` itself, or a C-contiguous device copy with dtype `dtype`.
+
+    Raises
+    ------
+    RuntimeError
+        The active backend is not CuPy.
+    ValueError
+        `ndim` is given and the array has another number of dimensions.
+    """
+    what = f"device argument {name!r}" if name is not None else "device argument"
+    if array_backend.backend != "cupy":
+        raise RuntimeError(
+            f"{what}: the active backend is {array_backend.backend!r}; device "
+            "arguments are only built on the CuPy backend, and host data is never "
+            "copied to the device implicitly (build host arguments instead)"
+        )
+
+    import cupy as cp
+
+    if (
+        isinstance(value, cp.ndarray)
+        and value.flags.c_contiguous
+        and (dtype is None or value.dtype == np.dtype(dtype))
+    ):
+        result = value
+    else:
+        result = cp.ascontiguousarray(cp.asarray(value, dtype=dtype))
+    if ndim is not None and result.ndim != ndim:
+        raise ValueError(
+            f"{what} must have {ndim} dimension(s), got {result.ndim} "
+            f"(shape {result.shape})"
+        )
+    return result
+
+
 def to_cunumpy(array: Any) -> Any:
-    """Convert an array to the currently active backend."""
+    """Convert an array to the currently active backend.
+
+    Delegates to `to_cupy()` or `to_numpy()`, so an actual copy is counted by
+    `count_transfers()` as a ``to_device`` or ``to_host`` transfer.
+    """
     if array_backend.backend == "cupy" and cupy_available():
         return to_cupy(array)
     return to_numpy(array)
