@@ -2,11 +2,21 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from . import xp
-from .cuda_kernel import CudaArguments, CudaKernel, CudaParameter, parse_cuda_signature
+from .cuda_kernel import (
+    CudaArguments,
+    CudaKernel,
+    CudaKernelVariants,
+    CudaParameter,
+    CudaStruct,
+    CudaStructValue,
+    ctype_of,
+    parse_cuda_signature,
+)
 from .dispatch import Kernel, KernelCatalog
 from .kernel import PyccelKernel
 from .xp import (
     assert_same_backend,
+    bind_local_device,
     cupy_available,
     default_float_dtype,
     device_count,
@@ -17,6 +27,7 @@ from .xp import (
     get_rng,
     is_cpu,
     is_gpu,
+    local_rank,
     memory_info,
     pin_memory,
     same_backend,
@@ -25,6 +36,7 @@ from .xp import (
     set_device_for_rank,
     stream,
     synchronize,
+    synchronize_for_mpi,
     to_cunumpy,
     to_cupy,
     to_numpy,
@@ -39,12 +51,17 @@ except PackageNotFoundError:
 __all__ = [
     "CudaArguments",
     "CudaKernel",
+    "CudaKernelVariants",
     "CudaParameter",
+    "CudaStruct",
+    "CudaStructValue",
     "Kernel",
     "KernelCatalog",
     "PyccelKernel",
     "__version__",
     "assert_same_backend",
+    "bind_local_device",
+    "ctype_of",
     "cupy_available",
     "cupy_backend",
     "default_float_dtype",
@@ -56,6 +73,7 @@ __all__ = [
     "get_rng",
     "is_cpu",
     "is_gpu",
+    "local_rank",
     "memory_info",
     "numpy_backend",
     "parse_cuda_signature",
@@ -66,6 +84,7 @@ __all__ = [
     "set_device_for_rank",
     "stream",
     "synchronize",
+    "synchronize_for_mpi",
     "to_cunumpy",
     "to_cupy",
     "to_numpy",
