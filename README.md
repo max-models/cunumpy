@@ -195,6 +195,23 @@ xp.synchronize()
 result = xp.to_numpy(transformed)
 ```
 
+Because GPU work is asynchronous, a wall-clock timer around a kernel launch
+measures the launch, not the kernel. `timed_region(name)` synchronizes the
+device before reading the clock (on NumPy it is a plain timer), and
+`nvtx_range(name)` marks a region so it shows up in `nsys`/Nsight; both are
+no-ops or plain timers on NumPy, and `nvtx_range` also works as a decorator:
+
+```python
+with xp.timed_region("fft") as timing:
+    transformed = xp.fft.fft(device)
+print(timing.elapsed, timing.synced)
+
+
+@xp.nvtx_range("step")
+def step(dt):
+    ...
+```
+
 ## Use NumPy-only kernels with CuPy arrays
 
 `PyccelKernel` adapts a callable that expects NumPy arrays. When conversion is

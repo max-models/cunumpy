@@ -30,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `xp.local_rank()`: The node-local rank from the MPI launcher's environment (Open MPI, MVAPICH2, Intel MPI/MPICH, PMI, Cray PALS, Slurm, `LOCAL_RANK`), available before `MPI_Init`.
 - `xp.bind_local_device()`: Selects the GPU `local_rank() % device_count()` and creates its context, before `MPI_Init`, for one-rank-per-GPU MPI programs.
 - `xp.synchronize_for_mpi(*arrays)`: Waits for pending work on the current stream before MPI uses device buffers (no-op for host buffers and on the NumPy backend).
+- `xp.nvtx_range(name, color=None)`: Context manager and decorator marking a code region as an NVTX range (`cupy.cuda.nvtx.RangePush`/`RangePop`), so it shows up in `nsys`/Nsight next to the kernels it launches; no-op on the NumPy backend or without NVTX. The range is popped when the block raises.
+- `xp.timed_region(name, sync=True)` and `xp.Timing`: Context manager timing a code region including the device work it queues: on the CuPy backend it synchronizes before reading the clock (wall-clock timers around launches otherwise measure the launch, not the kernel), and pushes an NVTX range of the same name. Yields a `Timing` with `name`, `elapsed` (seconds) and `synced`.
 
 ## [0.2.0] - 2026-09-28
 

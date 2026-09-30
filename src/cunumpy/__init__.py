@@ -15,6 +15,7 @@ from .cuda_kernel import (
 from .dispatch import Kernel, KernelCatalog
 from .kernel import PyccelKernel
 from .xp import (
+    Timing,
     assert_same_backend,
     bind_local_device,
     cupy_available,
@@ -29,6 +30,7 @@ from .xp import (
     is_gpu,
     local_rank,
     memory_info,
+    nvtx_range,
     pin_memory,
     same_backend,
     set_backend,
@@ -37,6 +39,7 @@ from .xp import (
     stream,
     synchronize,
     synchronize_for_mpi,
+    timed_region,
     to_cunumpy,
     to_cupy,
     to_numpy,
@@ -58,6 +61,7 @@ __all__ = [
     "Kernel",
     "KernelCatalog",
     "PyccelKernel",
+    "Timing",
     "__version__",
     "assert_same_backend",
     "bind_local_device",
@@ -76,6 +80,7 @@ __all__ = [
     "local_rank",
     "memory_info",
     "numpy_backend",
+    "nvtx_range",
     "parse_cuda_signature",
     "pin_memory",
     "same_backend",
@@ -85,6 +90,7 @@ __all__ = [
     "stream",
     "synchronize",
     "synchronize_for_mpi",
+    "timed_region",
     "to_cunumpy",
     "to_cupy",
     "to_numpy",
