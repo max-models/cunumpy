@@ -10,7 +10,9 @@ from .cuda_kernel import (
     CudaStruct,
     CudaStructValue,
     ctype_of,
+    include_hash,
     parse_cuda_signature,
+    resolve_includes,
 )
 from .dispatch import Kernel, KernelCatalog
 from .kernel import PyccelKernel
@@ -71,6 +73,7 @@ __all__ = [
     "get_array_module",
     "get_backend",
     "get_rng",
+    "include_hash",
     "is_cpu",
     "is_gpu",
     "local_rank",
@@ -78,6 +81,7 @@ __all__ = [
     "numpy_backend",
     "parse_cuda_signature",
     "pin_memory",
+    "resolve_includes",
     "same_backend",
     "set_backend",
     "set_device",

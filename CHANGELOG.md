@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Python 3.14 is supported.
 - CI now tests every supported Python version (3.10, 3.11, 3.12, 3.13 and 3.14) instead of 3.8/3.10/3.13.
+- `CudaKernel.compile()` passes `compile_options()` to CuPy: the given `options` plus `-DCUNUMPY_INCLUDE_HASH=0x<hash>` when the source includes header files, so CuPy's kernel cache (keyed on source and options only) is invalidated when an included header changes. `options` still returns the options as given.
+- `KernelCatalog.from_package(..., include_dirs=None)` is now an explicit keyword; by default the source root of the top-level package (the directory containing it) is an include directory of every CUDA kernel, in addition to the kernel's own folder, so kernels can `#include "my_pkg/common.cuh"`.
 
 ### Added
 - `xp.CudaKernel`: Wraps a CUDA C kernel (`cupy.RawKernel`, compiled lazily with NVRTC) so it can be called with the same arguments as the host kernel it mirrors, plus `n_threads`. The `extern "C" __global__` signature is parsed once and every call is checked against it: argument count, array dtypes (host arrays raise, they are never copied), and scalars (Python scalars are cast to the declared C types with range checks; lossy or mismatching scalars raise instead of reaching the kernel as silently wrong values). Supports `block_size`, NVRTC `options`, `include_dirs`, `shared_mem`, `stream`, `CudaKernel.from_file()` (`<name>_cuda.cu`), `compile()` and `prepare_args()`; `check_signature=False` skips the checks.
@@ -30,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `xp.local_rank()`: The node-local rank from the MPI launcher's environment (Open MPI, MVAPICH2, Intel MPI/MPICH, PMI, Cray PALS, Slurm, `LOCAL_RANK`), available before `MPI_Init`.
 - `xp.bind_local_device()`: Selects the GPU `local_rank() % device_count()` and creates its context, before `MPI_Init`, for one-rank-per-GPU MPI programs.
 - `xp.synchronize_for_mpi(*arrays)`: Waits for pending work on the current stream before MPI uses device buffers (no-op for host buffers and on the NumPy backend).
+- Header-aware compile cache: `xp.resolve_includes(source, include_dirs, base_dir=None)` lists the `#include "..."` files of a CUDA source recursively (resolved relative to the including file, then in `include_dirs`; cycles, system headers and missing files are ignored), and `xp.include_hash(paths)` is a short digest of their contents. `CudaKernel` exposes `included_headers`, `include_dirs`, `source_dir` (set by `from_file`, or the new `source_dir` keyword) and `compile_options()`.
 
 ## [0.2.0] - 2026-09-28
 

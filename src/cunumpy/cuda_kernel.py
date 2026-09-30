@@ -29,6 +29,7 @@ This module imports CuPy only when a kernel is compiled, so it can be imported
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 from collections.abc import Callable, Hashable, Iterable, Iterator, Sequence
@@ -46,7 +47,9 @@ __all__ = [
     "CudaStruct",
     "CudaStructValue",
     "ctype_of",
+    "include_hash",
     "parse_cuda_signature",
+    "resolve_includes",
 ]
 
 # CUDA limit on the number of threads per block
@@ -188,6 +191,93 @@ def ctype_of(dtype: Any) -> str:
 def _strip_comments(source: str) -> str:
     source = re.sub(r"/\*.*?\*/", " ", source, flags=re.DOTALL)
     return re.sub(r"//[^\n]*", " ", source)
+
+
+# ``#include "name"``: quoted includes are the project's own headers. Angle
+# bracket includes are system headers and are not tracked.
+_QUOTED_INCLUDE = re.compile(r'^[ \t]*#[ \t]*include[ \t]*"([^"\n]+)"', re.MULTILINE)
+
+
+def _quoted_includes(source: str) -> list[str]:
+    return _QUOTED_INCLUDE.findall(_strip_comments(source))
+
+
+def resolve_includes(
+    source: str,
+    include_dirs: Iterable[str | Path] = (),
+    *,
+    base_dir: str | Path | None = None,
+) -> list[Path]:
+    """The header files a CUDA source includes, recursively.
+
+    Scans `source` (comments removed) for ``#include "name"`` and resolves each
+    name like NVRTC does: relative to `base_dir` (the directory of the
+    including file), then in `include_dirs`, in order. Found headers are
+    scanned in turn, relative to their own directory. Includes in angle
+    brackets (system headers) and includes that cannot be found are ignored;
+    NVRTC reports the latter when the kernel is compiled.
+
+    Parameters
+    ----------
+    source : str
+        CUDA C source code.
+    include_dirs : Iterable[str | Path]
+        Directories searched for included files, in order (the ``-I`` options).
+    base_dir : str | Path | None
+        Directory of the file `source` was read from, searched first; None if
+        the source is not from a file.
+
+    Returns
+    -------
+    list[Path]
+        The resolved header files, each once, in order of first inclusion
+        (depth first). Empty if the source has no quoted includes; the file
+        system is not touched in that case.
+    """
+    dirs = tuple(Path(d) for d in include_dirs)
+    found: list[Path] = []
+    seen: set[Path] = set()
+
+    def visit(code: str, directory: Path | None) -> None:
+        for name in _quoted_includes(code):
+            candidates = [directory / name] if directory is not None else []
+            candidates += [d / name for d in dirs]
+            for candidate in candidates:
+                if candidate.is_file():
+                    path = candidate.resolve()
+                    if path not in seen:
+                        seen.add(path)
+                        found.append(candidate)
+                        visit(path.read_text(errors="replace"), path.parent)
+                    break
+
+    visit(source, None if base_dir is None else Path(base_dir))
+    return found
+
+
+def include_hash(paths: Iterable[str | Path]) -> str:
+    """A short hex digest of the contents of `paths`, in order.
+
+    Only the file contents count, not their locations: moving a header does not
+    change the hash, editing it does. Used to make CuPy's kernel cache key
+    depend on the included headers, see :meth:`CudaKernel.compile_options`.
+
+    Parameters
+    ----------
+    paths : Iterable[str | Path]
+        Files to hash, e.g. from :func:`resolve_includes`.
+
+    Returns
+    -------
+    str
+        The first 16 hex digits of the SHA-256 digest.
+    """
+    digest = hashlib.sha256()
+    for path in paths:
+        content = Path(path).read_bytes()
+        digest.update(len(content).to_bytes(8, "little"))
+        digest.update(content)
+    return digest.hexdigest()[:16]
 
 
 def _parse_parameter(
@@ -634,6 +724,9 @@ class CudaKernel:
         Additional NVRTC compiler options, e.g. ``("-std=c++17",)``.
     include_dirs : Sequence[str | Path]
         Directories searched for ``#include`` files (passed as ``-I<dir>``).
+    source_dir : str | Path | None
+        Directory the source was read from (set by :meth:`from_file`), where
+        ``#include "..."`` files are looked up first.
     structs : Iterable[CudaStruct]
         Struct types passed to the kernel by value.
     template_args : Sequence | None
@@ -645,6 +738,14 @@ class CudaKernel:
         Raises ``ValueError`` at construction if the signature cannot be parsed
         (e.g. macros in the parameter list); pass False to launch with the
         arguments as they are, like ``cupy.RawKernel``.
+
+    Notes
+    -----
+    CuPy caches compiled kernels on disk, keyed on the source and the compiler
+    options, but not on the files pulled in by ``#include "..."``. At compile
+    time the headers are resolved (:attr:`included_headers`) and a define with
+    the hash of their contents is added to the options
+    (:meth:`compile_options`), so editing a header recompiles the kernel.
 
     Examples
     --------
@@ -665,6 +766,7 @@ class CudaKernel:
         block_size: int | Sequence[int] = 128,
         options: Sequence[str] = (),
         include_dirs: Sequence[str | Path] = (),
+        source_dir: str | Path | None = None,
         structs: Iterable[CudaStruct] = (),
         template_args: Sequence[Any] | None = None,
         check_signature: bool = True,
@@ -672,7 +774,9 @@ class CudaKernel:
         self._block = self._check_block(_as_shape(block_size, "block_size"))
         self._source = source
         self._name = name
-        self._options = tuple(options) + tuple(f"-I{d}" for d in include_dirs)
+        self._include_dirs = tuple(Path(d) for d in include_dirs)
+        self._source_dir = None if source_dir is None else Path(source_dir)
+        self._options = tuple(options) + tuple(f"-I{d}" for d in self._include_dirs)
         self._structs = tuple(structs)
         self._template_args = None if template_args is None else tuple(template_args)
         self._signature = (
@@ -712,7 +816,7 @@ class CudaKernel:
             File name suffix stripped to get the default kernel name.
         **kwargs
             Passed on to :class:`CudaKernel`. The directory of the file is
-            always added to ``include_dirs``.
+            always added to ``include_dirs`` and is the ``source_dir``.
         """
         path = Path(path)
         if name is None:
@@ -722,6 +826,7 @@ class CudaKernel:
                 )
             name = path.name[: -len(suffix)]
         include_dirs = (path.parent, *kwargs.pop("include_dirs", ()))
+        kwargs.setdefault("source_dir", path.parent)
         return cls(path.read_text(), name, include_dirs=include_dirs, **kwargs)
 
     @staticmethod
@@ -763,8 +868,49 @@ class CudaKernel:
 
     @property
     def options(self) -> tuple[str, ...]:
-        """NVRTC compiler options, including ``-I`` include directories."""
+        """NVRTC compiler options as given, including ``-I`` include directories.
+
+        The header hash define is not part of them; it is added at compile
+        time, see :meth:`compile_options`.
+        """
         return self._options
+
+    @property
+    def include_dirs(self) -> tuple[Path, ...]:
+        """Directories searched for ``#include`` files."""
+        return self._include_dirs
+
+    @property
+    def source_dir(self) -> Path | None:
+        """Directory the source was read from, if known."""
+        return self._source_dir
+
+    @property
+    def included_headers(self) -> tuple[Path, ...]:
+        """The header files the source includes with ``#include "..."``.
+
+        Resolved recursively in `source_dir` and `include_dirs` at every access
+        (see :func:`resolve_includes`), so the result follows the files on
+        disk. Empty if the source has no quoted includes.
+        """
+        return tuple(
+            resolve_includes(
+                self._source, self._include_dirs, base_dir=self._source_dir
+            )
+        )
+
+    def compile_options(self) -> tuple[str, ...]:
+        """The NVRTC options passed to CuPy when the kernel is compiled.
+
+        These are :attr:`options` plus, if the source includes header files,
+        ``-DCUNUMPY_INCLUDE_HASH=0x<hash>`` with the hash of the contents of
+        :attr:`included_headers` (see :func:`include_hash`). CuPy keys its
+        kernel cache on the options, so a changed header means a recompile.
+        """
+        headers = self.included_headers
+        if not headers:
+            return self._options
+        return self._options + (f"-DCUNUMPY_INCLUDE_HASH=0x{include_hash(headers)}",)
 
     @property
     def structs(self) -> tuple[CudaStruct, ...]:
@@ -792,7 +938,8 @@ class CudaKernel:
         Returns
         -------
         cupy.RawKernel
-            The compiled kernel; compiled once and cached (also on disk by CuPy).
+            The compiled kernel; compiled once and cached (also on disk by CuPy,
+            keyed on the source and :meth:`compile_options`).
 
         Raises
         ------
@@ -809,14 +956,15 @@ class CudaKernel:
                 )
             import cupy as cp
 
+            options = self.compile_options()
             if self._template_args is None:
                 self._raw_kernel = cp.RawKernel(
-                    self._source, self._name, options=self._options
+                    self._source, self._name, options=options
                 )
             else:
                 module = cp.RawModule(
                     code=self._source,
-                    options=self._options,
+                    options=options,
                     name_expressions=[self.expression],
                 )
                 self._raw_kernel = module.get_function(self.expression)

@@ -18,7 +18,9 @@ from cunumpy import (
     CudaStruct,
     CudaStructValue,
     ctype_of,
+    include_hash,
     parse_cuda_signature,
+    resolve_includes,
 )
 
 AXPY = r"""
@@ -665,3 +667,129 @@ def test_shared_memory_on_gpu():
     out = cp.zeros(grid)
     kernel(x, out, n, n_threads=n, shared_mem=block * 8)
     assert float(out.sum()) == n * (n - 1) / 2
+
+
+# ---------------------------------------------------------------------------
+# included headers and the compile cache
+# ---------------------------------------------------------------------------
+
+INCLUDING_SOURCE = r"""
+#include <cupy/complex.cuh>   // system header: not tracked
+#include "b.cuh"
+// #include "commented_out.cuh"
+/* #include "in_a_block_comment.cuh" */
+#include "missing.cuh"
+extern "C" __global__ void double_it(double* y, int n) {
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i < n) y[i] = twice(y[i]);
+}
+"""
+
+
+@pytest.fixture
+def header_tree(tmp_path):
+    """a.cu includes b.cuh (next to it), which includes sub/c.cuh."""
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "double_it_cuda.cu").write_text(INCLUDING_SOURCE)
+    (tmp_path / "b.cuh").write_text(
+        '#include "sub/c.cuh"\n__device__ double twice(double v) { return FACTOR * v; }\n'
+    )
+    (tmp_path / "sub" / "c.cuh").write_text("#define FACTOR 2\n")
+    return tmp_path
+
+
+def test_resolve_includes(header_tree):
+    headers = resolve_includes(INCLUDING_SOURCE, base_dir=header_tree)
+    assert headers == [header_tree / "b.cuh", header_tree / "sub" / "c.cuh"]
+
+    # through include_dirs instead of base_dir; a missing include is ignored
+    assert resolve_includes(INCLUDING_SOURCE, [header_tree]) == headers
+    assert resolve_includes(INCLUDING_SOURCE) == []
+    assert resolve_includes(INCLUDING_SOURCE, [header_tree / "nowhere"]) == []
+
+    # base_dir comes before include_dirs, in order
+    other = header_tree / "other"
+    other.mkdir()
+    (other / "b.cuh").write_text("")
+    assert resolve_includes(INCLUDING_SOURCE, [other], base_dir=header_tree) == headers
+    assert resolve_includes(INCLUDING_SOURCE, [other, header_tree]) == [other / "b.cuh"]
+
+    # nothing to resolve: the file system is not searched
+    assert resolve_includes(AXPY, ["/does/not/exist"]) == []
+    assert resolve_includes(ALL_TYPES, base_dir="/does/not/exist") == []
+
+
+def test_resolve_includes_cycle(tmp_path):
+    (tmp_path / "x.cuh").write_text('#include "y.cuh"\n')
+    (tmp_path / "y.cuh").write_text('#include "x.cuh"\n#include "y.cuh"\n')
+    headers = resolve_includes('#include "x.cuh"\n', [tmp_path])
+    assert headers == [tmp_path / "x.cuh", tmp_path / "y.cuh"]
+
+
+def test_include_hash(header_tree):
+    headers = resolve_includes(INCLUDING_SOURCE, base_dir=header_tree)
+    digest = include_hash(headers)
+    assert len(digest) == 16 and int(digest, 16) >= 0
+    assert include_hash(headers) == digest
+    assert include_hash(headers[::-1]) != digest  # order matters
+    assert include_hash([]) != digest
+
+    # the same contents at another location: the same hash
+    moved = header_tree / "moved"
+    moved.mkdir()
+    (moved / "b.cuh").write_text((header_tree / "b.cuh").read_text())
+    (moved / "c.cuh").write_text((header_tree / "sub" / "c.cuh").read_text())
+    assert include_hash([moved / "b.cuh", moved / "c.cuh"]) == digest
+
+    # a changed header: another hash
+    (header_tree / "sub" / "c.cuh").write_text("#define FACTOR 3\n")
+    assert include_hash(headers) != digest
+
+
+def test_compile_options_contain_the_header_hash(header_tree):
+    kernel = CudaKernel.from_file(header_tree / "double_it_cuda.cu")
+    assert kernel.source_dir == header_tree
+    assert kernel.include_dirs == (header_tree,)
+    assert kernel.included_headers == (
+        header_tree / "b.cuh",
+        header_tree / "sub" / "c.cuh",
+    )
+
+    digest = include_hash(kernel.included_headers)
+    define = f"-DCUNUMPY_INCLUDE_HASH=0x{digest}"
+    assert kernel.compile_options() == (f"-I{header_tree}", define)
+    assert kernel.options == (f"-I{header_tree}",)  # the define is not in options
+
+    (header_tree / "sub" / "c.cuh").write_text("#define FACTOR 3\n")
+    assert kernel.compile_options() != (f"-I{header_tree}", define)  # not cached
+
+    # options are kept in front, user options too
+    kernel = CudaKernel(
+        INCLUDING_SOURCE,
+        "double_it",
+        options=["-std=c++17"],
+        include_dirs=[header_tree],
+    )
+    assert kernel.source_dir is None
+    assert kernel.compile_options()[:2] == ("-std=c++17", f"-I{header_tree}")
+    assert kernel.compile_options()[2].startswith("-DCUNUMPY_INCLUDE_HASH=0x")
+
+    # without quoted includes (or without found headers) nothing is added
+    assert CudaKernel(AXPY, "axpy").compile_options() == ()
+    assert CudaKernel(INCLUDING_SOURCE, "double_it").included_headers == ()
+    assert CudaKernel(INCLUDING_SOURCE, "double_it").compile_options() == ()
+
+
+def test_editing_a_header_recompiles_on_gpu(header_tree):
+    _skip_without_cupy()
+    import cupy as cp
+
+    path = header_tree / "double_it_cuda.cu"
+    y = cp.ones(10)
+    CudaKernel.from_file(path)(y, 10, n_threads=10)
+    assert cp.all(y == 2)
+
+    (header_tree / "sub" / "c.cuh").write_text("#define FACTOR 3\n")
+    y = cp.ones(10)
+    CudaKernel.from_file(path)(y, 10, n_threads=10)  # same source and -I options
+    assert cp.all(y == 3)

@@ -253,3 +253,43 @@ def test_compile(kernel_package_factory):
 
     assert catalog.compile_all() == ["scale"]
     assert catalog["scale"].cuda_kernel.is_compiled
+
+
+def test_catalog_include_dirs(kernel_package, kernel_package_factory, tmp_path):
+    """By default the source root of the package and the kernel folder."""
+    kernel = kernel_package["scale"].cuda_kernel
+    scale_dir = tmp_path / "demo_kernel_pkg" / "scale"
+    assert kernel.include_dirs == (scale_dir, tmp_path)
+    assert kernel.source_dir == scale_dir
+    assert kernel.options == (f"-I{scale_dir}", f"-I{tmp_path}")
+
+    extra = tmp_path / "headers"
+    kernel = kernel_package_factory(include_dirs=[extra])["scale"].cuda_kernel
+    assert kernel.include_dirs == (scale_dir, extra)
+    kernel = kernel_package_factory(include_dirs=())["scale"].cuda_kernel
+    assert kernel.include_dirs == (scale_dir,)
+
+
+def test_catalog_kernel_includes_from_the_source_root(tmp_path, monkeypatch):
+    """A kernel of `pkg.kernels` can `#include "pkg/common.cuh"`."""
+    root = tmp_path / "demo_include_pkg"
+    (root / "kernels" / "scale").mkdir(parents=True)
+    (root / "__init__.py").write_text("")
+    (root / "common.cuh").write_text("#define FACTOR 2\n")
+    (root / "kernels" / "__init__.py").write_text("")
+    (root / "kernels" / "scale" / "__init__.py").write_text("")
+    (root / "kernels" / "scale" / "scale_kernels.py").write_text(
+        "def scale(x, a, n):\n    pass\n"
+    )
+    (root / "kernels" / "scale" / "scale_cuda.cu").write_text(
+        '#include "demo_include_pkg/common.cuh"\n' + SCALE_CUDA
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    try:
+        catalog = KernelCatalog.from_package("demo_include_pkg.kernels")
+        kernel = catalog["scale"].cuda_kernel
+        assert kernel.included_headers == (root / "common.cuh",)
+        assert kernel.compile_options()[-1].startswith("-DCUNUMPY_INCLUDE_HASH=0x")
+    finally:
+        for module in [m for m in sys.modules if m.startswith("demo_include_pkg")]:
+            del sys.modules[module]
