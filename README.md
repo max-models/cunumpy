@@ -296,6 +296,32 @@ scale = xp.CudaKernel(
 scale(Vec(data=y, n=y.size), 0.5, n_threads=y.size)
 ```
 
+When the host kernel takes such a group as one object too (e.g. a Pyccel class
+holding NumPy arrays), give the group both forms with `KernelArguments`:
+`__host_args__()` returns the object for the host kernel, `__cuda_args__()`
+the flattened device arguments. `Kernel` and `PyccelKernel` resolve
+`__host_args__()` on the host path and `CudaKernel` flattens `__cuda_args__()`
+on the CUDA path, so the call site is the same on both backends and each form
+can be built lazily on first access (a CPU run never builds device arguments):
+
+```python
+class ParticleArguments(xp.KernelArguments):
+    def __init__(self, markers):
+        self.markers = markers
+        self._host = None
+
+    def __host_args__(self):
+        if self._host is None:
+            self._host = MarkerArguments(self.markers)  # Pyccel class
+        return self._host
+
+    def __cuda_args__(self):
+        return (self.markers, self.markers.shape[0])
+
+
+kernel(particles.kernel_args, dt, n_threads=n)  # host or CUDA kernel
+```
+
 Launches can be 1D to 3D (`n_threads=(nx, ny)`, `block_size=(16, 16)`) or use
 an explicit `grid`, with dynamic shared memory (`shared_mem`) and a `stream`.
 C++ function templates are instantiated with `template_args`, and
