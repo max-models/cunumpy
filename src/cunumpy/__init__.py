@@ -14,9 +14,11 @@ from .cuda_kernel import (
 )
 from .dispatch import Kernel, KernelCatalog
 from .kernel import PyccelKernel
+from .mirror import DeviceMirror
 from .xp import (
     assert_same_backend,
     bind_local_device,
+    cuda_include_dir,
     cupy_available,
     default_float_dtype,
     device_count,
@@ -55,6 +57,7 @@ __all__ = [
     "CudaParameter",
     "CudaStruct",
     "CudaStructValue",
+    "DeviceMirror",
     "Kernel",
     "KernelCatalog",
     "PyccelKernel",
@@ -62,6 +65,7 @@ __all__ = [
     "assert_same_backend",
     "bind_local_device",
     "ctype_of",
+    "cuda_include_dir",
     "cupy_available",
     "cupy_backend",
     "default_float_dtype",

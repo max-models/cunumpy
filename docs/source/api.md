@@ -286,6 +286,14 @@ It is a no-op on NumPy. It does not release blocks still referenced by live
 arrays. CuPy normally caches freed allocations for reuse, so cached memory
 does not necessarily indicate a leak.
 
+### `cuda_include_dir()`
+
+Returns the directory (as `str`) of the CUDA headers shipped with CuNumpy,
+currently `cunumpy/atomic.cuh`. `CudaKernel` adds it to its NVRTC options as
+`-I<dir>` automatically (and only once), so kernel sources can write
+`#include <cunumpy/atomic.cuh>` without configuration. Use it to pass the
+same headers to other compilers.
+
 ### `pin_memory(array)`
 
 Copies a host array to page-locked (pinned) host memory. Pinned memory can
@@ -714,6 +722,67 @@ call it at setup so that the first time step does not pay for compilation
 (after the first run, CuPy loads the kernels from its disk cache).
 `KernelCatalog(kernels)` and `catalog.register(kernel, name=None)` build a
 catalog by hand.
+
+## `DeviceMirror`
+
+```python
+mirror = xp.DeviceMirror(host_array)
+```
+
+Pairs a host NumPy array that another library owns and keeps using on the host
+(for example a stencil vector's `_data` that is exchanged over MPI) with a
+device copy of the same shape and dtype, for accumulation kernels that must
+write into that buffer. `host_array` must be a `numpy.ndarray`; anything else
+raises `TypeError`.
+
+* `device`: the array kernels write into. On the CuPy backend it is a CuPy
+  array, allocated on first access as a copy of the host (the only implicit
+  transfer). On the NumPy backend it is the host array itself, so the same
+  code runs without any copy on the CPU.
+* `to_device()`: copies the host array into the existing device array;
+  `to_host()`: copies the device array into the host array, in place, so the
+  host array keeps its identity and the owning library sees the new values.
+  Both are no-ops on the NumPy backend.
+* `zero()`: zeroes the device array (allocating it empty if needed), or the
+  host array on the NumPy backend.
+* `rebind(host_array)`: follows a reallocation by the owner; the device array
+  is kept if shape and dtype are unchanged. If the host array's shape or dtype
+  changed without a `rebind()`, `device`, `to_device()` and `to_host()` raise
+  `ValueError`.
+* `host`, `shape`, `dtype` properties. `to_device()`, `to_host()`, `zero()`
+  and `rebind()` return the mirror, for chaining.
+
+The transfers are explicit so that one per accumulation is visible and
+bounded:
+
+```python
+mirror = xp.DeviceMirror(vector._data)
+mirror.zero()
+accumulate(markers, mirror.device, n_threads=n_markers)  # a Kernel
+mirror.to_host()  # vector._data now holds the result, same object
+```
+
+### `cunumpy/atomic.cuh`
+
+A CUDA header shipped with the package (found through `cuda_include_dir()`,
+which `CudaKernel` adds automatically) for the many-threads-to-one-cell writes
+of accumulation kernels:
+
+```c
+#include <cunumpy/atomic.cuh>
+
+double cunumpy_atomic_add(double* p, double v);   // *p += v, returns old *p
+float  cunumpy_atomic_add(float* p, float v);
+double cunumpy_atomic_add_2d(double* data, long long n1,
+                             long long i, long long j, double v);
+double cunumpy_atomic_add_3d(double* data, long long n1, long long n2,
+                             long long i, long long j, long long k, double v);
+```
+
+The indexed helpers (also for `float`) address C-contiguous arrays of shape
+`(n0, n1)` and `(n0, n1, n2)`. They wrap `atomicAdd`, a hardware instruction
+for `double` from compute capability 6.0 (sm_60) on; older devices use a
+compare-and-swap loop.
 
 ## Version
 

@@ -38,6 +38,8 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
+from .xp import cuda_include_dir
+
 __all__ = [
     "CudaArguments",
     "CudaKernel",
@@ -634,6 +636,8 @@ class CudaKernel:
         Additional NVRTC compiler options, e.g. ``("-std=c++17",)``.
     include_dirs : Sequence[str | Path]
         Directories searched for ``#include`` files (passed as ``-I<dir>``).
+        cunumpy's own header directory (`cuda_include_dir()`) is always
+        added, so sources can ``#include <cunumpy/atomic.cuh>``.
     structs : Iterable[CudaStruct]
         Struct types passed to the kernel by value.
     template_args : Sequence | None
@@ -673,6 +677,10 @@ class CudaKernel:
         self._source = source
         self._name = name
         self._options = tuple(options) + tuple(f"-I{d}" for d in include_dirs)
+        # cunumpy's own headers (<cunumpy/atomic.cuh>, ...) are always found
+        cunumpy_include = f"-I{cuda_include_dir()}"
+        if cunumpy_include not in self._options:
+            self._options += (cunumpy_include,)
         self._structs = tuple(structs)
         self._template_args = None if template_args is None else tuple(template_args)
         self._signature = (

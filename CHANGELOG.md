@@ -30,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `xp.local_rank()`: The node-local rank from the MPI launcher's environment (Open MPI, MVAPICH2, Intel MPI/MPICH, PMI, Cray PALS, Slurm, `LOCAL_RANK`), available before `MPI_Init`.
 - `xp.bind_local_device()`: Selects the GPU `local_rank() % device_count()` and creates its context, before `MPI_Init`, for one-rank-per-GPU MPI programs.
 - `xp.synchronize_for_mpi(*arrays)`: Waits for pending work on the current stream before MPI uses device buffers (no-op for host buffers and on the NumPy backend).
+- `xp.DeviceMirror(host_array)`: Pairs a host NumPy array owned by another library (e.g. a stencil vector's `_data`) with a lazily allocated device copy. `device` is the CuPy array kernels write into on the CuPy backend, and the host array itself on the NumPy backend, so accumulation code is written once without copies on the CPU. `to_device()` and `to_host()` copy explicitly and in place (the host array keeps its identity; no-ops on NumPy), `zero()` clears the buffer, and `rebind()` follows a reallocation by the owner; a host array whose shape or dtype changed raises `ValueError`. Non-NumPy inputs raise `TypeError`.
+- `cunumpy/atomic.cuh`: CUDA header shipped with the package, with `cunumpy_atomic_add(double*|float*, value)` (`atomicAdd`, with a compare-and-swap fallback for `double` before sm_60) and the indexed `cunumpy_atomic_add_2d()` / `cunumpy_atomic_add_3d()` for C-contiguous arrays, for many-threads-to-one-cell accumulation.
+- `xp.cuda_include_dir()`: The directory of the shipped CUDA headers; `CudaKernel` adds it to its NVRTC options automatically (once), so sources can `#include <cunumpy/atomic.cuh>`.
 
 ## [0.2.0] - 2026-09-28
 
