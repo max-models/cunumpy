@@ -172,6 +172,34 @@ assert xp.get_array_backend(normalized) == xp.get_backend()
 Each conversion returns a suitable array; it does not change the active
 backend or mutate the source.
 
+### `as_device_array(value, dtype=None, ndim=None, *, name=None)`
+
+The "reference or copy once" rule for building CUDA argument objects
+(`CudaArguments` subclasses, `CudaStruct` values). Call it once when the
+argument object is built, never per kernel call:
+
+* a CuPy array that already has `dtype` (any dtype if `dtype` is `None`) and
+  is C-contiguous is returned unchanged, the same object without a copy, so
+  kernels write into the caller's array;
+* anything else becomes one C-contiguous device copy,
+  `cupy.ascontiguousarray(cupy.asarray(value, dtype))`: tuples and lists
+  (`degree = (3, 3, 3)`), host NumPy arrays (one explicit transfer at build
+  time), device arrays of another dtype, and non-contiguous views.
+
+The result passes the pointer checks of `CudaKernel` and `CudaStruct`. On the
+NumPy backend it raises `RuntimeError`: device arguments are only built when
+running on CuPy, and host data is never copied to the device implicitly. If
+`ndim` is given and the result has another number of dimensions, it raises
+`ValueError`; `name` is the argument name used in error messages.
+
+```python
+class DeviceParticles(xp.CudaArguments):
+    def __init__(self, markers, degree):
+        self.markers = xp.as_device_array(markers, np.float64, ndim=2, name="markers")
+        self.degree = xp.as_device_array(degree, np.int32, ndim=1, name="degree")
+        super().__init__(self.markers, self.degree, self.markers.shape[0])
+```
+
 ## Random numbers and dtype
 
 ### `get_rng(seed=None)`
@@ -500,9 +528,11 @@ The arguments are prepared by `kernel.prepare_args(*args)`:
 * arguments with a `__cuda_args__()` method are replaced by the values it
   returns (see `CudaArguments` and `CudaStruct` below);
 * with a checked signature, the number of arguments must match, and
-  * pointer parameters take CuPy arrays whose dtype matches the pointed-to type
-    (any dtype for `void*`); host arrays raise `TypeError`, they are never
-    copied to the device;
+  * pointer parameters take C-contiguous CuPy arrays whose dtype matches the
+    pointed-to type (any dtype for `void*`); host arrays raise `TypeError`,
+    they are never copied to the device, and so do non-contiguous views such
+    as `a[:, 0:3]`, which the kernel would read as a flat buffer (build the
+    arrays with `as_device_array()` or `cupy.ascontiguousarray()`);
   * struct parameters take values of that `CudaStruct`;
   * Python scalars are cast to the declared type: `int` into integer (with a
     range check, `OverflowError`), floating-point and complex parameters,
@@ -597,8 +627,8 @@ fields and pointers to the scalar types above (or `void*`) are supported.
 * `check_source(source)`: raises `ValueError` if `source` defines the struct
   with other fields; a kernel created with `structs=[...]` does this check.
 * Calling the struct with keyword arguments, one per field, packs the values:
-  pointer fields take CuPy arrays of the declared dtype (never copied), scalar
-  fields are checked and cast like scalar kernel arguments.
+  pointer fields take C-contiguous CuPy arrays of the declared dtype (never
+  copied), scalar fields are checked and cast like scalar kernel arguments.
 
 The result is a `CudaStructValue`: it keeps references to the arrays it points
 to (the packed struct only holds their addresses, so keep the value alive while

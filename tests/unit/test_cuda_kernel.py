@@ -17,6 +17,7 @@ from cunumpy import (
     CudaKernelVariants,
     CudaStruct,
     CudaStructValue,
+    as_device_array,
     ctype_of,
     parse_cuda_signature,
 )
@@ -47,11 +48,19 @@ void all_types(bool b, char c, unsigned char uc, short s, int i, unsigned u,
 
 
 class FakeDeviceArray:
-    """Enough of a CuPy array for the argument checks: dtype, interface, address."""
+    """Enough of a CuPy array for the argument checks: dtype, interface, address.
 
-    def __init__(self, dtype, ptr=0x1000):
+    `flags` (e.g. ``SimpleNamespace(c_contiguous=False)``) is only set when
+    given, so the default fake has no `flags` like other minimal stand-ins.
+    """
+
+    def __init__(self, dtype, ptr=0x1000, shape=(3,), flags=None):
         self.dtype = np.dtype(dtype)
         self.data = SimpleNamespace(ptr=ptr)
+        self.shape = tuple(shape)
+        self.ndim = len(self.shape)
+        if flags is not None:
+            self.flags = flags
 
     @property
     def __cuda_array_interface__(self):
@@ -199,6 +208,29 @@ def test_array_checks():
 
     void_kernel = CudaKernel("__global__ void f(void* p) {}", "f")
     void_kernel.prepare_args(FakeDeviceArray(np.int8))  # any dtype
+
+
+def test_non_contiguous_arrays_are_rejected():
+    kernel = CudaKernel(AXPY, "axpy")
+    x = FakeDeviceArray(np.float64)
+    view = FakeDeviceArray(
+        np.float64, shape=(3, 2), flags=SimpleNamespace(c_contiguous=False)
+    )
+    with pytest.raises(
+        TypeError, match=r"argument 2 \(double\* y\) must be C-contiguous"
+    ):
+        kernel.prepare_args(1.0, x, view, 3)
+    # the message says why, and how to fix it
+    with pytest.raises(TypeError, match="read as a flat buffer.*ascontiguousarray"):
+        kernel.prepare_args(1.0, view, x, 3)
+    # void* pointers are checked too
+    void_kernel = CudaKernel("__global__ void f(void* p) {}", "f")
+    with pytest.raises(TypeError, match="must be C-contiguous"):
+        void_kernel.prepare_args(view)
+
+    contiguous = FakeDeviceArray(np.float64, flags=SimpleNamespace(c_contiguous=True))
+    assert kernel.prepare_args(1.0, contiguous, x, 3)[1] is contiguous
+    assert kernel.prepare_args(1.0, x, x, 3)[2] is x  # no flags: passes
 
 
 def test_argument_objects_are_flattened():
@@ -427,6 +459,26 @@ def test_struct_values():
             ids=FakeDeviceArray(np.int64),
             weight=0.5,
         )
+
+
+def test_struct_pointer_fields_must_be_contiguous():
+    values = dict(
+        n=3,
+        charge=2.0,
+        alive=FakeDeviceArray(np.bool_),
+        ids=FakeDeviceArray(np.int64),
+        weight=0.5,
+    )
+    view = FakeDeviceArray(np.float64, flags=SimpleNamespace(c_contiguous=False))
+    with pytest.raises(
+        TypeError, match=r"argument 0 \(double\* x\) must be C-contiguous"
+    ):
+        PARTICLES(x=view, **values)
+
+    x = FakeDeviceArray(np.float64, flags=SimpleNamespace(c_contiguous=True))
+    assert PARTICLES(x=x, **values)["x"] is x
+    x = FakeDeviceArray(np.float64)  # no flags: passes
+    assert PARTICLES(x=x, **values)["x"] is x
 
 
 def test_struct_parameters():
@@ -665,3 +717,72 @@ def test_shared_memory_on_gpu():
     out = cp.zeros(grid)
     kernel(x, out, n, n_threads=n, shared_mem=block * 8)
     assert float(out.sum()) == n * (n - 1) / 2
+
+
+# ---------------------------------------------------------------------------
+# as_device_array: reference or copy once
+# ---------------------------------------------------------------------------
+
+
+def test_as_device_array_raises_on_numpy_backend():
+    with xp.use_backend("numpy"):
+        with pytest.raises(RuntimeError, match="active backend is 'numpy'"):
+            as_device_array(np.zeros(3), np.float64)
+        with pytest.raises(RuntimeError, match="device argument 'degree'"):
+            as_device_array((3, 3, 3), np.int32, name="degree")
+        with pytest.raises(RuntimeError, match="never copied to the device"):
+            as_device_array([1.0, 2.0])
+
+
+@pytest.mark.skipif(not xp.cupy_available(), reason="CuPy not available")
+def test_as_device_array_references_matching_arrays():
+    import cupy as cp
+
+    with xp.use_backend("cupy"):
+        x = cp.arange(6, dtype=cp.float64).reshape(2, 3)
+        assert as_device_array(x, np.float64) is x
+        assert as_device_array(x) is x  # any dtype
+        assert as_device_array(x, "float64", ndim=2, name="x") is x
+
+
+@pytest.mark.skipif(not xp.cupy_available(), reason="CuPy not available")
+def test_as_device_array_copies_once():
+    import cupy as cp
+
+    with xp.use_backend("cupy"):
+        degree = as_device_array((3, 3, 3), np.int32, ndim=1, name="degree")
+        assert isinstance(degree, cp.ndarray) and degree.dtype == np.int32
+        assert degree.flags.c_contiguous and degree.tolist() == [3, 3, 3]
+
+        host = np.arange(4, dtype=np.float64)
+        device = as_device_array(host, np.float64)
+        assert isinstance(device, cp.ndarray) and device.dtype == np.float64
+        assert np.array_equal(device.get(), host)
+
+        x = cp.arange(6, dtype=cp.float32)
+        y = as_device_array(x, np.float64)  # wrong dtype: a copy
+        assert y is not x and y.dtype == np.float64 and cp.allclose(y, x)
+
+        a = cp.arange(12, dtype=cp.float64).reshape(3, 4)
+        view = a[:, 0:3]
+        assert not view.flags.c_contiguous
+        b = as_device_array(view, np.float64)  # non-contiguous: a copy
+        assert b is not view and b.flags.c_contiguous
+        assert cp.array_equal(b, view)
+        # the copy passes the kernel checks, the view does not
+        kernel = CudaKernel(AXPY, "axpy")
+        kernel.prepare_args(1.0, b, b, b.size)
+        with pytest.raises(TypeError, match="must be C-contiguous"):
+            kernel.prepare_args(1.0, view, b, b.size)
+
+
+@pytest.mark.skipif(not xp.cupy_available(), reason="CuPy not available")
+def test_as_device_array_checks_ndim():
+    import cupy as cp
+
+    with xp.use_backend("cupy"):
+        x = cp.zeros((2, 3))
+        with pytest.raises(ValueError, match=r"'x' must have 1 dimension\(s\), got 2"):
+            as_device_array(x, np.float64, ndim=1, name="x")
+        with pytest.raises(ValueError, match="device argument must have 2"):
+            as_device_array((1, 2, 3), np.int32, ndim=2)

@@ -15,6 +15,7 @@ from .cuda_kernel import (
 from .dispatch import Kernel, KernelCatalog
 from .kernel import PyccelKernel
 from .xp import (
+    as_device_array,
     assert_same_backend,
     bind_local_device,
     cupy_available,
@@ -59,6 +60,7 @@ __all__ = [
     "KernelCatalog",
     "PyccelKernel",
     "__version__",
+    "as_device_array",
     "assert_same_backend",
     "bind_local_device",
     "ctype_of",

@@ -234,10 +234,11 @@ for `object_modules`, `is_array`, aliasing, and output declarations.
 `CudaKernel` wraps a CUDA C kernel (compiled with NVRTC through
 `cupy.RawKernel`) so that it is called with the same arguments as the host
 kernel it mirrors, plus the number of threads. Arrays are never copied: they
-must be CuPy arrays. The `extern "C" __global__` signature is parsed once and
-every call is checked against it: Python scalars are cast to the declared C
-types, and a wrong argument count, an array of the wrong dtype, or a scalar
-that does not fit its type raises instead of silently producing wrong values.
+must be C-contiguous CuPy arrays. The `extern "C" __global__` signature is
+parsed once and every call is checked against it: Python scalars are cast to
+the declared C types, and a wrong argument count, an array of the wrong dtype
+or a non-contiguous view, or a scalar that does not fit its type raises instead
+of silently producing wrong values.
 
 `Kernel` pairs a host kernel with its CUDA kernel and calls the one matching
 the active backend, so kernels can be ported to CUDA one at a time:
@@ -295,6 +296,14 @@ scale = xp.CudaKernel(
 )
 scale(Vec(data=y, n=y.size), 0.5, n_threads=y.size)
 ```
+
+When building such argument objects, `xp.as_device_array(value, dtype,
+ndim=None)` applies the "reference or copy once" rule: a CuPy array that
+already has the dtype and is C-contiguous is returned as it is, anything else
+(a tuple such as `degree = (3, 3, 3)`, a host array, another dtype, a
+non-contiguous view) becomes one device copy. Call it once when the object is
+built, not per kernel call; on the NumPy backend it raises, so host data is
+never copied to the device implicitly.
 
 Launches can be 1D to 3D (`n_threads=(nx, ny)`, `block_size=(16, 16)`) or use
 an explicit `grid`, with dynamic shared memory (`shared_mem`) and a `stream`.
