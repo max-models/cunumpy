@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Python 3.14 is supported.
+- `KernelCatalog.compile_all(jobs=1)` and `CudaKernelVariants.compile_all(keys, jobs=1)`: With `jobs > 1` the CUDA kernels are compiled in threads (NVRTC releases the GIL); `jobs=None` uses the number of CPUs. All kernels are compiled even if one fails, and the first error is raised afterwards.
 - CI now tests every supported Python version (3.10, 3.11, 3.12, 3.13 and 3.14) instead of 3.8/3.10/3.13.
 
 ### Added
@@ -29,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Kernel(..., host_options=...)` and `KernelCatalog.from_package(..., host_options=...)`: `PyccelKernel` options (e.g. `object_modules`, `outputs`) for the host kernels, for all kernels or per kernel name; needed for the fallback to find device arrays inside application objects.
 - `xp.local_rank()`: The node-local rank from the MPI launcher's environment (Open MPI, MVAPICH2, Intel MPI/MPICH, PMI, Cray PALS, Slurm, `LOCAL_RANK`), available before `MPI_Init`.
 - `xp.bind_local_device()`: Selects the GPU `local_rank() % device_count()` and creates its context, before `MPI_Init`, for one-rank-per-GPU MPI programs.
+- `KernelCatalog.summary()` (also `str(catalog)`) and `KernelCatalog.with_cuda`: One line on the porting status, `"CUDA kernels: 3 of 60 (missing: a, b, c)"` (at most 10 missing names, then `...`), and the names of the ported kernels, mirroring `without_cuda`.
+- `CudaKernel.all_from_file(path, **kwargs)` and `xp.cuda_kernel_names(source)`: Load every `__global__` function of a file as a `CudaKernel` (a `dict` by name, sharing the source so CuPy compiles the file once), and list the `__global__` functions of a source string. `KernelCatalog.from_package` still uses only the function `<name>` of `<name>_cuda.cu`; other kernels in the file are ignored by the catalog.
 - `xp.synchronize_for_mpi(*arrays)`: Waits for pending work on the current stream before MPI uses device buffers (no-op for host buffers and on the NumPy backend).
 
 ## [0.2.0] - 2026-09-28

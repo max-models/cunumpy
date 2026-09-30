@@ -10,6 +10,7 @@ from .cuda_kernel import (
     CudaStruct,
     CudaStructValue,
     ctype_of,
+    cuda_kernel_names,
     parse_cuda_signature,
 )
 from .dispatch import Kernel, KernelCatalog
@@ -62,6 +63,7 @@ __all__ = [
     "assert_same_backend",
     "bind_local_device",
     "ctype_of",
+    "cuda_kernel_names",
     "cupy_available",
     "cupy_backend",
     "default_float_dtype",
