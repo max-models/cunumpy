@@ -13,8 +13,9 @@ from .cuda_kernel import (
     parse_cuda_signature,
 )
 from .dispatch import Kernel, KernelCatalog
-from .kernel import PyccelKernel
+from .kernel import KernelArguments, PyccelKernel, resolve_host_args
 from .xp import (
+    as_device_array,
     assert_same_backend,
     bind_local_device,
     cupy_available,
@@ -56,9 +57,11 @@ __all__ = [
     "CudaStruct",
     "CudaStructValue",
     "Kernel",
+    "KernelArguments",
     "KernelCatalog",
     "PyccelKernel",
     "__version__",
+    "as_device_array",
     "assert_same_backend",
     "bind_local_device",
     "ctype_of",
@@ -78,6 +81,7 @@ __all__ = [
     "numpy_backend",
     "parse_cuda_signature",
     "pin_memory",
+    "resolve_host_args",
     "same_backend",
     "set_backend",
     "set_device",

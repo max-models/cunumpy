@@ -15,7 +15,8 @@ arguments as the host kernel it mirrors:
   range, a NumPy scalar that would lose precision) raises instead of reaching
   the kernel as a silently wrong value, which is what ``cupy.RawKernel`` would
   do;
-* arrays are never converted or copied: they must already be CuPy arrays;
+* arrays are never converted or copied: they must already be C-contiguous
+  CuPy arrays (build them once with :func:`cunumpy.as_device_array`);
 * C++ function templates are instantiated with ``template_args``, and generated
   kernels (one source per variant) are compiled once per variant by
   :class:`CudaKernelVariants`.
@@ -335,7 +336,7 @@ def _describe(param: CudaParameter, index: int) -> str:
 
 
 def _pointer_checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
-    """Checker for a pointer parameter: a device array with the right dtype."""
+    """Checker for a pointer parameter: a C-contiguous device array of the dtype."""
     dtype = param.dtype
 
     def check(value: Any) -> Any:
@@ -350,6 +351,15 @@ def _pointer_checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
         if dtype is not None and value.dtype != dtype:
             raise TypeError(
                 f"{_describe(param, index)} must have dtype {dtype}, got {value.dtype}"
+            )
+        # the kernel reads the pointer as a flat buffer: a non-contiguous view
+        # (e.g. a[:, 0:3]) would give silently wrong results
+        flags = getattr(value, "flags", None)
+        if flags is not None and not flags.c_contiguous:
+            raise TypeError(
+                f"{_describe(param, index)} must be C-contiguous: a non-contiguous "
+                f"view (e.g. a[:, 0:3]) would be read as a flat buffer; use "
+                f"cupy.ascontiguousarray or cunumpy.as_device_array"
             )
         return value
 
@@ -554,8 +564,9 @@ class CudaStruct:
     def __call__(self, **values: Any) -> CudaStructValue:
         """Pack values into the struct.
 
-        Pointer fields take CuPy arrays of the declared dtype (never copied),
-        scalar fields are checked and cast like scalar kernel arguments.
+        Pointer fields take C-contiguous CuPy arrays of the declared dtype
+        (never copied), scalar fields are checked and cast like scalar kernel
+        arguments.
 
         Raises
         ------
@@ -827,15 +838,15 @@ class CudaKernel:
 
         Argument objects with ``__cuda_args__()`` (including struct values) are
         flattened. If the signature is checked, the number of arguments, the
-        dtype of every array, every struct and every scalar are checked, and
-        Python scalars are cast to the declared C types.
+        dtype and C-contiguity of every array, every struct and every scalar
+        are checked, and Python scalars are cast to the declared C types.
 
         Raises
         ------
         TypeError
-            Wrong number of arguments, a host array or an array of the wrong
-            dtype for a pointer parameter, a value of the wrong struct, or a
-            scalar of an incompatible type.
+            Wrong number of arguments, a host array, an array of the wrong
+            dtype or a non-contiguous array for a pointer parameter, a value of
+            the wrong struct, or a scalar of an incompatible type.
         OverflowError
             A Python integer out of range of the declared integer type.
         """
