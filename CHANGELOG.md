@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `xp.local_rank()`: The node-local rank from the MPI launcher's environment (Open MPI, MVAPICH2, Intel MPI/MPICH, PMI, Cray PALS, Slurm, `LOCAL_RANK`), available before `MPI_Init`.
 - `xp.bind_local_device()`: Selects the GPU `local_rank() % device_count()` and creates its context, before `MPI_Init`, for one-rank-per-GPU MPI programs.
 - `xp.synchronize_for_mpi(*arrays)`: Waits for pending work on the current stream before MPI uses device buffers (no-op for host buffers and on the NumPy backend).
+- `xp.KernelArguments` and `xp.resolve_host_args(args, kwargs=None)`: Argument objects with a host and a device form. An object whose type defines `__host_args__()` is replaced by its result (the object the host kernel receives, e.g. a Pyccel class of NumPy arrays) by `Kernel` on the host path and by `PyccelKernel` (so the `missing_cuda="fallback"` path works too); on the CuPy backend `CudaKernel` flattens the same object via `__cuda_args__()`. Owners can expose one `kernel_args` property that builds each form lazily, so call sites never branch on the backend and CPU runs never build device arguments.
 
 ## [0.2.0] - 2026-09-28
 

@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from .cuda_kernel import CudaKernel
-from .kernel import PyccelKernel
+from .kernel import PyccelKernel, resolve_host_args
 from .xp import get_backend
 
 __all__ = ["Kernel", "KernelCatalog"]
@@ -66,6 +66,10 @@ class Kernel:
     Both kernels take the same arguments, except that the CUDA kernel gets the
     launch shape (``n_threads`` or ``grid``) and argument objects in their CUDA
     form (see :class:`~cunumpy.CudaArguments` and :class:`~cunumpy.CudaStruct`).
+    An argument object implementing :class:`~cunumpy.KernelArguments` is
+    replaced by its ``__host_args__()`` on the host path and flattened via
+    ``__cuda_args__()`` on the CUDA path, so the call site is the same on both
+    backends.
     """
 
     def __init__(
@@ -199,7 +203,9 @@ class Kernel:
         Parameters
         ----------
         *args
-            Kernel arguments.
+            Kernel arguments. Objects implementing
+            :class:`~cunumpy.KernelArguments` are resolved per backend (see
+            :func:`~cunumpy.resolve_host_args`).
         n_threads, grid, block, shared_mem, stream
             Launch configuration of the CUDA kernel, see
             :meth:`CudaKernel.__call__ <cunumpy.CudaKernel.__call__>`;
@@ -208,6 +214,7 @@ class Kernel:
         """
         kernel = self.get_kernel()
         if kernel is self._host_kernel:
+            args, _ = resolve_host_args(args)
             return kernel(*args)
         if n_threads is None and grid is None:
             raise ValueError(
