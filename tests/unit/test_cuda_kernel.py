@@ -17,8 +17,12 @@ from cunumpy import (
     CudaKernelVariants,
     CudaStruct,
     CudaStructValue,
+    as_device_array,
     ctype_of,
+    cuda_kernel_names,
+    include_hash,
     parse_cuda_signature,
+    resolve_includes,
 )
 
 AXPY = r"""
@@ -47,11 +51,19 @@ void all_types(bool b, char c, unsigned char uc, short s, int i, unsigned u,
 
 
 class FakeDeviceArray:
-    """Enough of a CuPy array for the argument checks: dtype, interface, address."""
+    """Enough of a CuPy array for the argument checks: dtype, interface, address.
 
-    def __init__(self, dtype, ptr=0x1000):
+    `flags` (e.g. ``SimpleNamespace(c_contiguous=False)``) is only set when
+    given, so the default fake has no `flags` like other minimal stand-ins.
+    """
+
+    def __init__(self, dtype, ptr=0x1000, shape=(3,), flags=None):
         self.dtype = np.dtype(dtype)
         self.data = SimpleNamespace(ptr=ptr)
+        self.shape = tuple(shape)
+        self.ndim = len(self.shape)
+        if flags is not None:
+            self.flags = flags
 
     @property
     def __cuda_array_interface__(self):
@@ -201,6 +213,29 @@ def test_array_checks():
     void_kernel.prepare_args(FakeDeviceArray(np.int8))  # any dtype
 
 
+def test_non_contiguous_arrays_are_rejected():
+    kernel = CudaKernel(AXPY, "axpy")
+    x = FakeDeviceArray(np.float64)
+    view = FakeDeviceArray(
+        np.float64, shape=(3, 2), flags=SimpleNamespace(c_contiguous=False)
+    )
+    with pytest.raises(
+        TypeError, match=r"argument 2 \(double\* y\) must be C-contiguous"
+    ):
+        kernel.prepare_args(1.0, x, view, 3)
+    # the message says why, and how to fix it
+    with pytest.raises(TypeError, match="read as a flat buffer.*ascontiguousarray"):
+        kernel.prepare_args(1.0, view, x, 3)
+    # void* pointers are checked too
+    void_kernel = CudaKernel("__global__ void f(void* p) {}", "f")
+    with pytest.raises(TypeError, match="must be C-contiguous"):
+        void_kernel.prepare_args(view)
+
+    contiguous = FakeDeviceArray(np.float64, flags=SimpleNamespace(c_contiguous=True))
+    assert kernel.prepare_args(1.0, contiguous, x, 3)[1] is contiguous
+    assert kernel.prepare_args(1.0, x, x, 3)[2] is x  # no flags: passes
+
+
 def test_argument_objects_are_flattened():
     class Vectors(CudaArguments):
         def __init__(self, x, y, n):
@@ -236,6 +271,63 @@ def test_from_file(tmp_path):
     with pytest.raises(ValueError, match="does not end with"):
         CudaKernel.from_file(other)
     assert CudaKernel.from_file(other, "axpy").name == "axpy"
+
+
+TWO_KERNELS = r"""
+// A comment mentioning __global__ void not_a_kernel(int n) is ignored,
+/* and so is a block comment:
+   extern "C" __global__ void also_not(double* x) {}
+*/
+extern "C" __global__ void scale(double* x, double a, int n) {
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i < n) x[i] *= a;
+}
+
+extern "C" __global__
+void shift(double* x, double a, int n)
+{
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i < n) x[i] += a;
+}
+"""
+
+
+def test_cuda_kernel_names():
+    assert cuda_kernel_names(TWO_KERNELS) == ["scale", "shift"]
+    assert cuda_kernel_names(AXPY) == ["axpy"]
+    assert cuda_kernel_names(ALL_TYPES) == ["other", "all_types"]
+    assert cuda_kernel_names("__device__ double f(double x) { return x; }") == []
+    # templates and forward declarations
+    source = "template <typename T> __global__ void gen(T* x);\n" + TWO_KERNELS
+    assert cuda_kernel_names(source + source) == ["gen", "scale", "shift"]
+
+
+def test_all_from_file(tmp_path):
+    path = tmp_path / "pair_cuda.cu"
+    path.write_text(TWO_KERNELS)
+    kernels = CudaKernel.all_from_file(path, block_size=64)
+    assert list(kernels) == ["scale", "shift"]
+    for name, kernel in kernels.items():
+        assert kernel.name == name and kernel.block_size == 64
+        assert kernel.source == TWO_KERNELS and f"-I{tmp_path}" in kernel.options
+        assert [p.name for p in kernel.signature] == ["x", "a", "n"]
+
+    (tmp_path / "empty.cu").write_text("__device__ int f() { return 1; }")
+    with pytest.raises(ValueError, match="no __global__ function"):
+        CudaKernel.all_from_file(tmp_path / "empty.cu")
+
+
+def test_all_from_file_on_gpu(tmp_path):
+    _skip_without_cupy()
+    import cupy as cp
+
+    path = tmp_path / "pair_cuda.cu"
+    path.write_text(TWO_KERNELS)
+    kernels = CudaKernel.all_from_file(path)
+    x = cp.ones(10)
+    kernels["scale"](x, 3.0, 10, n_threads=10)
+    kernels["shift"](x, 1.0, 10, n_threads=10)
+    assert cp.all(x == 4.0)
 
 
 def test_launch_argument_validation():
@@ -429,6 +521,26 @@ def test_struct_values():
         )
 
 
+def test_struct_pointer_fields_must_be_contiguous():
+    values = dict(
+        n=3,
+        charge=2.0,
+        alive=FakeDeviceArray(np.bool_),
+        ids=FakeDeviceArray(np.int64),
+        weight=0.5,
+    )
+    view = FakeDeviceArray(np.float64, flags=SimpleNamespace(c_contiguous=False))
+    with pytest.raises(
+        TypeError, match=r"argument 0 \(double\* x\) must be C-contiguous"
+    ):
+        PARTICLES(x=view, **values)
+
+    x = FakeDeviceArray(np.float64, flags=SimpleNamespace(c_contiguous=True))
+    assert PARTICLES(x=x, **values)["x"] is x
+    x = FakeDeviceArray(np.float64)  # no flags: passes
+    assert PARTICLES(x=x, **values)["x"] is x
+
+
 def test_struct_parameters():
     kernel = CudaKernel(PUSH_SOURCE, "push", structs=[PARTICLES])
     param = kernel.signature[0]
@@ -567,6 +679,19 @@ def test_variants():
         CudaKernelVariants(lambda n: n).get(1)
 
 
+def test_variants_compile_all_in_threads():
+    compiled = []
+
+    def factory(ndim):
+        kernel = CudaKernel(_generated_source(ndim, "double"), "fill")
+        kernel.compile = lambda: compiled.append(ndim)
+        return kernel
+
+    variants = CudaKernelVariants(factory)
+    variants.compile_all([(1,), (2,), (3,)], jobs=2)
+    assert sorted(compiled) == [1, 2, 3]
+
+
 def test_variants_on_gpu():
     _skip_without_cupy()
     import cupy as cp
@@ -576,7 +701,7 @@ def test_variants_on_gpu():
             _generated_source(ndim, ctype_of(dtype)), "fill", block_size=1
         )
     )
-    variants.compile_all([(2, np.float64), (1, np.int32)])
+    variants.compile_all([(2, np.float64), (1, np.int32)], jobs=2)
     assert all(variants.get(*key).is_compiled for key in variants)
 
     out = cp.zeros(1)
@@ -665,3 +790,401 @@ def test_shared_memory_on_gpu():
     out = cp.zeros(grid)
     kernel(x, out, n, n_threads=n, shared_mem=block * 8)
     assert float(out.sum()) == n * (n - 1) / 2
+
+
+# ---------------------------------------------------------------------------
+# debug mode
+# ---------------------------------------------------------------------------
+
+
+def _run_python(code, env=None):
+    """Run `code` in a fresh interpreter that imports this cunumpy.
+
+    Returns its stdout and stderr."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    environment = {**os.environ, **(env or {})}
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [str(Path(xp.__file__).parents[1]), environment.get("PYTHONPATH", "")]
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, env=environment
+    )
+    return result.stdout, result.stderr
+
+
+@pytest.fixture
+def debug_off():
+    """Global debug mode off during the test, restored afterwards."""
+    previous = xp.get_cuda_debug()
+    xp.set_cuda_debug(False)
+    yield
+    xp.set_cuda_debug(previous)
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        (None, False),
+        ("", False),
+        ("0", False),
+        ("false", False),
+        ("off", False),
+        ("no", False),
+        ("2", False),
+        ("1", True),
+        ("true", True),
+        ("True", True),
+        ("YES", True),
+        ("on", True),
+        (" on ", True),
+    ],
+)
+def test_debug_from_env(value, expected):
+    from cunumpy.xp import _debug_from_env
+
+    assert _debug_from_env(value) is expected
+
+
+@pytest.mark.parametrize(
+    "value, expected", [("1", "True"), ("on", "True"), ("0", "False"), (None, "False")]
+)
+def test_debug_from_env_at_import(monkeypatch, value, expected):
+    """The environment variable is read when cunumpy.xp is imported."""
+    if value is None:
+        monkeypatch.delenv("CUNUMPY_CUDA_DEBUG", raising=False)
+    else:
+        monkeypatch.setenv("CUNUMPY_CUDA_DEBUG", value)
+    code = "import cunumpy as xp; print(xp.get_cuda_debug())"
+    stdout, _ = _run_python(code)
+    assert stdout.strip() == expected
+
+
+def test_set_and_get_cuda_debug(debug_off):
+    assert xp.get_cuda_debug() is False
+    xp.set_cuda_debug(True)
+    assert xp.get_cuda_debug() is True
+    xp.set_cuda_debug(0)
+    assert xp.get_cuda_debug() is False
+
+
+def test_cuda_debug_context_restores(debug_off):
+    with xp.cuda_debug():
+        assert xp.get_cuda_debug() is True
+        with xp.cuda_debug(False):
+            assert xp.get_cuda_debug() is False
+        assert xp.get_cuda_debug() is True
+    assert xp.get_cuda_debug() is False
+
+    with pytest.raises(ValueError):
+        with xp.cuda_debug():
+            raise ValueError
+    assert xp.get_cuda_debug() is False  # restored after an exception too
+
+
+def test_compile_options_follow_the_global_setting(debug_off):
+    kernel = CudaKernel(AXPY, "axpy", options=("-std=c++17",))
+    assert kernel.debug is None
+    assert kernel.debug_active() is False
+    assert kernel.compile_options() == ("-std=c++17",)
+    assert "-lineinfo" not in kernel.compile_options()
+
+    with xp.cuda_debug():
+        # decided at call time: the kernel created before is affected
+        assert kernel.debug_active() is True
+        assert kernel.compile_options() == (
+            "-std=c++17",
+            "-lineinfo",
+            "-DCUNUMPY_BOUNDS_CHECK",
+        )
+    assert kernel.compile_options() == ("-std=c++17",)
+    assert kernel.options == ("-std=c++17",)  # the given options are unchanged
+
+
+def test_compile_options_no_duplicates(debug_off):
+    kernel = CudaKernel(AXPY, "axpy", options=("-lineinfo",), debug=True)
+    assert kernel.compile_options() == ("-lineinfo", "-DCUNUMPY_BOUNDS_CHECK")
+    kernel = CudaKernel(AXPY, "axpy", options=xp.DEBUG_OPTIONS[::-1], debug=True)
+    assert kernel.compile_options() == xp.DEBUG_OPTIONS[::-1]
+
+
+def test_explicit_debug_overrides_the_global_setting(debug_off):
+    on = CudaKernel(AXPY, "axpy", debug=True)
+    off = CudaKernel(AXPY, "axpy", debug=False)
+    assert on.debug is True and off.debug is False
+    assert on.debug_active() is True
+    assert off.debug_active() is False
+    assert set(xp.DEBUG_OPTIONS) <= set(on.compile_options())
+
+    with xp.cuda_debug():
+        assert off.debug_active() is False
+        assert off.compile_options() == ()
+        assert on.compile_options() == xp.DEBUG_OPTIONS
+
+
+def test_debug_options_include_dirs_and_from_file(tmp_path, debug_off):
+    (tmp_path / "axpy_cuda.cu").write_text(AXPY)
+    kernel = CudaKernel.from_file(tmp_path / "axpy_cuda.cu", debug=True)
+    assert kernel.compile_options() == (f"-I{tmp_path}", *xp.DEBUG_OPTIONS)
+
+
+def test_debug_option_is_not_G():
+    """NVRTC does not support -G; it must not be added."""
+    assert "-G" not in xp.DEBUG_OPTIONS
+
+
+def test_debug_on_gpu_compiles_and_synchronizes():
+    _skip_without_cupy()
+    import cupy as cp
+
+    n = 100
+    x, y = cp.arange(n, dtype=cp.float64), cp.ones(n)
+    kernel = CudaKernel(AXPY, "axpy", debug=True)
+    stream = cp.cuda.Stream()
+    kernel(2.0, x, y, n, n_threads=n, stream=stream)  # synchronized already
+    assert cp.allclose(y, 2 * x + 1)
+    kernel(2.0, x, y, n, n_threads=n)  # current stream
+    assert cp.allclose(y, 4 * x + 3)
+
+
+# An out-of-bounds write leaves the CUDA context unusable, so the test runs in
+# a subprocess and checks its output.
+OUT_OF_BOUNDS = r"""
+import cunumpy as xp
+import cupy as cp
+
+SOURCE = r'''
+extern "C" __global__ void smash(double* y, int n) {
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i < n) y[((long long)i + 1) << 36] = 1.0;  // 512 GB and more past y
+}
+'''
+kernel = xp.CudaKernel(SOURCE, "smash", debug=DEBUG)
+y = cp.zeros(64)
+try:
+    kernel(y, 64, n_threads=64)
+    cp.cuda.Device().synchronize()
+except RuntimeError as error:
+    print("RuntimeError:", error)
+    print("cause:", type(error.__cause__).__name__)
+except Exception as error:  # noqa: BLE001
+    print(type(error).__name__ + ":", error)
+else:
+    print("no error")
+"""
+
+
+@pytest.mark.parametrize("debug", [True, False])
+def test_out_of_bounds_write_on_gpu(debug):
+    """Under debug, the error is a RuntimeError naming the kernel and its shape;
+    without debug, it is CuPy's own error (raised at the synchronization)."""
+    _skip_without_cupy()
+    output = "".join(
+        _run_python(
+            OUT_OF_BOUNDS.replace("DEBUG", str(debug)), env={"CUNUMPY_CUDA_DEBUG": "0"}
+        )
+    )
+    assert "no error" not in output, output
+    if debug:
+        assert "RuntimeError: CUDA error after launching kernel 'smash'" in output
+        assert "grid (1,) and block (128,)" in output
+        assert "cause: CUDA" in output  # the CuPy error is chained
+    else:
+        assert "RuntimeError: CUDA error after launching kernel" not in output
+        assert "Error" in output
+
+
+# included headers and the compile cache
+# ---------------------------------------------------------------------------
+
+INCLUDING_SOURCE = r"""
+#include <cupy/complex.cuh>   // system header: not tracked
+#include "b.cuh"
+// #include "commented_out.cuh"
+/* #include "in_a_block_comment.cuh" */
+#include "missing.cuh"
+extern "C" __global__ void double_it(double* y, int n) {
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i < n) y[i] = twice(y[i]);
+}
+"""
+
+
+@pytest.fixture
+def header_tree(tmp_path):
+    """a.cu includes b.cuh (next to it), which includes sub/c.cuh."""
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "double_it_cuda.cu").write_text(INCLUDING_SOURCE)
+    (tmp_path / "b.cuh").write_text(
+        '#include "sub/c.cuh"\n__device__ double twice(double v) { return FACTOR * v; }\n'
+    )
+    (tmp_path / "sub" / "c.cuh").write_text("#define FACTOR 2\n")
+    return tmp_path
+
+
+def test_resolve_includes(header_tree):
+    headers = resolve_includes(INCLUDING_SOURCE, base_dir=header_tree)
+    assert headers == [header_tree / "b.cuh", header_tree / "sub" / "c.cuh"]
+
+    # through include_dirs instead of base_dir; a missing include is ignored
+    assert resolve_includes(INCLUDING_SOURCE, [header_tree]) == headers
+    assert resolve_includes(INCLUDING_SOURCE) == []
+    assert resolve_includes(INCLUDING_SOURCE, [header_tree / "nowhere"]) == []
+
+    # base_dir comes before include_dirs, in order
+    other = header_tree / "other"
+    other.mkdir()
+    (other / "b.cuh").write_text("")
+    assert resolve_includes(INCLUDING_SOURCE, [other], base_dir=header_tree) == headers
+    assert resolve_includes(INCLUDING_SOURCE, [other, header_tree]) == [other / "b.cuh"]
+
+    # nothing to resolve: the file system is not searched
+    assert resolve_includes(AXPY, ["/does/not/exist"]) == []
+    assert resolve_includes(ALL_TYPES, base_dir="/does/not/exist") == []
+
+
+def test_resolve_includes_cycle(tmp_path):
+    (tmp_path / "x.cuh").write_text('#include "y.cuh"\n')
+    (tmp_path / "y.cuh").write_text('#include "x.cuh"\n#include "y.cuh"\n')
+    headers = resolve_includes('#include "x.cuh"\n', [tmp_path])
+    assert headers == [tmp_path / "x.cuh", tmp_path / "y.cuh"]
+
+
+def test_include_hash(header_tree):
+    headers = resolve_includes(INCLUDING_SOURCE, base_dir=header_tree)
+    digest = include_hash(headers)
+    assert len(digest) == 16 and int(digest, 16) >= 0
+    assert include_hash(headers) == digest
+    assert include_hash(headers[::-1]) != digest  # order matters
+    assert include_hash([]) != digest
+
+    # the same contents at another location: the same hash
+    moved = header_tree / "moved"
+    moved.mkdir()
+    (moved / "b.cuh").write_text((header_tree / "b.cuh").read_text())
+    (moved / "c.cuh").write_text((header_tree / "sub" / "c.cuh").read_text())
+    assert include_hash([moved / "b.cuh", moved / "c.cuh"]) == digest
+
+    # a changed header: another hash
+    (header_tree / "sub" / "c.cuh").write_text("#define FACTOR 3\n")
+    assert include_hash(headers) != digest
+
+
+def test_compile_options_contain_the_header_hash(header_tree):
+    kernel = CudaKernel.from_file(header_tree / "double_it_cuda.cu")
+    assert kernel.source_dir == header_tree
+    assert kernel.include_dirs == (header_tree,)
+    assert kernel.included_headers == (
+        header_tree / "b.cuh",
+        header_tree / "sub" / "c.cuh",
+    )
+
+    digest = include_hash(kernel.included_headers)
+    define = f"-DCUNUMPY_INCLUDE_HASH=0x{digest}"
+    assert kernel.compile_options() == (f"-I{header_tree}", define)
+    assert kernel.options == (f"-I{header_tree}",)  # the define is not in options
+
+    (header_tree / "sub" / "c.cuh").write_text("#define FACTOR 3\n")
+    assert kernel.compile_options() != (f"-I{header_tree}", define)  # not cached
+
+    # options are kept in front, user options too
+    kernel = CudaKernel(
+        INCLUDING_SOURCE,
+        "double_it",
+        options=["-std=c++17"],
+        include_dirs=[header_tree],
+    )
+    assert kernel.source_dir is None
+    assert kernel.compile_options()[:2] == ("-std=c++17", f"-I{header_tree}")
+    assert kernel.compile_options()[2].startswith("-DCUNUMPY_INCLUDE_HASH=0x")
+
+    # without quoted includes (or without found headers) nothing is added
+    assert CudaKernel(AXPY, "axpy").compile_options() == ()
+    assert CudaKernel(INCLUDING_SOURCE, "double_it").included_headers == ()
+    assert CudaKernel(INCLUDING_SOURCE, "double_it").compile_options() == ()
+
+
+def test_editing_a_header_recompiles_on_gpu(header_tree):
+    _skip_without_cupy()
+    import cupy as cp
+
+    path = header_tree / "double_it_cuda.cu"
+    y = cp.ones(10)
+    CudaKernel.from_file(path)(y, 10, n_threads=10)
+    assert cp.all(y == 2)
+
+    (header_tree / "sub" / "c.cuh").write_text("#define FACTOR 3\n")
+    y = cp.ones(10)
+    CudaKernel.from_file(path)(y, 10, n_threads=10)  # same source and -I options
+    assert cp.all(y == 3)
+
+
+# as_device_array: reference or copy once
+# ---------------------------------------------------------------------------
+
+
+def test_as_device_array_raises_on_numpy_backend():
+    with xp.use_backend("numpy"):
+        with pytest.raises(RuntimeError, match="active backend is 'numpy'"):
+            as_device_array(np.zeros(3), np.float64)
+        with pytest.raises(RuntimeError, match="device argument 'degree'"):
+            as_device_array((3, 3, 3), np.int32, name="degree")
+        with pytest.raises(RuntimeError, match="never copied to the device"):
+            as_device_array([1.0, 2.0])
+
+
+@pytest.mark.skipif(not xp.cupy_available(), reason="CuPy not available")
+def test_as_device_array_references_matching_arrays():
+    import cupy as cp
+
+    with xp.use_backend("cupy"):
+        x = cp.arange(6, dtype=cp.float64).reshape(2, 3)
+        assert as_device_array(x, np.float64) is x
+        assert as_device_array(x) is x  # any dtype
+        assert as_device_array(x, "float64", ndim=2, name="x") is x
+
+
+@pytest.mark.skipif(not xp.cupy_available(), reason="CuPy not available")
+def test_as_device_array_copies_once():
+    import cupy as cp
+
+    with xp.use_backend("cupy"):
+        degree = as_device_array((3, 3, 3), np.int32, ndim=1, name="degree")
+        assert isinstance(degree, cp.ndarray) and degree.dtype == np.int32
+        assert degree.flags.c_contiguous and degree.tolist() == [3, 3, 3]
+
+        host = np.arange(4, dtype=np.float64)
+        device = as_device_array(host, np.float64)
+        assert isinstance(device, cp.ndarray) and device.dtype == np.float64
+        assert np.array_equal(device.get(), host)
+
+        x = cp.arange(6, dtype=cp.float32)
+        y = as_device_array(x, np.float64)  # wrong dtype: a copy
+        assert y is not x and y.dtype == np.float64 and cp.allclose(y, x)
+
+        a = cp.arange(12, dtype=cp.float64).reshape(3, 4)
+        view = a[:, 0:3]
+        assert not view.flags.c_contiguous
+        b = as_device_array(view, np.float64)  # non-contiguous: a copy
+        assert b is not view and b.flags.c_contiguous
+        assert cp.array_equal(b, view)
+        # the copy passes the kernel checks, the view does not
+        kernel = CudaKernel(AXPY, "axpy")
+        kernel.prepare_args(1.0, b, b, b.size)
+        with pytest.raises(TypeError, match="must be C-contiguous"):
+            kernel.prepare_args(1.0, view, b, b.size)
+
+
+@pytest.mark.skipif(not xp.cupy_available(), reason="CuPy not available")
+def test_as_device_array_checks_ndim():
+    import cupy as cp
+
+    with xp.use_backend("cupy"):
+        x = cp.zeros((2, 3))
+        with pytest.raises(ValueError, match=r"'x' must have 1 dimension\(s\), got 2"):
+            as_device_array(x, np.float64, ndim=1, name="x")
+        with pytest.raises(ValueError, match="device argument must have 2"):
+            as_device_array((1, 2, 3), np.int32, ndim=2)

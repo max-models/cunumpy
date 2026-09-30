@@ -11,20 +11,153 @@ On the NumPy backend the wrapper is a no-op and the kernel is called directly.
 Ordinary Python callables are supported, including in Pyodide. This module
 neither imports Pyccel nor compiles kernels; compilation, if desired, is the
 caller's responsibility.
+
+Argument objects that have a host and a device form implement the
+:class:`KernelArguments` protocol: ``__host_args__()`` returns what the host
+kernel receives in that position, ``__cuda_args__()`` what a
+:class:`~cunumpy.CudaKernel` receives. :class:`PyccelKernel` and
+:class:`~cunumpy.Kernel` resolve ``__host_args__()`` with
+:func:`resolve_host_args` before calling the host kernel.
 """
 
 from __future__ import annotations
 
 import copy
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 import array_api_compat
 import numpy as np
 
-from .xp import _cupy_backend, to_cupy, to_numpy
+from .transfers import _ACTIVE as _COUNTERS
+from .transfers import _record
+from .xp import _cupy_backend, _to_cupy, _to_numpy
 
-__all__ = ["PyccelKernel"]
+__all__ = ["KernelArguments", "PyccelKernel", "resolve_host_args"]
+
+
+class KernelArguments:
+    """Base class for argument objects with a host form and a device form.
+
+    A kernel argument that stands for a group of arrays, e.g. all marker data
+    of a particle species, usually exists twice: as an object holding NumPy
+    arrays for the host kernel (e.g. a Pyccel class) and as device arrays for
+    the CUDA kernel. This protocol lets one object represent both, so that a
+    call to a :class:`~cunumpy.Kernel` never branches on the backend:
+
+    * ``__host_args__()`` returns the single object that the host kernel
+      receives in that position; :class:`PyccelKernel` and
+      :class:`~cunumpy.Kernel` resolve it (top-level positional and keyword
+      arguments only) before calling the host kernel;
+    * ``__cuda_args__()`` returns the tuple of CUDA kernel arguments the object
+      stands for (the :class:`~cunumpy.CudaArguments` protocol);
+      :class:`~cunumpy.CudaKernel` flattens it into the kernel parameters.
+
+    Subclassing is optional: any object whose *type* defines a callable
+    ``__host_args__`` is resolved (an instance attribute of that name is not).
+    Both methods of this base class raise ``NotImplementedError``; a subclass
+    overrides the ones it supports.
+
+    Examples
+    --------
+    Build each form lazily on first access, so that a CPU run never builds
+    device arguments and a GPU run never builds the host object:
+
+    >>> class Particles:
+    ...     def __init__(self, markers):
+    ...         self.markers = markers  # NumPy or CuPy array
+    ...         self._kernel_args = None
+    ...
+    ...     @property
+    ...     def kernel_args(self):
+    ...         if self._kernel_args is None:
+    ...             self._kernel_args = ParticleArguments(self)
+    ...         return self._kernel_args
+    ...
+    >>> class ParticleArguments(xp.KernelArguments):
+    ...     def __init__(self, particles):
+    ...         self._particles = particles
+    ...         self._host = None
+    ...         self._cuda = None
+    ...
+    ...     def __host_args__(self):
+    ...         if self._host is None:  # e.g. a Pyccel class of NumPy arrays
+    ...             self._host = MarkerArguments(self._particles.markers)
+    ...         return self._host
+    ...
+    ...     def __cuda_args__(self):
+    ...         if self._cuda is None:  # device arrays and scalars, flattened
+    ...             markers = self._particles.markers
+    ...             self._cuda = (markers, markers.shape[0], markers.shape[1])
+    ...         return self._cuda
+    ...
+    >>> push(particles.kernel_args, dt, n_threads=n)  # doctest: +SKIP
+
+    ``push`` receives ``MarkerArguments(...)`` on the NumPy backend and
+    ``(markers, n_rows, n_cols)`` on the CuPy backend. Invalidate the cached
+    forms (set them to ``None``) whenever the arrays are replaced, e.g. after
+    resizing, ``deepcopy`` or unpickling.
+    """
+
+    def __host_args__(self) -> Any:
+        """The object passed to the host kernel in place of this one."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not provide host kernel arguments "
+            "(implement __host_args__)"
+        )
+
+    def __cuda_args__(self) -> tuple[Any, ...]:
+        """The CUDA kernel arguments this object stands for."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not provide CUDA kernel arguments "
+            "(implement __cuda_args__)"
+        )
+
+
+def _host_args(value: Any) -> Any:
+    """`value.__host_args__()` if its type defines the method, else `value`."""
+    # checked on the class, so that an instance attribute of that name (e.g. a
+    # stored object or None) is not mistaken for the protocol
+    if callable(getattr(type(value), "__host_args__", None)):
+        return value.__host_args__()
+    return value
+
+
+def resolve_host_args(
+    args: Sequence[Any], kwargs: Mapping[str, Any] | None = None
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    """Replace :class:`KernelArguments` objects by their host form.
+
+    Every top-level positional and keyword argument whose type defines a
+    callable ``__host_args__()`` is replaced by the value it returns; all other
+    arguments (including objects nested in tuples, lists or dicts) are passed
+    through untouched.
+
+    Parameters
+    ----------
+    args : Sequence
+        Positional arguments.
+    kwargs : Mapping[str, Any] | None
+        Keyword arguments.
+
+    Returns
+    -------
+    tuple[tuple, dict]
+        The resolved positional and keyword arguments.
+    """
+    return (
+        tuple(_host_args(arg) for arg in args),
+        {name: _host_args(value) for name, value in (kwargs or {}).items()},
+    )
+
+
+# The conversions between device and host arrays, as module attributes so that
+# tests can substitute a fake device array type without a GPU. They bypass the
+# per-array transfer counting: a call that converts is counted once, as a
+# ``kernel_conversion`` event, in :meth:`PyccelKernel.__call__`.
+_is_device_array = array_api_compat.is_cupy_array
+_device_to_host = _to_numpy
+_host_to_device = _to_cupy
 
 
 class PyccelKernel:
@@ -62,6 +195,13 @@ class PyccelKernel:
         actually call with. An empty sequence declares that the kernel writes to
         none of its arguments. By default (``None``) every converted array is
         copied back, which is always correct but does more work.
+
+    Notes
+    -----
+    Top-level arguments implementing :class:`KernelArguments` (a
+    ``__host_args__()`` method on their type) are replaced by their host form
+    before anything else, so the same argument objects can be passed to a
+    ``PyccelKernel`` and to a :class:`~cunumpy.CudaKernel`.
 
     Examples
     --------
@@ -130,8 +270,8 @@ class PyccelKernel:
         if key in memo:
             return memo[key]
 
-        if array_api_compat.is_cupy_array(value):
-            value_np = to_numpy(value)
+        if _is_device_array(value):
+            value_np = _device_to_host(value)
             memo[key] = value_np
             converted.append((value, value_np))
             return value_np
@@ -177,7 +317,7 @@ class PyccelKernel:
     def _convert_from_numpy(self, value: Any) -> Any:
         """Move host arrays returned by the kernel back to the device."""
         if self._is_array(value):
-            return to_cupy(value)
+            return _host_to_device(value)
         if isinstance(value, tuple):
             return tuple(self._convert_from_numpy(item) for item in value)
         if isinstance(value, list):
@@ -262,7 +402,7 @@ class PyccelKernel:
         `seen` tracks already-visited containers so that reference cycles
         terminate.
         """
-        if array_api_compat.is_cupy_array(value):
+        if _is_device_array(value):
             return True
 
         if seen is None:
@@ -296,6 +436,7 @@ class PyccelKernel:
         return any(self._contains_cupy(value) for value in (*args, *kwargs.values()))
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        args, kwargs = resolve_host_args(args, kwargs)
         if not self._needs_conversion(args, kwargs):
             return self._kernel(*args, **kwargs)
 
@@ -318,12 +459,19 @@ class PyccelKernel:
             else self._output_host_arrays(args_np, kwargs_np)
         )
 
+        if _COUNTERS and converted:
+            _record(
+                "kernel_conversion",
+                f"PyccelKernel {self.name!r}: {len(converted)} device array(s) "
+                "copied to the host",
+            )
+
         result = self._kernel(*args_np, **kwargs_np)
 
         # Copy in-place kernel updates back to the device arrays.
         for device_array, host_array in converted:
             if writeable is None or id(host_array) in writeable:
-                device_array[...] = to_cupy(host_array)
+                device_array[...] = _host_to_device(host_array)
 
         return self._convert_from_numpy(result)
 

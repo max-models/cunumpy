@@ -15,7 +15,8 @@ arguments as the host kernel it mirrors:
   range, a NumPy scalar that would lose precision) raises instead of reaching
   the kernel as a silently wrong value, which is what ``cupy.RawKernel`` would
   do;
-* arrays are never converted or copied: they must already be CuPy arrays;
+* arrays are never converted or copied: they must already be C-contiguous
+  CuPy arrays (build them once with :func:`cunumpy.as_device_array`);
 * C++ function templates are instantiated with ``template_args``, and generated
   kernels (one source per variant) are compiled once per variant by
   :class:`CudaKernelVariants`.
@@ -23,15 +24,24 @@ arguments as the host kernel it mirrors:
 The launch shape is given at each call, either as the number of threads
 (``n_threads``, in 1 to 3 dimensions) or as an explicit ``grid``.
 
+In debug mode (``debug=True``, ``xp.set_cuda_debug(True)`` or the environment
+variable ``CUNUMPY_CUDA_DEBUG=1``) kernels are compiled with ``-lineinfo`` and
+``-DCUNUMPY_BOUNDS_CHECK``, and every launch is synchronized so that an
+asynchronous CUDA error is raised, as a ``RuntimeError`` naming the kernel, at
+the launch that caused it.
+
 This module imports CuPy only when a kernel is compiled, so it can be imported
 (and signatures parsed) without CuPy.
 """
 
 from __future__ import annotations
 
+import hashlib
 import math
+import os
 import re
-from collections.abc import Callable, Hashable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -39,6 +49,7 @@ from typing import Any, NamedTuple
 import numpy as np
 
 __all__ = [
+    "DEBUG_OPTIONS",
     "CudaArguments",
     "CudaKernel",
     "CudaKernelVariants",
@@ -46,11 +57,19 @@ __all__ = [
     "CudaStruct",
     "CudaStructValue",
     "ctype_of",
+    "cuda_kernel_names",
+    "include_hash",
     "parse_cuda_signature",
+    "resolve_includes",
 ]
 
 # CUDA limit on the number of threads per block
 _MAX_THREADS_PER_BLOCK = 1024
+
+#: NVRTC options added in debug mode: source line information for
+#: ``compute-sanitizer``/``nsys``, and bounds checks in the array views.
+#: (``-G`` is not among them: NVRTC does not support it.)
+DEBUG_OPTIONS = ("-lineinfo", "-DCUNUMPY_BOUNDS_CHECK")
 
 
 class CudaArguments:
@@ -188,6 +207,153 @@ def ctype_of(dtype: Any) -> str:
 def _strip_comments(source: str) -> str:
     source = re.sub(r"/\*.*?\*/", " ", source, flags=re.DOTALL)
     return re.sub(r"//[^\n]*", " ", source)
+
+
+# ``#include "name"``: quoted includes are the project's own headers. Angle
+# bracket includes are system headers and are not tracked.
+_QUOTED_INCLUDE = re.compile(r'^[ \t]*#[ \t]*include[ \t]*"([^"\n]+)"', re.MULTILINE)
+
+
+def _quoted_includes(source: str) -> list[str]:
+    return _QUOTED_INCLUDE.findall(_strip_comments(source))
+
+
+def resolve_includes(
+    source: str,
+    include_dirs: Iterable[str | Path] = (),
+    *,
+    base_dir: str | Path | None = None,
+) -> list[Path]:
+    """The header files a CUDA source includes, recursively.
+
+    Scans `source` (comments removed) for ``#include "name"`` and resolves each
+    name like NVRTC does: relative to `base_dir` (the directory of the
+    including file), then in `include_dirs`, in order. Found headers are
+    scanned in turn, relative to their own directory. Includes in angle
+    brackets (system headers) and includes that cannot be found are ignored;
+    NVRTC reports the latter when the kernel is compiled.
+
+    Parameters
+    ----------
+    source : str
+        CUDA C source code.
+    include_dirs : Iterable[str | Path]
+        Directories searched for included files, in order (the ``-I`` options).
+    base_dir : str | Path | None
+        Directory of the file `source` was read from, searched first; None if
+        the source is not from a file.
+
+    Returns
+    -------
+    list[Path]
+        The resolved header files, each once, in order of first inclusion
+        (depth first). Empty if the source has no quoted includes; the file
+        system is not touched in that case.
+    """
+    dirs = tuple(Path(d) for d in include_dirs)
+    found: list[Path] = []
+    seen: set[Path] = set()
+
+    def visit(code: str, directory: Path | None) -> None:
+        for name in _quoted_includes(code):
+            candidates = [directory / name] if directory is not None else []
+            candidates += [d / name for d in dirs]
+            for candidate in candidates:
+                if candidate.is_file():
+                    path = candidate.resolve()
+                    if path not in seen:
+                        seen.add(path)
+                        found.append(candidate)
+                        visit(path.read_text(errors="replace"), path.parent)
+                    break
+
+    visit(source, None if base_dir is None else Path(base_dir))
+    return found
+
+
+def include_hash(paths: Iterable[str | Path]) -> str:
+    """A short hex digest of the contents of `paths`, in order.
+
+    Only the file contents count, not their locations: moving a header does not
+    change the hash, editing it does. Used to make CuPy's kernel cache key
+    depend on the included headers, see :meth:`CudaKernel.compile_options`.
+
+    Parameters
+    ----------
+    paths : Iterable[str | Path]
+        Files to hash, e.g. from :func:`resolve_includes`.
+
+    Returns
+    -------
+    str
+        The first 16 hex digits of the SHA-256 digest.
+    """
+    digest = hashlib.sha256()
+    for path in paths:
+        content = Path(path).read_bytes()
+        digest.update(len(content).to_bytes(8, "little"))
+        digest.update(content)
+    return digest.hexdigest()[:16]
+
+
+_GLOBAL_FUNCTION = re.compile(r"__global__\s+void\s+([A-Za-z_]\w*)\s*\(")
+
+
+def cuda_kernel_names(source: str) -> list[str]:
+    """The names of the ``__global__`` functions defined in `source`, in order.
+
+    Comments are ignored. Templates are included; a function declared more
+    than once (e.g. a forward declaration) is listed once.
+
+    Parameters
+    ----------
+    source : str
+        CUDA C source code.
+
+    Returns
+    -------
+    list[str]
+        The kernel names, in the order of their first appearance.
+    """
+    return list(dict.fromkeys(_GLOBAL_FUNCTION.findall(_strip_comments(source))))
+
+
+def _compile_in_threads(
+    compilers: Mapping[Hashable, Callable[[], Any]], jobs: int | None
+) -> list[Hashable]:
+    """Run the `compilers` (name -> compile function), `jobs` at a time.
+
+    With ``jobs=1`` they run one after the other in the calling thread; with
+    ``jobs=None`` as many threads as CPUs are used. All compilers are run even
+    if one fails; the first exception (in the order of `compilers`) is raised
+    afterwards.
+
+    Returns
+    -------
+    list
+        The names whose compiler succeeded, in the order of `compilers`.
+    """
+    if jobs is None:
+        jobs = os.cpu_count() or 1
+    if jobs < 1:
+        raise ValueError(f"jobs must be positive or None, got {jobs}")
+    if jobs == 1 or len(compilers) <= 1:
+        for compile in compilers.values():
+            compile()
+        return list(compilers)
+
+    with ThreadPoolExecutor(max_workers=min(jobs, len(compilers))) as pool:
+        futures = {name: pool.submit(compile) for name, compile in compilers.items()}
+    compiled, error = [], None
+    for name, future in futures.items():
+        exc = future.exception()
+        if exc is None:
+            compiled.append(name)
+        elif error is None:
+            error = exc
+    if error is not None:
+        raise error
+    return compiled
 
 
 def _parse_parameter(
@@ -335,7 +501,7 @@ def _describe(param: CudaParameter, index: int) -> str:
 
 
 def _pointer_checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
-    """Checker for a pointer parameter: a device array with the right dtype."""
+    """Checker for a pointer parameter: a C-contiguous device array of the dtype."""
     dtype = param.dtype
 
     def check(value: Any) -> Any:
@@ -350,6 +516,15 @@ def _pointer_checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
         if dtype is not None and value.dtype != dtype:
             raise TypeError(
                 f"{_describe(param, index)} must have dtype {dtype}, got {value.dtype}"
+            )
+        # the kernel reads the pointer as a flat buffer: a non-contiguous view
+        # (e.g. a[:, 0:3]) would give silently wrong results
+        flags = getattr(value, "flags", None)
+        if flags is not None and not flags.c_contiguous:
+            raise TypeError(
+                f"{_describe(param, index)} must be C-contiguous: a non-contiguous "
+                f"view (e.g. a[:, 0:3]) would be read as a flat buffer; use "
+                f"cupy.ascontiguousarray or cunumpy.as_device_array"
             )
         return value
 
@@ -554,8 +729,9 @@ class CudaStruct:
     def __call__(self, **values: Any) -> CudaStructValue:
         """Pack values into the struct.
 
-        Pointer fields take CuPy arrays of the declared dtype (never copied),
-        scalar fields are checked and cast like scalar kernel arguments.
+        Pointer fields take C-contiguous CuPy arrays of the declared dtype
+        (never copied), scalar fields are checked and cast like scalar kernel
+        arguments.
 
         Raises
         ------
@@ -634,6 +810,9 @@ class CudaKernel:
         Additional NVRTC compiler options, e.g. ``("-std=c++17",)``.
     include_dirs : Sequence[str | Path]
         Directories searched for ``#include`` files (passed as ``-I<dir>``).
+    source_dir : str | Path | None
+        Directory the source was read from (set by :meth:`from_file`), where
+        ``#include "..."`` files are looked up first.
     structs : Iterable[CudaStruct]
         Struct types passed to the kernel by value.
     template_args : Sequence | None
@@ -645,6 +824,22 @@ class CudaKernel:
         Raises ``ValueError`` at construction if the signature cannot be parsed
         (e.g. macros in the parameter list); pass False to launch with the
         arguments as they are, like ``cupy.RawKernel``.
+    debug : bool | None
+        Debug mode: compile with :data:`DEBUG_OPTIONS` (``-lineinfo`` and
+        ``-DCUNUMPY_BOUNDS_CHECK``) and synchronize after every launch, so
+        that an asynchronous CUDA error is raised as a ``RuntimeError`` naming
+        this kernel. None (the default) follows the global setting
+        (:func:`cunumpy.set_cuda_debug`, ``CUNUMPY_CUDA_DEBUG``) at every
+        launch; True or False fix it for this kernel. The compile options are
+        fixed when the kernel is compiled.
+
+    Notes
+    -----
+    CuPy caches compiled kernels on disk, keyed on the source and the compiler
+    options, but not on the files pulled in by ``#include "..."``. At compile
+    time the headers are resolved (:attr:`included_headers`) and a define with
+    the hash of their contents is added to the options
+    (:meth:`compile_options`), so editing a header recompiles the kernel.
 
     Examples
     --------
@@ -665,14 +860,19 @@ class CudaKernel:
         block_size: int | Sequence[int] = 128,
         options: Sequence[str] = (),
         include_dirs: Sequence[str | Path] = (),
+        source_dir: str | Path | None = None,
         structs: Iterable[CudaStruct] = (),
         template_args: Sequence[Any] | None = None,
         check_signature: bool = True,
+        debug: bool | None = None,
     ) -> None:
         self._block = self._check_block(_as_shape(block_size, "block_size"))
+        self._debug = None if debug is None else bool(debug)
         self._source = source
         self._name = name
-        self._options = tuple(options) + tuple(f"-I{d}" for d in include_dirs)
+        self._include_dirs = tuple(Path(d) for d in include_dirs)
+        self._source_dir = None if source_dir is None else Path(source_dir)
+        self._options = tuple(options) + tuple(f"-I{d}" for d in self._include_dirs)
         self._structs = tuple(structs)
         self._template_args = None if template_args is None else tuple(template_args)
         self._signature = (
@@ -712,7 +912,7 @@ class CudaKernel:
             File name suffix stripped to get the default kernel name.
         **kwargs
             Passed on to :class:`CudaKernel`. The directory of the file is
-            always added to ``include_dirs``.
+            always added to ``include_dirs`` and is the ``source_dir``.
         """
         path = Path(path)
         if name is None:
@@ -722,7 +922,46 @@ class CudaKernel:
                 )
             name = path.name[: -len(suffix)]
         include_dirs = (path.parent, *kwargs.pop("include_dirs", ()))
+        kwargs.setdefault("source_dir", path.parent)
         return cls(path.read_text(), name, include_dirs=include_dirs, **kwargs)
+
+    @classmethod
+    def all_from_file(cls, path: str | Path, **kwargs: Any) -> dict[str, CudaKernel]:
+        """Load every ``__global__`` function of a file as a kernel.
+
+        For files that group several small kernels. The kernels share the
+        source (and the compile options), so CuPy compiles the file once and
+        the kernels are functions of the same compiled module.
+
+        Parameters
+        ----------
+        path : str | Path
+            Path of the CUDA source file.
+        **kwargs
+            Passed on to :class:`CudaKernel` for every kernel. The directory of
+            the file is always added to ``include_dirs``.
+
+        Returns
+        -------
+        dict[str, CudaKernel]
+            One kernel per ``__global__`` function, by name, in the order of
+            the source (see :func:`cuda_kernel_names`).
+
+        Raises
+        ------
+        ValueError
+            If the file defines no ``__global__`` function.
+        """
+        path = Path(path)
+        source = path.read_text()
+        names = cuda_kernel_names(source)
+        if not names:
+            raise ValueError(f"no __global__ function found in {path}")
+        include_dirs = (path.parent, *kwargs.pop("include_dirs", ()))
+        return {
+            name: cls(source, name, include_dirs=include_dirs, **kwargs)
+            for name in names
+        }
 
     @staticmethod
     def _check_block(block: tuple[int, ...]) -> tuple[int, ...]:
@@ -763,8 +1002,73 @@ class CudaKernel:
 
     @property
     def options(self) -> tuple[str, ...]:
-        """NVRTC compiler options, including ``-I`` include directories."""
+        """NVRTC compiler options as given, including ``-I`` include directories.
+
+        The debug options and the header hash define are not part of them;
+        they are added at compile time, see :meth:`compile_options`.
+        """
         return self._options
+
+    @property
+    def debug(self) -> bool | None:
+        """The kernel's debug setting: True, False, or None for the global one."""
+        return self._debug
+
+    def debug_active(self) -> bool:
+        """Whether debug mode applies to this kernel now.
+
+        The kernel's own setting if it was created with ``debug=True`` or
+        ``debug=False``, else the global setting (:func:`cunumpy.get_cuda_debug`),
+        read at the time of the call.
+        """
+        if self._debug is not None:
+            return self._debug
+        from .xp import get_cuda_debug
+
+        return get_cuda_debug()
+
+    @property
+    def include_dirs(self) -> tuple[Path, ...]:
+        """Directories searched for ``#include`` files."""
+        return self._include_dirs
+
+    @property
+    def source_dir(self) -> Path | None:
+        """Directory the source was read from, if known."""
+        return self._source_dir
+
+    @property
+    def included_headers(self) -> tuple[Path, ...]:
+        """The header files the source includes with ``#include "..."``.
+
+        Resolved recursively in `source_dir` and `include_dirs` at every access
+        (see :func:`resolve_includes`), so the result follows the files on
+        disk. Empty if the source has no quoted includes.
+        """
+        return tuple(
+            resolve_includes(
+                self._source, self._include_dirs, base_dir=self._source_dir
+            )
+        )
+
+    def compile_options(self) -> tuple[str, ...]:
+        """The NVRTC options a compilation now would use.
+
+        :attr:`options`, followed by :data:`DEBUG_OPTIONS` (``-lineinfo`` and
+        ``-DCUNUMPY_BOUNDS_CHECK``) if :meth:`debug_active` and they are not
+        already among the options (``-G`` is not added: NVRTC does not support
+        it), and, if the source includes header files,
+        ``-DCUNUMPY_INCLUDE_HASH=0x<hash>`` with the hash of the contents of
+        :attr:`included_headers` (see :func:`include_hash`). CuPy keys its
+        kernel cache on the options, so a changed header means a recompile.
+        """
+        options = self._options
+        if self.debug_active():
+            options += tuple(o for o in DEBUG_OPTIONS if o not in options)
+        headers = self.included_headers
+        if headers:
+            options += (f"-DCUNUMPY_INCLUDE_HASH=0x{include_hash(headers)}",)
+        return options
 
     @property
     def structs(self) -> tuple[CudaStruct, ...]:
@@ -789,10 +1093,14 @@ class CudaKernel:
     def compile(self) -> Any:
         """Compile the kernel now (it is otherwise compiled on the first call).
 
+        The options are :meth:`compile_options`, evaluated now: a kernel
+        compiled before debug mode was enabled keeps its options.
+
         Returns
         -------
         cupy.RawKernel
-            The compiled kernel; compiled once and cached (also on disk by CuPy).
+            The compiled kernel; compiled once and cached (also on disk by CuPy,
+            keyed on the source and :meth:`compile_options`).
 
         Raises
         ------
@@ -809,14 +1117,15 @@ class CudaKernel:
                 )
             import cupy as cp
 
+            options = self.compile_options()
             if self._template_args is None:
                 self._raw_kernel = cp.RawKernel(
-                    self._source, self._name, options=self._options
+                    self._source, self._name, options=options
                 )
             else:
                 module = cp.RawModule(
                     code=self._source,
-                    options=self._options,
+                    options=options,
                     name_expressions=[self.expression],
                 )
                 self._raw_kernel = module.get_function(self.expression)
@@ -827,15 +1136,15 @@ class CudaKernel:
 
         Argument objects with ``__cuda_args__()`` (including struct values) are
         flattened. If the signature is checked, the number of arguments, the
-        dtype of every array, every struct and every scalar are checked, and
-        Python scalars are cast to the declared C types.
+        dtype and C-contiguity of every array, every struct and every scalar
+        are checked, and Python scalars are cast to the declared C types.
 
         Raises
         ------
         TypeError
-            Wrong number of arguments, a host array or an array of the wrong
-            dtype for a pointer parameter, a value of the wrong struct, or a
-            scalar of an incompatible type.
+            Wrong number of arguments, a host array, an array of the wrong
+            dtype or a non-contiguous array for a pointer parameter, a value of
+            the wrong struct, or a scalar of an incompatible type.
         OverflowError
             A Python integer out of range of the declared integer type.
         """
@@ -925,6 +1234,15 @@ class CudaKernel:
             Dynamic shared memory per block, in bytes (``extern __shared__``).
         stream : cupy.cuda.Stream | None
             Stream to launch on; the current stream if None.
+
+        Raises
+        ------
+        RuntimeError
+            In debug mode (see :meth:`debug_active`), an asynchronous CUDA
+            error found when synchronizing the stream after the launch, e.g. an
+            illegal memory access; the CuPy error is chained. Without debug
+            mode, such an error surfaces at a later synchronization (a
+            ``.get()``, an MPI call, ...), not necessarily in this kernel.
         """
         grid_shape, block_shape = self.launch_shape(n_threads, grid=grid, block=block)
         if shared_mem < 0:
@@ -934,8 +1252,30 @@ class CudaKernel:
             return
 
         kernel = self.compile()
+        debug = self.debug_active()
         with stream if stream is not None else nullcontext():
             kernel(grid_shape, block_shape, values, shared_mem=shared_mem)
+            if debug:
+                self._synchronize_after_launch(stream, grid_shape, block_shape)
+
+    def _synchronize_after_launch(
+        self, stream: Any, grid: tuple[int, ...], block: tuple[int, ...]
+    ) -> None:
+        """Wait for the launch and re-raise a CUDA error naming this kernel."""
+        import cupy as cp
+
+        try:
+            if stream is None:
+                stream = cp.cuda.get_current_stream()
+            stream.synchronize()
+        except (
+            cp.cuda.runtime.CUDARuntimeError,
+            cp.cuda.driver.CUDADriverError,
+        ) as error:
+            raise RuntimeError(
+                f"CUDA error after launching kernel {self.expression!r} with "
+                f"grid {grid} and block {block}: {error}"
+            ) from error
 
 
 class CudaKernelVariants:
@@ -989,15 +1329,22 @@ class CudaKernelVariants:
         """The keys of the variants created so far."""
         return list(self._kernels)
 
-    def compile_all(self, keys: Iterable[Sequence[Hashable]] = ()) -> None:
+    def compile_all(
+        self, keys: Iterable[Sequence[Hashable]] = (), *, jobs: int | None = 1
+    ) -> None:
         """Compile the given variants (created if needed) and all existing ones.
 
         Parameters
         ----------
         keys : Iterable[Sequence]
             Keys of variants to create and compile now, e.g. ``[(3, np.float64)]``.
+        jobs : int | None
+            Number of variants compiled at a time, in threads (NVRTC releases
+            the GIL); None for the number of CPUs. See
+            :meth:`KernelCatalog.compile_all <cunumpy.KernelCatalog.compile_all>`.
         """
         for key in keys:
             self.get(*key)
-        for kernel in self._kernels.values():
-            kernel.compile()
+        _compile_in_threads(
+            {key: kernel.compile for key, kernel in self._kernels.items()}, jobs
+        )
