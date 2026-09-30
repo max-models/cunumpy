@@ -353,6 +353,164 @@ lists) are converted back using `is_array`; dictionaries in return values are
 not recursively converted. On the NumPy path, the original return value and
 normal Python mutation and exception behavior are preserved.
 
+## `CudaKernel`
+
+### Constructor
+
+```python
+xp.CudaKernel(
+    source,
+    name,
+    *,
+    block_size=128,
+    options=(),
+    include_dirs=(),
+    check_signature=True,
+)
+xp.CudaKernel.from_file(path, name=None, *, suffix="_cuda.cu", **kwargs)
+```
+
+Wraps the `extern "C" __global__` function `name` in the CUDA C `source`. The
+kernel is compiled with NVRTC through `cupy.RawKernel` on the first call (or
+by `compile()`), and cached. CuPy is imported only then, so kernels can be
+created and their signatures parsed without CuPy.
+
+`from_file` reads the source from a file; the kernel name defaults to the file
+name without `suffix` (`axpy_cuda.cu` -> `axpy`), and the directory of the file
+is added to the include directories.
+
+### Parameters
+
+* `block_size`: threads per block.
+* `options`: additional NVRTC options, e.g. `("-std=c++17",)`.
+* `include_dirs`: directories for `#include`, passed as `-I<dir>`.
+* `check_signature`: parse the signature and check every call against it
+  (default). Raises `ValueError` if the signature cannot be parsed, e.g. with
+  templates, macros or pointers to pointers in the parameter list; pass
+  `False` to launch with the arguments as they are, like `cupy.RawKernel`.
+
+### Calling
+
+```python
+kernel(*args, n_threads, shared_mem=0, stream=None)
+```
+
+Launches `ceil(n_threads / block_size)` blocks of `block_size` threads on
+`stream` (the current stream if `None`); nothing is launched for
+`n_threads=0`. The arguments are prepared by `kernel.prepare_args(*args)`:
+
+* arguments with a `__cuda_args__()` method are replaced by the values it
+  returns (see `CudaArguments`);
+* with a checked signature, the number of arguments must match, and
+  * pointer parameters take CuPy arrays whose dtype matches the pointed-to type
+    (any dtype for `void*`); host arrays raise `TypeError`, they are never
+    copied to the device;
+  * Python scalars are cast to the declared type: `int` into integer (with a
+    range check, `OverflowError`), floating-point and complex parameters,
+    `float` into floating-point and complex parameters, `bool` into boolean
+    and integer parameters; anything else raises `TypeError`;
+  * NumPy scalars are passed as they are if their dtype matches, cast if the
+    cast is safe (e.g. `np.float32` into `double`), and raise `TypeError`
+    otherwise (e.g. `np.float64` into `float`).
+
+This matters because `cupy.RawKernel` reads each argument with the size
+declared in the signature and does not check types: an integer passed to a
+`double` parameter, or a `double` passed to a `float` parameter, arrives as a
+wrong value without an error. The checks cost about 0.3 µs per argument (about
+10 µs for a kernel with 29 arguments, measured on an H100 node, where the launch
+itself costs about as much), which is negligible for kernels that run for
+100 µs or more. For very short kernels called in a hot loop, pass
+`check_signature=False` once the calls are known to be correct.
+
+C types are mapped to NumPy dtypes as on Linux (LP64): `int` is `int32`,
+`long` and `long long` are `int64`, `float` is `float32`, `double` is
+`float64`, `complex<double>` is `complex128`; fixed-width types such as
+`int64_t` and `size_t` are supported too. `xp.parse_cuda_signature(source,
+name)` returns the parsed parameters (`CudaParameter` tuples of `name`,
+`ctype`, `dtype`, `pointer`).
+
+## `CudaArguments`
+
+```python
+class Particles(xp.CudaArguments):
+    def __init__(self, positions, velocities):
+        self.positions = positions
+        super().__init__(positions, velocities, positions.shape[0])
+
+kernel(dt, Particles(x, v), n_threads=x.shape[0])
+```
+
+Base class for objects passed to a `CudaKernel` as one argument that stands
+for several kernel parameters. `CudaArguments(*values)` stores the values;
+`__cuda_args__()` returns them. Subclassing is optional: any object with a
+`__cuda_args__()` method returning a tuple is flattened. This lets an
+application keep its host argument objects (e.g. Pyccel classes holding NumPy
+arrays) and matching device argument objects that reference the same data on
+the device, and pass either to the same call.
+
+## `Kernel`
+
+```python
+xp.Kernel(
+    host_kernel,
+    cuda_kernel=None,
+    *,
+    name=None,
+    missing_cuda="raise",
+    cuda_path=None,
+)
+```
+
+A host kernel (a `PyccelKernel`; other callables are wrapped in one) and its
+CUDA counterpart. `kernel.get_kernel()` returns the host kernel on the NumPy
+backend and the CUDA kernel on the CuPy backend; call it once at setup to fail
+early if a CUDA kernel is missing. `kernel(*args, n_threads=None)` calls the
+kernel of the active backend; `n_threads` is required for the CUDA kernel and
+ignored by the host kernel.
+
+Without a CUDA kernel on the CuPy backend, `missing_cuda="raise"` raises
+`NotImplementedError` (naming `cuda_path`, if given), and
+`missing_cuda="fallback"` calls the host kernel through `PyccelKernel`, which
+copies the arrays to the host and back at every call (a `RuntimeWarning` is
+emitted once).
+
+Properties: `name`, `host_kernel`, `cuda_kernel`, `has_cuda`, `missing_cuda`,
+`cuda_path`.
+
+## `KernelCatalog`
+
+```python
+catalog = xp.KernelCatalog.from_package(
+    package,
+    *,
+    host_suffix="_kernels",
+    cuda_suffix="_cuda.cu",
+    missing_cuda="raise",
+    **cuda_options,
+)
+kernel = catalog["push"]
+```
+
+A read-only mapping from names to `Kernel` objects. `from_package` scans the
+subfolders of `package`: for every folder `<name>` containing the module
+`<name><host_suffix>.py`, the function `<name>` of that module is the host
+kernel, and `<name><cuda_suffix>` in the same folder, if present, is the CUDA
+kernel (`__global__` function `<name>`). `cuda_options` are passed on to
+`CudaKernel.from_file`. Typically called in the package's `__init__.py`:
+
+```text
+my_kernels/
+├── __init__.py              # catalog = xp.KernelCatalog.from_package(__name__)
+├── push/
+│   ├── push_kernels.py      # def push(...): ...
+│   └── push_cuda.cu         # __global__ void push(...)
+└── deposit/
+    └── deposit_kernels.py   # no CUDA kernel yet
+```
+
+`catalog.without_cuda` lists the kernels still to port. `KernelCatalog(kernels)`
+and `catalog.register(kernel, name=None)` build a catalog by hand.
+
 ## Version
 
 `xp.__version__` is the installed package version. When package metadata is

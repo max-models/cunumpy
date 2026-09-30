@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- Support for Python 3.8 and 3.9 (both end-of-life); `cunumpy` now requires Python 3.10 or newer.
+
+### Changed
+- Python 3.14 is supported.
+- CI now tests every supported Python version (3.10, 3.11, 3.12, 3.13 and 3.14) instead of 3.8/3.10/3.13.
+
+### Added
+- `xp.CudaKernel`: Wraps a CUDA C kernel (`cupy.RawKernel`, compiled lazily with NVRTC) so it can be called with the same arguments as the host kernel it mirrors, plus `n_threads`. The `extern "C" __global__` signature is parsed once and every call is checked against it: argument count, array dtypes (host arrays raise, they are never copied), and scalars (Python scalars are cast to the declared C types with range checks; lossy or mismatching scalars raise instead of reaching the kernel as silently wrong values). Supports `block_size`, NVRTC `options`, `include_dirs`, `shared_mem`, `stream`, `CudaKernel.from_file()` (`<name>_cuda.cu`), `compile()` and `prepare_args()`; `check_signature=False` skips the checks.
+- `xp.CudaArguments`: Base class for argument objects that are flattened into several CUDA kernel arguments; any object with a `__cuda_args__()` method is flattened.
+- `xp.parse_cuda_signature(source, name)` and `xp.CudaParameter`: Parse the parameters of a `__global__` function.
+- `xp.Kernel`: A host kernel (`PyccelKernel`) and its CUDA counterpart, calling the one matching the active backend. Without a CUDA kernel on the CuPy backend it raises `NotImplementedError` (`missing_cuda="raise"`, default) or falls back to the host kernel with host copies (`missing_cuda="fallback"`).
+- `xp.KernelCatalog`: Read-only mapping of `Kernel`s; `KernelCatalog.from_package()` collects them from a package with one folder per kernel (`name/name_kernels.py`, `name/name_cuda.cu`); `without_cuda` lists the kernels still to port.
+
 ## [0.2.0] - 2026-09-28
 
 ### Changed
