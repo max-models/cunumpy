@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import os
 import warnings
+from collections.abc import Generator
 from contextlib import contextmanager
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Generator, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import array_api_compat
 import array_api_compat.numpy as np

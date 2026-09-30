@@ -1,8 +1,9 @@
 # Stub file for Pylance/mypy: exposes all numpy symbols so that
 # `import cunumpy as xp` followed by `xp.<Tab>` shows numpy completions.
 # At runtime the real __init__.py dispatches to numpy or cupy via __getattr__.
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any, Generator
+from typing import Any
 
 import numpy as np
 from numpy import *

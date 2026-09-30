@@ -26,9 +26,10 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Callable, NamedTuple, Sequence
+from typing import Any, NamedTuple
 
 import numpy as np
 

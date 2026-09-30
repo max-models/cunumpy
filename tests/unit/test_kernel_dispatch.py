@@ -77,12 +77,11 @@ def test_kernel_on_cupy():
 def test_missing_cuda_raises_on_cupy():
     _skip_without_cupy()
     kernel = Kernel(scale, cuda_path="kernels/scale/scale_cuda.cu")
-    with xp.use_backend("cupy"):
-        with pytest.raises(
-            NotImplementedError,
-            match="No CUDA version of kernel 'scale'.*scale_cuda.cu",
-        ):
-            kernel.get_kernel()
+    with xp.use_backend("cupy"), pytest.raises(
+        NotImplementedError,
+        match="No CUDA version of kernel 'scale'.*scale_cuda.cu",
+    ):
+        kernel.get_kernel()
 
 
 def test_missing_cuda_fallback_on_cupy():

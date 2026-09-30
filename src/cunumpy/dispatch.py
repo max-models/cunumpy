@@ -22,9 +22,9 @@ from __future__ import annotations
 
 import importlib
 import warnings
-from collections.abc import Mapping
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any
 
 from .cuda_kernel import CudaKernel
 from .kernel import PyccelKernel
