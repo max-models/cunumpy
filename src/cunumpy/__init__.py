@@ -53,13 +53,13 @@ except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
 
 __all__ = [
+    "DEBUG_OPTIONS",
     "CudaArguments",
     "CudaKernel",
     "CudaKernelVariants",
     "CudaParameter",
     "CudaStruct",
     "CudaStructValue",
-    "DEBUG_OPTIONS",
     "Kernel",
     "KernelCatalog",
     "PyccelKernel",

@@ -45,13 +45,13 @@ from typing import Any, NamedTuple
 import numpy as np
 
 __all__ = [
+    "DEBUG_OPTIONS",
     "CudaArguments",
     "CudaKernel",
     "CudaKernelVariants",
     "CudaParameter",
     "CudaStruct",
     "CudaStructValue",
-    "DEBUG_OPTIONS",
     "ctype_of",
     "parse_cuda_signature",
 ]
