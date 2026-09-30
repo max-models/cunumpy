@@ -213,6 +213,52 @@ The wrapper can also traverse arrays nested in lists, tuples, dictionaries,
 and selected application objects; see the full [API reference](docs/source/api.md)
 for `object_modules`, `is_array`, aliasing, and output declarations.
 
+## Write CUDA kernels next to host kernels
+
+`CudaKernel` wraps a CUDA C kernel (compiled with NVRTC through
+`cupy.RawKernel`) so that it is called with the same arguments as the host
+kernel it mirrors, plus the number of threads. Arrays are never copied: they
+must be CuPy arrays. The `extern "C" __global__` signature is parsed once and
+every call is checked against it: Python scalars are cast to the declared C
+types, and a wrong argument count, an array of the wrong dtype, or a scalar
+that does not fit its type raises instead of silently producing wrong values.
+
+`Kernel` pairs a host kernel with its CUDA kernel and calls the one matching
+the active backend, so kernels can be ported to CUDA one at a time:
+
+```python
+import cunumpy as xp
+
+AXPY = r"""
+extern "C" __global__
+void axpy(double a, const double* x, double* y, int n) {
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i < n) y[i] += a * x[i];
+}
+"""
+
+
+def axpy(a, x, y, n):  # host version, e.g. compiled with Pyccel
+    for i in range(n):
+        y[i] += a * x[i]
+
+
+kernel = xp.Kernel(axpy, xp.CudaKernel(AXPY, "axpy"))
+
+with xp.use_backend("cupy"):
+    x = xp.arange(1000, dtype=xp.float64)
+    y = xp.zeros(1000)
+    kernel(2.0, x, y, 1000, n_threads=1000)  # runs the CUDA kernel
+```
+
+On the CuPy backend, a `Kernel` without CUDA kernel raises
+`NotImplementedError` (or, with `missing_cuda="fallback"`, runs the host kernel
+through `PyccelKernel`, with host copies). Objects implementing
+`__cuda_args__()` (see `CudaArguments`) are flattened into several kernel
+arguments. `KernelCatalog.from_package()` collects kernel pairs from a package
+with one folder per kernel (`name/name_kernels.py` and `name/name_cuda.cu`).
+See the [API reference](docs/source/api.md) for details.
+
 ## Pyodide
 
 CuNumpy supports the NumPy backend in Pyodide. It does not provide CuPy/CUDA

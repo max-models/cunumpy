@@ -2,6 +2,8 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from . import xp
+from .cuda_kernel import CudaArguments, CudaKernel, CudaParameter, parse_cuda_signature
+from .dispatch import Kernel, KernelCatalog
 from .kernel import PyccelKernel
 from .xp import (
     assert_same_backend,
@@ -35,6 +37,11 @@ except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
 
 __all__ = [
+    "CudaArguments",
+    "CudaKernel",
+    "CudaParameter",
+    "Kernel",
+    "KernelCatalog",
     "PyccelKernel",
     "__version__",
     "assert_same_backend",
@@ -51,6 +58,7 @@ __all__ = [
     "is_gpu",
     "memory_info",
     "numpy_backend",
+    "parse_cuda_signature",
     "pin_memory",
     "same_backend",
     "set_backend",

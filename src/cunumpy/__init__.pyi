@@ -8,6 +8,12 @@ import numpy as np
 from numpy import *
 
 from . import xp as xp
+from .cuda_kernel import CudaArguments as CudaArguments
+from .cuda_kernel import CudaKernel as CudaKernel
+from .cuda_kernel import CudaParameter as CudaParameter
+from .cuda_kernel import parse_cuda_signature as parse_cuda_signature
+from .dispatch import Kernel as Kernel
+from .dispatch import KernelCatalog as KernelCatalog
 from .kernel import PyccelKernel as PyccelKernel
 
 def to_numpy(array: Any) -> np.ndarray: ...
