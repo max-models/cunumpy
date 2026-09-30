@@ -17,8 +17,11 @@ from cunumpy import (
     CudaKernelVariants,
     CudaStruct,
     CudaStructValue,
+    as_device_array,
     ctype_of,
+    include_hash,
     parse_cuda_signature,
+    resolve_includes,
 )
 
 AXPY = r"""
@@ -47,11 +50,19 @@ void all_types(bool b, char c, unsigned char uc, short s, int i, unsigned u,
 
 
 class FakeDeviceArray:
-    """Enough of a CuPy array for the argument checks: dtype, interface, address."""
+    """Enough of a CuPy array for the argument checks: dtype, interface, address.
 
-    def __init__(self, dtype, ptr=0x1000):
+    `flags` (e.g. ``SimpleNamespace(c_contiguous=False)``) is only set when
+    given, so the default fake has no `flags` like other minimal stand-ins.
+    """
+
+    def __init__(self, dtype, ptr=0x1000, shape=(3,), flags=None):
         self.dtype = np.dtype(dtype)
         self.data = SimpleNamespace(ptr=ptr)
+        self.shape = tuple(shape)
+        self.ndim = len(self.shape)
+        if flags is not None:
+            self.flags = flags
 
     @property
     def __cuda_array_interface__(self):
@@ -199,6 +210,29 @@ def test_array_checks():
 
     void_kernel = CudaKernel("__global__ void f(void* p) {}", "f")
     void_kernel.prepare_args(FakeDeviceArray(np.int8))  # any dtype
+
+
+def test_non_contiguous_arrays_are_rejected():
+    kernel = CudaKernel(AXPY, "axpy")
+    x = FakeDeviceArray(np.float64)
+    view = FakeDeviceArray(
+        np.float64, shape=(3, 2), flags=SimpleNamespace(c_contiguous=False)
+    )
+    with pytest.raises(
+        TypeError, match=r"argument 2 \(double\* y\) must be C-contiguous"
+    ):
+        kernel.prepare_args(1.0, x, view, 3)
+    # the message says why, and how to fix it
+    with pytest.raises(TypeError, match="read as a flat buffer.*ascontiguousarray"):
+        kernel.prepare_args(1.0, view, x, 3)
+    # void* pointers are checked too
+    void_kernel = CudaKernel("__global__ void f(void* p) {}", "f")
+    with pytest.raises(TypeError, match="must be C-contiguous"):
+        void_kernel.prepare_args(view)
+
+    contiguous = FakeDeviceArray(np.float64, flags=SimpleNamespace(c_contiguous=True))
+    assert kernel.prepare_args(1.0, contiguous, x, 3)[1] is contiguous
+    assert kernel.prepare_args(1.0, x, x, 3)[2] is x  # no flags: passes
 
 
 def test_argument_objects_are_flattened():
@@ -427,6 +461,26 @@ def test_struct_values():
             ids=FakeDeviceArray(np.int64),
             weight=0.5,
         )
+
+
+def test_struct_pointer_fields_must_be_contiguous():
+    values = dict(
+        n=3,
+        charge=2.0,
+        alive=FakeDeviceArray(np.bool_),
+        ids=FakeDeviceArray(np.int64),
+        weight=0.5,
+    )
+    view = FakeDeviceArray(np.float64, flags=SimpleNamespace(c_contiguous=False))
+    with pytest.raises(
+        TypeError, match=r"argument 0 \(double\* x\) must be C-contiguous"
+    ):
+        PARTICLES(x=view, **values)
+
+    x = FakeDeviceArray(np.float64, flags=SimpleNamespace(c_contiguous=True))
+    assert PARTICLES(x=x, **values)["x"] is x
+    x = FakeDeviceArray(np.float64)  # no flags: passes
+    assert PARTICLES(x=x, **values)["x"] is x
 
 
 def test_struct_parameters():
@@ -870,3 +924,196 @@ def test_out_of_bounds_write_on_gpu(debug):
     else:
         assert "RuntimeError: CUDA error after launching kernel" not in output
         assert "Error" in output
+
+
+# included headers and the compile cache
+# ---------------------------------------------------------------------------
+
+INCLUDING_SOURCE = r"""
+#include <cupy/complex.cuh>   // system header: not tracked
+#include "b.cuh"
+// #include "commented_out.cuh"
+/* #include "in_a_block_comment.cuh" */
+#include "missing.cuh"
+extern "C" __global__ void double_it(double* y, int n) {
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i < n) y[i] = twice(y[i]);
+}
+"""
+
+
+@pytest.fixture
+def header_tree(tmp_path):
+    """a.cu includes b.cuh (next to it), which includes sub/c.cuh."""
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "double_it_cuda.cu").write_text(INCLUDING_SOURCE)
+    (tmp_path / "b.cuh").write_text(
+        '#include "sub/c.cuh"\n__device__ double twice(double v) { return FACTOR * v; }\n'
+    )
+    (tmp_path / "sub" / "c.cuh").write_text("#define FACTOR 2\n")
+    return tmp_path
+
+
+def test_resolve_includes(header_tree):
+    headers = resolve_includes(INCLUDING_SOURCE, base_dir=header_tree)
+    assert headers == [header_tree / "b.cuh", header_tree / "sub" / "c.cuh"]
+
+    # through include_dirs instead of base_dir; a missing include is ignored
+    assert resolve_includes(INCLUDING_SOURCE, [header_tree]) == headers
+    assert resolve_includes(INCLUDING_SOURCE) == []
+    assert resolve_includes(INCLUDING_SOURCE, [header_tree / "nowhere"]) == []
+
+    # base_dir comes before include_dirs, in order
+    other = header_tree / "other"
+    other.mkdir()
+    (other / "b.cuh").write_text("")
+    assert resolve_includes(INCLUDING_SOURCE, [other], base_dir=header_tree) == headers
+    assert resolve_includes(INCLUDING_SOURCE, [other, header_tree]) == [other / "b.cuh"]
+
+    # nothing to resolve: the file system is not searched
+    assert resolve_includes(AXPY, ["/does/not/exist"]) == []
+    assert resolve_includes(ALL_TYPES, base_dir="/does/not/exist") == []
+
+
+def test_resolve_includes_cycle(tmp_path):
+    (tmp_path / "x.cuh").write_text('#include "y.cuh"\n')
+    (tmp_path / "y.cuh").write_text('#include "x.cuh"\n#include "y.cuh"\n')
+    headers = resolve_includes('#include "x.cuh"\n', [tmp_path])
+    assert headers == [tmp_path / "x.cuh", tmp_path / "y.cuh"]
+
+
+def test_include_hash(header_tree):
+    headers = resolve_includes(INCLUDING_SOURCE, base_dir=header_tree)
+    digest = include_hash(headers)
+    assert len(digest) == 16 and int(digest, 16) >= 0
+    assert include_hash(headers) == digest
+    assert include_hash(headers[::-1]) != digest  # order matters
+    assert include_hash([]) != digest
+
+    # the same contents at another location: the same hash
+    moved = header_tree / "moved"
+    moved.mkdir()
+    (moved / "b.cuh").write_text((header_tree / "b.cuh").read_text())
+    (moved / "c.cuh").write_text((header_tree / "sub" / "c.cuh").read_text())
+    assert include_hash([moved / "b.cuh", moved / "c.cuh"]) == digest
+
+    # a changed header: another hash
+    (header_tree / "sub" / "c.cuh").write_text("#define FACTOR 3\n")
+    assert include_hash(headers) != digest
+
+
+def test_compile_options_contain_the_header_hash(header_tree):
+    kernel = CudaKernel.from_file(header_tree / "double_it_cuda.cu")
+    assert kernel.source_dir == header_tree
+    assert kernel.include_dirs == (header_tree,)
+    assert kernel.included_headers == (
+        header_tree / "b.cuh",
+        header_tree / "sub" / "c.cuh",
+    )
+
+    digest = include_hash(kernel.included_headers)
+    define = f"-DCUNUMPY_INCLUDE_HASH=0x{digest}"
+    assert kernel.compile_options() == (f"-I{header_tree}", define)
+    assert kernel.options == (f"-I{header_tree}",)  # the define is not in options
+
+    (header_tree / "sub" / "c.cuh").write_text("#define FACTOR 3\n")
+    assert kernel.compile_options() != (f"-I{header_tree}", define)  # not cached
+
+    # options are kept in front, user options too
+    kernel = CudaKernel(
+        INCLUDING_SOURCE,
+        "double_it",
+        options=["-std=c++17"],
+        include_dirs=[header_tree],
+    )
+    assert kernel.source_dir is None
+    assert kernel.compile_options()[:2] == ("-std=c++17", f"-I{header_tree}")
+    assert kernel.compile_options()[2].startswith("-DCUNUMPY_INCLUDE_HASH=0x")
+
+    # without quoted includes (or without found headers) nothing is added
+    assert CudaKernel(AXPY, "axpy").compile_options() == ()
+    assert CudaKernel(INCLUDING_SOURCE, "double_it").included_headers == ()
+    assert CudaKernel(INCLUDING_SOURCE, "double_it").compile_options() == ()
+
+
+def test_editing_a_header_recompiles_on_gpu(header_tree):
+    _skip_without_cupy()
+    import cupy as cp
+
+    path = header_tree / "double_it_cuda.cu"
+    y = cp.ones(10)
+    CudaKernel.from_file(path)(y, 10, n_threads=10)
+    assert cp.all(y == 2)
+
+    (header_tree / "sub" / "c.cuh").write_text("#define FACTOR 3\n")
+    y = cp.ones(10)
+    CudaKernel.from_file(path)(y, 10, n_threads=10)  # same source and -I options
+    assert cp.all(y == 3)
+
+
+# as_device_array: reference or copy once
+# ---------------------------------------------------------------------------
+
+
+def test_as_device_array_raises_on_numpy_backend():
+    with xp.use_backend("numpy"):
+        with pytest.raises(RuntimeError, match="active backend is 'numpy'"):
+            as_device_array(np.zeros(3), np.float64)
+        with pytest.raises(RuntimeError, match="device argument 'degree'"):
+            as_device_array((3, 3, 3), np.int32, name="degree")
+        with pytest.raises(RuntimeError, match="never copied to the device"):
+            as_device_array([1.0, 2.0])
+
+
+@pytest.mark.skipif(not xp.cupy_available(), reason="CuPy not available")
+def test_as_device_array_references_matching_arrays():
+    import cupy as cp
+
+    with xp.use_backend("cupy"):
+        x = cp.arange(6, dtype=cp.float64).reshape(2, 3)
+        assert as_device_array(x, np.float64) is x
+        assert as_device_array(x) is x  # any dtype
+        assert as_device_array(x, "float64", ndim=2, name="x") is x
+
+
+@pytest.mark.skipif(not xp.cupy_available(), reason="CuPy not available")
+def test_as_device_array_copies_once():
+    import cupy as cp
+
+    with xp.use_backend("cupy"):
+        degree = as_device_array((3, 3, 3), np.int32, ndim=1, name="degree")
+        assert isinstance(degree, cp.ndarray) and degree.dtype == np.int32
+        assert degree.flags.c_contiguous and degree.tolist() == [3, 3, 3]
+
+        host = np.arange(4, dtype=np.float64)
+        device = as_device_array(host, np.float64)
+        assert isinstance(device, cp.ndarray) and device.dtype == np.float64
+        assert np.array_equal(device.get(), host)
+
+        x = cp.arange(6, dtype=cp.float32)
+        y = as_device_array(x, np.float64)  # wrong dtype: a copy
+        assert y is not x and y.dtype == np.float64 and cp.allclose(y, x)
+
+        a = cp.arange(12, dtype=cp.float64).reshape(3, 4)
+        view = a[:, 0:3]
+        assert not view.flags.c_contiguous
+        b = as_device_array(view, np.float64)  # non-contiguous: a copy
+        assert b is not view and b.flags.c_contiguous
+        assert cp.array_equal(b, view)
+        # the copy passes the kernel checks, the view does not
+        kernel = CudaKernel(AXPY, "axpy")
+        kernel.prepare_args(1.0, b, b, b.size)
+        with pytest.raises(TypeError, match="must be C-contiguous"):
+            kernel.prepare_args(1.0, view, b, b.size)
+
+
+@pytest.mark.skipif(not xp.cupy_available(), reason="CuPy not available")
+def test_as_device_array_checks_ndim():
+    import cupy as cp
+
+    with xp.use_backend("cupy"):
+        x = cp.zeros((2, 3))
+        with pytest.raises(ValueError, match=r"'x' must have 1 dimension\(s\), got 2"):
+            as_device_array(x, np.float64, ndim=1, name="x")
+        with pytest.raises(ValueError, match="device argument must have 2"):
+            as_device_array((1, 2, 3), np.int32, ndim=2)

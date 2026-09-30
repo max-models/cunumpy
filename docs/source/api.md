@@ -172,6 +172,34 @@ assert xp.get_array_backend(normalized) == xp.get_backend()
 Each conversion returns a suitable array; it does not change the active
 backend or mutate the source.
 
+### `as_device_array(value, dtype=None, ndim=None, *, name=None)`
+
+The "reference or copy once" rule for building CUDA argument objects
+(`CudaArguments` subclasses, `CudaStruct` values). Call it once when the
+argument object is built, never per kernel call:
+
+* a CuPy array that already has `dtype` (any dtype if `dtype` is `None`) and
+  is C-contiguous is returned unchanged, the same object without a copy, so
+  kernels write into the caller's array;
+* anything else becomes one C-contiguous device copy,
+  `cupy.ascontiguousarray(cupy.asarray(value, dtype))`: tuples and lists
+  (`degree = (3, 3, 3)`), host NumPy arrays (one explicit transfer at build
+  time), device arrays of another dtype, and non-contiguous views.
+
+The result passes the pointer checks of `CudaKernel` and `CudaStruct`. On the
+NumPy backend it raises `RuntimeError`: device arguments are only built when
+running on CuPy, and host data is never copied to the device implicitly. If
+`ndim` is given and the result has another number of dimensions, it raises
+`ValueError`; `name` is the argument name used in error messages.
+
+```python
+class DeviceParticles(xp.CudaArguments):
+    def __init__(self, markers, degree):
+        self.markers = xp.as_device_array(markers, np.float64, ndim=2, name="markers")
+        self.degree = xp.as_device_array(degree, np.int32, ndim=1, name="degree")
+        super().__init__(self.markers, self.degree, self.markers.shape[0])
+```
+
 ## Random numbers and dtype
 
 ### `get_rng(seed=None)`
@@ -411,6 +439,7 @@ xp.CudaKernel(
     block_size=128,
     options=(),
     include_dirs=(),
+    source_dir=None,
     structs=(),
     template_args=None,
     check_signature=True,
@@ -428,7 +457,7 @@ GPU.
 
 `from_file` reads the source from a file; the kernel name defaults to the file
 name without `suffix` (`axpy_cuda.cu` -> `axpy`), and the directory of the file
-is added to the include directories.
+is added to the include directories and is the `source_dir`.
 
 ### Parameters
 
@@ -436,6 +465,8 @@ is added to the include directories.
   to 3 integers, e.g. `(16, 16)`; at most 1024 threads in total.
 * `options`: additional NVRTC options, e.g. `("-std=c++17",)`.
 * `include_dirs`: directories for `#include`, passed as `-I<dir>`.
+* `source_dir`: the directory the source was read from, where
+  `#include "..."` files are looked up first (set by `from_file`).
 * `structs`: `CudaStruct` types that the kernel takes as parameters (by
   value), see `CudaStruct` below.
 * `template_args`: template arguments if `name` is a function template, see
@@ -450,6 +481,45 @@ is added to the include directories.
 Properties: `name`, `expression` (`name`, or the template instantiation such
 as `"scale<double, 3>"`), `source`, `block_size`, `options`, `structs`,
 `template_args`, `signature`, `is_compiled`, `debug`.
+as `"scale<double, 3>"`), `source`, `block_size`, `options`, `include_dirs`,
+`source_dir`, `included_headers`, `structs`, `template_args`, `signature`,
+`is_compiled`.
+
+### Included headers and the compile cache
+
+CuPy caches compiled kernels on disk (`~/.cupy/kernel_cache`), keyed on the
+source string and the compiler options only: a file pulled in through
+`#include "..."` is not part of the key, so editing a shared `.cuh` header
+would not recompile the kernels that include it. `CudaKernel` therefore
+resolves the quoted includes of its source when it compiles and adds a define
+with a hash of their contents to the options:
+
+```python
+kernel = xp.CudaKernel.from_file("push/push_cuda.cu", include_dirs=[src_root])
+kernel.included_headers   # (Path('push/helpers.cuh'), Path('.../common.cuh'))
+kernel.options            # ('-Ipush', '-I<src_root>')
+kernel.compile_options()  # options + ('-DCUNUMPY_INCLUDE_HASH=0x3f9a...',)
+```
+
+* `included_headers`: the header files the source includes with
+  `#include "name"`, recursively, each once in order of first inclusion. A
+  name is looked up relative to the including file (`source_dir` for the
+  kernel source, the header's own directory for nested includes), then in
+  `include_dirs` in order, like NVRTC does. System headers in angle brackets
+  and includes that cannot be found are ignored (NVRTC reports the latter).
+  Recomputed at every access, so it follows the files on disk.
+* `compile_options()`: the options passed to CuPy at compile time: `options`
+  plus `-DCUNUMPY_INCLUDE_HASH=0x<hash>` if the source includes any header,
+  where the hash covers the contents of `included_headers` (not their paths).
+  A changed header gives another define, hence another cache entry. Sources
+  without quoted includes never touch the file system.
+
+The two building blocks are available on their own:
+
+* `xp.resolve_includes(source, include_dirs=(), *, base_dir=None)`: the
+  resolved header paths of a source, as a list.
+* `xp.include_hash(paths)`: the first 16 hex digits of the SHA-256 digest of
+  the contents of the files, in order.
 
 ### Calling
 
@@ -503,9 +573,11 @@ The arguments are prepared by `kernel.prepare_args(*args)`:
 * arguments with a `__cuda_args__()` method are replaced by the values it
   returns (see `CudaArguments` and `CudaStruct` below);
 * with a checked signature, the number of arguments must match, and
-  * pointer parameters take CuPy arrays whose dtype matches the pointed-to type
-    (any dtype for `void*`); host arrays raise `TypeError`, they are never
-    copied to the device;
+  * pointer parameters take C-contiguous CuPy arrays whose dtype matches the
+    pointed-to type (any dtype for `void*`); host arrays raise `TypeError`,
+    they are never copied to the device, and so do non-contiguous views such
+    as `a[:, 0:3]`, which the kernel would read as a flat buffer (build the
+    arrays with `as_device_array()` or `cupy.ascontiguousarray()`);
   * struct parameters take values of that `CudaStruct`;
   * Python scalars are cast to the declared type: `int` into integer (with a
     range check, `OverflowError`), floating-point and complex parameters,
@@ -657,8 +729,8 @@ fields and pointers to the scalar types above (or `void*`) are supported.
 * `check_source(source)`: raises `ValueError` if `source` defines the struct
   with other fields; a kernel created with `structs=[...]` does this check.
 * Calling the struct with keyword arguments, one per field, packs the values:
-  pointer fields take CuPy arrays of the declared dtype (never copied), scalar
-  fields are checked and cast like scalar kernel arguments.
+  pointer fields take C-contiguous CuPy arrays of the declared dtype (never
+  copied), scalar fields are checked and cast like scalar kernel arguments.
 
 The result is a `CudaStructValue`: it keeps references to the arrays it points
 to (the packed struct only holds their addresses, so keep the value alive while
@@ -686,6 +758,78 @@ arrays) and matching device argument objects that reference the same data on
 the device, and pass either to the same call. A `CudaArguments` object may also
 return struct values (`CudaStructValue.packed`) among its values.
 
+## `KernelArguments`
+
+```python
+class ParticleArguments(xp.KernelArguments):
+    def __init__(self, particles):
+        self._particles = particles
+        self._host = None
+        self._cuda = None
+
+    def __host_args__(self):
+        if self._host is None:  # e.g. a Pyccel class holding NumPy arrays
+            self._host = MarkerArguments(self._particles.markers)
+        return self._host
+
+    def __cuda_args__(self):
+        if self._cuda is None:  # device arrays and scalars, flattened
+            markers = self._particles.markers
+            self._cuda = (markers, markers.shape[0], markers.shape[1])
+        return self._cuda
+
+
+class Particles:
+    @property
+    def kernel_args(self):
+        if self._kernel_args is None:
+            self._kernel_args = ParticleArguments(self)
+        return self._kernel_args
+
+
+push(particles.kernel_args, dt, n_threads=n)  # same call on both backends
+```
+
+Base class for argument objects that have a host form and a device form. A
+group of arrays, e.g. the marker data of a particle species, is typically
+passed to the host kernel as one object holding NumPy arrays (a Pyccel class)
+and to the CUDA kernel as several device arrays and scalars. `KernelArguments`
+lets one object stand for both, so a `Kernel` call never branches on the
+backend:
+
+* `__host_args__()` returns the single object the host kernel receives in that
+  position. `Kernel` (on the NumPy backend) and `PyccelKernel` (always, so the
+  `missing_cuda="fallback"` path works with the same objects) replace the
+  argument by this value.
+* `__cuda_args__()` returns the tuple of CUDA kernel arguments the object
+  stands for, the `CudaArguments` protocol above; `CudaKernel` flattens it.
+
+Only top-level positional and keyword arguments are resolved, not objects
+nested in tuples, lists or dicts. The check is made on the type, like for
+`__cuda_args__`: an instance attribute named `__host_args__` (e.g. a stored
+object) is not treated as the protocol. Subclassing is optional; both methods
+of the base class raise `NotImplementedError`, so a subclass overrides the ones
+it supports (a `KernelArguments` without `__cuda_args__` raises when it reaches
+a `CudaKernel`).
+
+In the example above both forms are built lazily on first access and cached,
+so a CPU run never builds device arguments and a GPU run never builds the host
+object. The owner is responsible for invalidating the cache (setting the
+stored forms to `None`, or replacing the `ParticleArguments` object) when its
+arrays are replaced, e.g. after resizing, `deepcopy` or unpickling.
+
+### `resolve_host_args(args, kwargs=None)`
+
+Returns `(args, kwargs)` with every top-level argument whose type defines a
+callable `__host_args__()` replaced by its result; everything else is passed
+through untouched. `Kernel` and `PyccelKernel` call it before the host kernel;
+it is exported for code that calls host kernels by other means:
+
+```python
+args, kwargs = xp.resolve_host_args((particles.kernel_args, dt), {"out": out})
+host_push(*args, **kwargs)
+```
+
 ## `Kernel`
 
 ```python
@@ -711,7 +855,9 @@ kernel(*args, n_threads=None, grid=None, block=None, shared_mem=0, stream=None)
 
 calls the kernel of the active backend. The launch arguments are passed to the
 CUDA kernel (`n_threads` or `grid` is required there) and ignored by the host
-kernel. `kernel.compile()` compiles the CUDA kernel now and returns whether
+kernel. Arguments implementing `KernelArguments` are replaced by their
+`__host_args__()` on the host path and flattened via `__cuda_args__()` on the
+CUDA path. `kernel.compile()` compiles the CUDA kernel now and returns whether
 there is one.
 
 Without a CUDA kernel on the CuPy backend, `missing_cuda="raise"` raises
@@ -740,6 +886,7 @@ catalog = xp.KernelCatalog.from_package(
     cuda_suffix="_cuda.cu",
     missing_cuda="raise",
     host_options=None,
+    include_dirs=None,
     **cuda_options,
 )
 kernel = catalog["push"]
@@ -765,8 +912,14 @@ my_kernels/
 * `host_options`: `PyccelKernel` options for the host kernels (see `Kernel`),
   the same for all kernels or a function of the kernel name, e.g.
   `lambda name: {"outputs": OUTPUTS[name]}`.
-* `cuda_options`: passed on to `CudaKernel.from_file`, e.g. `block_size`,
-  `include_dirs` or `structs`.
+* `include_dirs`: include directories of the CUDA kernels, in addition to
+  each kernel's own folder. By default the source root of the top-level
+  package (the directory containing it), so that a kernel of
+  `my_pkg.kernels` can `#include "my_pkg/common.cuh"`. Headers found this
+  way take part in the compile cache key, see "Included headers and the
+  compile cache" under `CudaKernel`.
+* `cuda_options`: passed on to `CudaKernel.from_file`, e.g. `block_size` or
+  `structs`.
 
 `catalog.without_cuda` lists the kernels still to port.
 `catalog.compile_all()` compiles every CUDA kernel and returns their names;

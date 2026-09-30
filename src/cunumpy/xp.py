@@ -459,6 +459,79 @@ def to_cupy(array: Any) -> Any:
     return cp.asarray(array)
 
 
+def as_device_array(
+    value: Any,
+    dtype: Any = None,
+    ndim: int | None = None,
+    *,
+    name: str | None = None,
+) -> Any:
+    """Reference `value` on the device, or make one device copy of it.
+
+    The "reference or copy once" rule for building CUDA argument objects
+    (`CudaArguments` subclasses, `CudaStruct` values): call it once when the
+    argument object is built, never per kernel call. A CuPy array that already
+    has the requested `dtype` (any dtype if `dtype` is None) and is C-contiguous
+    is returned unchanged, the same object without a copy, so kernels write
+    into the caller's array. Anything else is converted with one device copy,
+    ``cupy.ascontiguousarray(cupy.asarray(value, dtype))``: a tuple or list
+    (e.g. ``degree = (3, 3, 3)``), a host NumPy array (one explicit transfer
+    at build time), a device array of another dtype, or a non-contiguous view.
+    The result passes the pointer checks of `CudaKernel` and `CudaStruct`.
+
+    Raises on the NumPy backend: device argument objects are only built when
+    running on CuPy, and host data is never copied to the device implicitly.
+
+    Parameters
+    ----------
+    value : array-like
+        A CuPy array, a NumPy array, or a sequence of numbers.
+    dtype : dtype-like, optional
+        The dtype the kernel expects, e.g. the pointed-to type of the
+        parameter. None keeps the dtype of `value`.
+    ndim : int, optional
+        The expected number of dimensions of the result.
+    name : str, optional
+        Name of the argument, used in error messages.
+
+    Returns
+    -------
+    cupy.ndarray
+        `value` itself, or a C-contiguous device copy with dtype `dtype`.
+
+    Raises
+    ------
+    RuntimeError
+        The active backend is not CuPy.
+    ValueError
+        `ndim` is given and the array has another number of dimensions.
+    """
+    what = f"device argument {name!r}" if name is not None else "device argument"
+    if array_backend.backend != "cupy":
+        raise RuntimeError(
+            f"{what}: the active backend is {array_backend.backend!r}; device "
+            "arguments are only built on the CuPy backend, and host data is never "
+            "copied to the device implicitly (build host arguments instead)"
+        )
+
+    import cupy as cp
+
+    if (
+        isinstance(value, cp.ndarray)
+        and value.flags.c_contiguous
+        and (dtype is None or value.dtype == np.dtype(dtype))
+    ):
+        result = value
+    else:
+        result = cp.ascontiguousarray(cp.asarray(value, dtype=dtype))
+    if ndim is not None and result.ndim != ndim:
+        raise ValueError(
+            f"{what} must have {ndim} dimension(s), got {result.ndim} "
+            f"(shape {result.shape})"
+        )
+    return result
+
+
 def to_cunumpy(array: Any) -> Any:
     """Convert an array to the currently active backend."""
     if array_backend.backend == "cupy" and cupy_available():

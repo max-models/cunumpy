@@ -11,11 +11,14 @@ from .cuda_kernel import (
     CudaStruct,
     CudaStructValue,
     ctype_of,
+    include_hash,
     parse_cuda_signature,
+    resolve_includes,
 )
 from .dispatch import Kernel, KernelCatalog
-from .kernel import PyccelKernel
+from .kernel import KernelArguments, PyccelKernel, resolve_host_args
 from .xp import (
+    as_device_array,
     assert_same_backend,
     bind_local_device,
     cuda_debug,
@@ -61,9 +64,11 @@ __all__ = [
     "CudaStruct",
     "CudaStructValue",
     "Kernel",
+    "KernelArguments",
     "KernelCatalog",
     "PyccelKernel",
     "__version__",
+    "as_device_array",
     "assert_same_backend",
     "bind_local_device",
     "ctype_of",
@@ -78,6 +83,7 @@ __all__ = [
     "get_backend",
     "get_cuda_debug",
     "get_rng",
+    "include_hash",
     "is_cpu",
     "is_gpu",
     "local_rank",
@@ -85,6 +91,8 @@ __all__ = [
     "numpy_backend",
     "parse_cuda_signature",
     "pin_memory",
+    "resolve_host_args",
+    "resolve_includes",
     "same_backend",
     "set_backend",
     "set_cuda_debug",

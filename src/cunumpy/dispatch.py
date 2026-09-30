@@ -27,12 +27,20 @@ from pathlib import Path
 from typing import Any
 
 from .cuda_kernel import CudaKernel
-from .kernel import PyccelKernel
+from .kernel import PyccelKernel, resolve_host_args
 from .xp import get_backend
 
 __all__ = ["Kernel", "KernelCatalog"]
 
 _MISSING_CUDA = ("raise", "fallback")
+
+
+def _source_root(package: str) -> Path:
+    """The directory containing the top-level package of `package`."""
+    top = importlib.import_module(package.partition(".")[0])
+    if top.__file__ is not None:
+        return Path(top.__file__).parent.parent
+    return Path(next(iter(top.__path__))).parent  # namespace package
 
 
 class Kernel:
@@ -66,6 +74,10 @@ class Kernel:
     Both kernels take the same arguments, except that the CUDA kernel gets the
     launch shape (``n_threads`` or ``grid``) and argument objects in their CUDA
     form (see :class:`~cunumpy.CudaArguments` and :class:`~cunumpy.CudaStruct`).
+    An argument object implementing :class:`~cunumpy.KernelArguments` is
+    replaced by its ``__host_args__()`` on the host path and flattened via
+    ``__cuda_args__()`` on the CUDA path, so the call site is the same on both
+    backends.
     """
 
     def __init__(
@@ -199,7 +211,9 @@ class Kernel:
         Parameters
         ----------
         *args
-            Kernel arguments.
+            Kernel arguments. Objects implementing
+            :class:`~cunumpy.KernelArguments` are resolved per backend (see
+            :func:`~cunumpy.resolve_host_args`).
         n_threads, grid, block, shared_mem, stream
             Launch configuration of the CUDA kernel, see
             :meth:`CudaKernel.__call__ <cunumpy.CudaKernel.__call__>`;
@@ -208,6 +222,7 @@ class Kernel:
         """
         kernel = self.get_kernel()
         if kernel is self._host_kernel:
+            args, _ = resolve_host_args(args)
             return kernel(*args)
         if n_threads is None and grid is None:
             raise ValueError(
@@ -252,6 +267,7 @@ class KernelCatalog(Mapping):
         host_options: (
             Mapping[str, Any] | Callable[[str], Mapping[str, Any]] | None
         ) = None,
+        include_dirs: Sequence[str | Path] | None = None,
         **cuda_options: Any,
     ) -> KernelCatalog:
         """Collect the kernels of a package with one folder per kernel.
@@ -275,11 +291,19 @@ class KernelCatalog(Mapping):
             Keyword arguments for the :class:`~cunumpy.PyccelKernel` wrapping each
             host kernel (see :class:`Kernel`): the same for all kernels, or a
             function of the kernel name, e.g. to declare per-kernel ``outputs``.
+        include_dirs : Sequence[str | Path] | None
+            Include directories of the CUDA kernels, in addition to each
+            kernel's own folder. By default the source root of the top-level
+            package (the directory containing it), so that a kernel in
+            ``my_pkg.kernels`` can ``#include "my_pkg/common.cuh"``.
         **cuda_options
-            Passed on to :meth:`CudaKernel.from_file`, e.g. ``block_size``,
-            ``include_dirs`` or ``structs``.
+            Passed on to :meth:`CudaKernel.from_file`, e.g. ``block_size`` or
+            ``structs``.
         """
         root = Path(importlib.import_module(package).__file__).parent
+        if include_dirs is None:
+            include_dirs = (_source_root(package),)
+        cuda_options["include_dirs"] = tuple(include_dirs)
         kernels = {}
         for folder in sorted(p for p in root.iterdir() if p.is_dir()):
             name = folder.name
