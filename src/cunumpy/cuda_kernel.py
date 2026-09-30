@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Callable, Hashable, Iterable, Sequence
+from collections.abc import Callable, Hashable, Iterable, Iterator, Sequence
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -399,17 +399,16 @@ def _scalar_checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
                 f"{_describe(param, index)} cannot take a {value.dtype} scalar "
                 f"without losing information"
             )
-        if isinstance(value, bool):
-            if kind in "biu":
-                return scalar_type(value)
-        elif isinstance(value, int):
+        # bool is a subclass of int, but must not be cast like one
+        is_bool = isinstance(value, bool)
+        if is_bool and kind in "biu":
+            return scalar_type(value)
+        if isinstance(value, int) and not is_bool:
             return cast_int(int(value))
-        elif isinstance(value, float):
-            if kind in "fc":
-                return scalar_type(value)
-        elif isinstance(value, complex):
-            if kind == "c":
-                return scalar_type(value)
+        if isinstance(value, float) and kind in "fc":
+            return scalar_type(value)
+        if isinstance(value, complex) and kind == "c":
+            return scalar_type(value)
         raise TypeError(
             f"{_describe(param, index)} cannot take a value of type "
             f"{value_type.__name__}"
@@ -981,6 +980,10 @@ class CudaKernelVariants:
 
     def __len__(self) -> int:
         return len(self._kernels)
+
+    def __iter__(self) -> Iterator[tuple[Hashable, ...]]:
+        """Iterate over the keys of the variants created so far."""
+        return iter(list(self._kernels))
 
     def keys(self) -> list[tuple[Hashable, ...]]:
         """The keys of the variants created so far."""

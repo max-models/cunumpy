@@ -49,11 +49,13 @@ void all_types(bool b, char c, unsigned char uc, short s, int i, unsigned u,
 class FakeDeviceArray:
     """Enough of a CuPy array for the argument checks: dtype, interface, address."""
 
-    __cuda_array_interface__ = {}
-
     def __init__(self, dtype, ptr=0x1000):
         self.dtype = np.dtype(dtype)
         self.data = SimpleNamespace(ptr=ptr)
+
+    @property
+    def __cuda_array_interface__(self):
+        return {}
 
 
 def _skip_without_cupy():
@@ -214,7 +216,7 @@ def test_argument_objects_are_flattened():
     kernel = CudaKernel(AXPY, "axpy")
     x, y = FakeDeviceArray(np.float64), FakeDeviceArray(np.float64)
     for args in (Vectors(x, y, 7), Duck(x, y, 7)):
-        a, x_out, y_out, n = kernel.prepare_args(2.0, args)
+        _a, x_out, y_out, n = kernel.prepare_args(2.0, args)
         assert x_out is x and y_out is y and n == 7 and type(n) is np.int32
 
     # the flattened arguments are checked too
@@ -350,9 +352,7 @@ PARTICLES = CudaStruct(
     ],
 )
 
-PUSH_SOURCE = (
-    PARTICLES.declaration
-    + r"""
+PUSH_SOURCE = PARTICLES.declaration + r"""
 extern "C" __global__
 void push(Particles p, double dt, double* out, unsigned long long* size) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
@@ -363,7 +363,6 @@ void push(Particles p, double dt, double* out, unsigned long long* size) {
     if (i < p.n && p.alive[i]) p.x[i] += dt * p.charge;
 }
 """
-)
 
 
 def test_struct_layout_and_declaration():
@@ -561,7 +560,7 @@ def test_variants():
     assert variants.get(3, np.float64) is k3  # created once
     assert variants.get(2, np.float32) is not k3
     assert created == [(3, np.float64), (2, np.float32)] and len(variants) == 2
-    assert variants.keys() == [(3, np.float64), (2, np.float32)]
+    assert variants.keys() == list(variants) == [(3, np.float64), (2, np.float32)]
     assert [p.ctype for p in k3.signature] == ["double", "int", "int", "int"]
 
     with pytest.raises(TypeError, match="must return a CudaKernel"):
@@ -578,7 +577,7 @@ def test_variants_on_gpu():
         )
     )
     variants.compile_all([(2, np.float64), (1, np.int32)])
-    assert all(variants.get(*key).is_compiled for key in variants.keys())
+    assert all(variants.get(*key).is_compiled for key in variants)
 
     out = cp.zeros(1)
     variants.get(2, np.float64)(out, 3, 4, n_threads=1)

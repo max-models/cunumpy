@@ -561,8 +561,8 @@ matvec.get(3, np.float64)(mat, x, out, n_threads=out.size)  # created once
 matvec.compile_all([(3, np.float64), (3, np.complex128)])   # at setup
 ```
 
-`get(*key)` calls the factory the first time a key is used; `keys()` and
-`len()` list the variants created so far; `compile_all(keys=())` creates the
+`get(*key)` calls the factory the first time a key is used; `keys()`,
+iteration and `len()` give the variants created so far; `compile_all(keys=())` creates the
 given variants and compiles all of them.
 
 ## `CudaStruct`

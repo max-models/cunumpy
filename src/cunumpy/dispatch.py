@@ -249,9 +249,9 @@ class KernelCatalog(Mapping):
         host_suffix: str = "_kernels",
         cuda_suffix: str = "_cuda.cu",
         missing_cuda: str = "raise",
-        host_options: Mapping[str, Any]
-        | Callable[[str], Mapping[str, Any]]
-        | None = None,
+        host_options: (
+            Mapping[str, Any] | Callable[[str], Mapping[str, Any]] | None
+        ) = None,
         **cuda_options: Any,
     ) -> KernelCatalog:
         """Collect the kernels of a package with one folder per kernel.
