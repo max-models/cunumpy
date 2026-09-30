@@ -255,6 +255,52 @@ from mpi4py import MPI  # initializes MPI after the device is bound
 Unlike `set_device_for_rank()`, it needs no MPI rank, and it uses the rank
 within the node rather than assuming contiguous ranks per node.
 
+### `mpi_is_cuda_aware(comm=None, *, method="probe")`
+
+Checks whether the MPI library can send and receive device (CuPy) buffers,
+which needs a CUDA-aware MPI build; with a plain build, passing a CuPy array
+to MPI segfaults or silently sends garbage. Returns `False` on the NumPy
+backend and without a functional CuPy, without importing `mpi4py`: the
+question only makes sense with device buffers. `comm` defaults to
+`mpi4py.MPI.COMM_WORLD`, and `mpi4py` is imported only then.
+
+The check is collective: every rank of `comm` must call it, and all ranks get
+the same result. Each rank sends a tiny device array to rank
+`(rank + 1) % size` and receives from `(rank - 1) % size` with `Sendrecv`
+(after `synchronize_for_mpi()`; with a single rank, it sends to itself), checks
+the received values, and the ranks combine their outcomes with
+`allreduce(op=LAND)`. Any exception in the exchange, on any rank, gives
+`False`. Only `method="probe"` exists: `mpi4py` does not expose the library
+query (`MPIX_Query_cuda_support`) and the library version string is not a
+reliable indicator.
+
+An MPI library that is not CUDA-aware may also read the device address as a
+host address and crash the process. A segfault inside this call therefore
+means the same thing as `False`. Call it once at startup, after
+`bind_local_device()` and `MPI_Init`, before any communication of device
+buffers.
+
+### `require_cuda_aware_mpi(comm=None)`
+
+Raises `RuntimeError`, explaining how to get a CUDA-aware build (Open MPI
+`--with-cuda`, MPICH with a CUDA-enabled UCX, the site's CUDA-aware MPI
+module), if `mpi_is_cuda_aware(comm)` returns `False` on the CuPy backend.
+No-op on the NumPy backend. The complete startup sequence for one rank per
+GPU:
+
+```python
+import cunumpy as xp
+
+xp.set_backend("cupy")
+xp.bind_local_device()  # 1. select the GPU, before MPI_Init
+from mpi4py import MPI  # 2. MPI_Init, on the bound device
+
+xp.require_cuda_aware_mpi()  # 3. clear error instead of a segfault later
+
+xp.synchronize_for_mpi(send, recv)  # 4. before every MPI call with device buffers
+MPI.COMM_WORLD.Sendrecv(send, dest, recvbuf=recv, source=source)
+```
+
 ### `synchronize_for_mpi(*arrays)`
 
 Waits for the work pending on the current stream if at least one of `arrays`

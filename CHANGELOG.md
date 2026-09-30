@@ -30,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `xp.local_rank()`: The node-local rank from the MPI launcher's environment (Open MPI, MVAPICH2, Intel MPI/MPICH, PMI, Cray PALS, Slurm, `LOCAL_RANK`), available before `MPI_Init`.
 - `xp.bind_local_device()`: Selects the GPU `local_rank() % device_count()` and creates its context, before `MPI_Init`, for one-rank-per-GPU MPI programs.
 - `xp.synchronize_for_mpi(*arrays)`: Waits for pending work on the current stream before MPI uses device buffers (no-op for host buffers and on the NumPy backend).
+- `xp.mpi_is_cuda_aware(comm=None)`: Collective startup check of whether the MPI library can pass device buffers: each rank exchanges a tiny CuPy array with `Sendrecv` and the ranks agree with `allreduce`; any failure gives `False`. Returns `False` on the NumPy backend and without a functional CuPy, without importing `mpi4py`.
+- `xp.require_cuda_aware_mpi(comm=None)`: Raises `RuntimeError`, with hints on obtaining a CUDA-aware build, when `mpi_is_cuda_aware()` fails on the CuPy backend; no-op on NumPy.
 
 ## [0.2.0] - 2026-09-28
 
