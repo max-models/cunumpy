@@ -30,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `xp.local_rank()`: The node-local rank from the MPI launcher's environment (Open MPI, MVAPICH2, Intel MPI/MPICH, PMI, Cray PALS, Slurm, `LOCAL_RANK`), available before `MPI_Init`.
 - `xp.bind_local_device()`: Selects the GPU `local_rank() % device_count()` and creates its context, before `MPI_Init`, for one-rank-per-GPU MPI programs.
 - `xp.synchronize_for_mpi(*arrays)`: Waits for pending work on the current stream before MPI uses device buffers (no-op for host buffers and on the NumPy backend).
+- `xp.count_transfers()`: Context manager yielding a `TransferCounter` that records every host/device transfer made through cunumpy in the block, with the call site of each: `to_numpy`/`to_cunumpy` of a device array (`to_host`), `to_cupy`/`to_cunumpy` of a host array (`to_device`), `PyccelKernel` calls that copy device arrays to the host (`kernel_conversions`, one per call) and `Kernel` calls that fall back to the host kernel on the CuPy backend (`fallbacks`). `counter.total`, `counter.events` (`TransferEvent(kind, description, where)`) and `counter.report()` (events grouped by kind and call site) let a test verify that a time step does not transfer. Counters nest; calls that do not copy (e.g. `to_numpy` of a NumPy array) are not counted. Transfers that bypass cunumpy (raw `cupy.ndarray.get()`, `cupy.asarray(numpy_array)`, conversions inside other libraries) are not seen.
+- `xp.assert_no_transfers()`: Context manager raising `AssertionError` with the counter's report if the block makes a transfer through cunumpy.
 
 ## [0.2.0] - 2026-09-28
 

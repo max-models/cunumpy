@@ -28,6 +28,8 @@ from typing import Any
 
 from .cuda_kernel import CudaKernel
 from .kernel import PyccelKernel
+from .transfers import _ACTIVE as _COUNTERS
+from .transfers import _record
 from .xp import get_backend
 
 __all__ = ["Kernel", "KernelCatalog"]
@@ -208,6 +210,12 @@ class Kernel:
         """
         kernel = self.get_kernel()
         if kernel is self._host_kernel:
+            if _COUNTERS and self._cuda_kernel is None and get_backend() == "cupy":
+                _record(
+                    "fallback",
+                    f"Kernel {self._name!r} has no CUDA kernel: host kernel "
+                    "called on the CuPy backend",
+                )
             return kernel(*args)
         if n_threads is None and grid is None:
             raise ValueError(

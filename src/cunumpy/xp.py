@@ -10,6 +10,9 @@ from typing import TYPE_CHECKING, Any, Literal
 import array_api_compat
 import array_api_compat.numpy as np
 
+from .transfers import _ACTIVE as _COUNTERS
+from .transfers import _describe, _record
+
 BackendType = Literal["numpy", "cupy"]
 
 
@@ -385,16 +388,16 @@ def synchronize() -> None:
             )
 
 
-def to_numpy(array: Any) -> np.ndarray:
-    """Convert an array to a NumPy array."""
+def _to_numpy(array: Any) -> np.ndarray:
+    """`to_numpy` without transfer counting, for internal use."""
     if get_array_backend(array) == "cupy":
         return array.get()
 
     return np.asarray(array)
 
 
-def to_cupy(array: Any) -> Any:
-    """Convert an array to a CuPy array."""
+def _to_cupy(array: Any) -> Any:
+    """`to_cupy` without transfer counting, for internal use."""
     if not cupy_available():
         raise ImportError("CuPy is not available or not functional.")
 
@@ -403,8 +406,34 @@ def to_cupy(array: Any) -> Any:
     return cp.asarray(array)
 
 
+def to_numpy(array: Any) -> np.ndarray:
+    """Convert an array to a NumPy array.
+
+    A CuPy array is copied to the host, which `count_transfers()` counts as a
+    ``to_host`` transfer; anything else is passed through `numpy.asarray`.
+    """
+    if _COUNTERS and get_array_backend(array) == "cupy":
+        _record("to_host", f"to_numpy({_describe(array)})")
+    return _to_numpy(array)
+
+
+def to_cupy(array: Any) -> Any:
+    """Convert an array to a CuPy array.
+
+    Anything that is not a CuPy array already is copied to the device, which
+    `count_transfers()` counts as a ``to_device`` transfer.
+    """
+    if _COUNTERS and get_array_backend(array) != "cupy":
+        _record("to_device", f"to_cupy({_describe(array)})")
+    return _to_cupy(array)
+
+
 def to_cunumpy(array: Any) -> Any:
-    """Convert an array to the currently active backend."""
+    """Convert an array to the currently active backend.
+
+    Delegates to `to_cupy()` or `to_numpy()`, so an actual copy is counted by
+    `count_transfers()` as a ``to_device`` or ``to_host`` transfer.
+    """
     if array_backend.backend == "cupy" and cupy_available():
         return to_cupy(array)
     return to_numpy(array)
