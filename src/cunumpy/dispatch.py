@@ -333,6 +333,20 @@ class KernelCatalog(Mapping):
         """Names of the kernels without a CUDA kernel, i.e. still to port."""
         return [name for name, kernel in self._kernels.items() if not kernel.has_cuda]
 
+    def parity_cases(self) -> list[tuple[str, Kernel]]:
+        """The ``(name, kernel)`` pairs of the kernels that have a CUDA kernel.
+
+        For a parametrised parity test of the whole catalog with
+        :func:`cunumpy.testing.assert_kernels_agree`::
+
+            @pytest.mark.parametrize("name, kernel", catalog.parity_cases())
+            def test_parity(name, kernel):
+                assert_kernels_agree(kernel, make_args[name], n_threads=1000)
+        """
+        return [
+            (name, kernel) for name, kernel in self._kernels.items() if kernel.has_cuda
+        ]
+
     def compile_all(self) -> list[str]:
         """Compile all CUDA kernels now, e.g. at setup instead of in the first step.
 

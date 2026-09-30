@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `xp.local_rank()`: The node-local rank from the MPI launcher's environment (Open MPI, MVAPICH2, Intel MPI/MPICH, PMI, Cray PALS, Slurm, `LOCAL_RANK`), available before `MPI_Init`.
 - `xp.bind_local_device()`: Selects the GPU `local_rank() % device_count()` and creates its context, before `MPI_Init`, for one-rank-per-GPU MPI programs.
 - `xp.synchronize_for_mpi(*arrays)`: Waits for pending work on the current stream before MPI uses device buffers (no-op for host buffers and on the NumPy backend).
+- `cunumpy.testing`: Helpers for testing host/CUDA kernel pairs with pytest (pytest is imported only when its objects are used, never by `import cunumpy`). `requires_cupy` is a `skipif` marker for tests that need a GPU, `BACKENDS = ["numpy", pytest.param("cupy", marks=requires_cupy)]` parametrizes a test over the backends, and the `backend` fixture runs a test once per backend with that backend active.
+- `cunumpy.testing.assert_kernels_agree(kernel, make_args, *, n_threads=..., rtol=1e-12, atol=0.0, n_calls=1, outputs=None, seed=0)`: Builds the arguments with `make_args(backend, seed)` on the NumPy and the CuPy backend, runs the host and the CUDA kernel of a `Kernel`, and compares the arrays they wrote (the declared `outputs`, or every array argument, including arrays held by argument objects) with `numpy.testing.assert_allclose`, naming the differing argument. Skips the test without a GPU and returns the host arrays.
+- `KernelCatalog.parity_cases()`: The `(name, kernel)` pairs of the kernels with a CUDA version, so one test parametrised with them and `assert_kernels_agree` covers a whole catalog.
+- `cunumpy.testing.device_function_kernel(header_source, signature, *, name=None, includes=(), n_threads_param="n")`: Generates an elementwise `extern "C" __global__` wrapper around a `__device__` function given its C prototype (pointer parameters are shared, scalar parameters become per-thread arrays, the return value goes into `out`), so device helpers can be tested from Python against their host versions without a hand-written test kernel.
 
 ## [0.2.0] - 2026-09-28
 
