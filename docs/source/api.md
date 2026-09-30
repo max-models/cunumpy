@@ -656,6 +656,78 @@ arrays) and matching device argument objects that reference the same data on
 the device, and pass either to the same call. A `CudaArguments` object may also
 return struct values (`CudaStructValue.packed`) among its values.
 
+## `KernelArguments`
+
+```python
+class ParticleArguments(xp.KernelArguments):
+    def __init__(self, particles):
+        self._particles = particles
+        self._host = None
+        self._cuda = None
+
+    def __host_args__(self):
+        if self._host is None:  # e.g. a Pyccel class holding NumPy arrays
+            self._host = MarkerArguments(self._particles.markers)
+        return self._host
+
+    def __cuda_args__(self):
+        if self._cuda is None:  # device arrays and scalars, flattened
+            markers = self._particles.markers
+            self._cuda = (markers, markers.shape[0], markers.shape[1])
+        return self._cuda
+
+
+class Particles:
+    @property
+    def kernel_args(self):
+        if self._kernel_args is None:
+            self._kernel_args = ParticleArguments(self)
+        return self._kernel_args
+
+
+push(particles.kernel_args, dt, n_threads=n)  # same call on both backends
+```
+
+Base class for argument objects that have a host form and a device form. A
+group of arrays, e.g. the marker data of a particle species, is typically
+passed to the host kernel as one object holding NumPy arrays (a Pyccel class)
+and to the CUDA kernel as several device arrays and scalars. `KernelArguments`
+lets one object stand for both, so a `Kernel` call never branches on the
+backend:
+
+* `__host_args__()` returns the single object the host kernel receives in that
+  position. `Kernel` (on the NumPy backend) and `PyccelKernel` (always, so the
+  `missing_cuda="fallback"` path works with the same objects) replace the
+  argument by this value.
+* `__cuda_args__()` returns the tuple of CUDA kernel arguments the object
+  stands for, the `CudaArguments` protocol above; `CudaKernel` flattens it.
+
+Only top-level positional and keyword arguments are resolved, not objects
+nested in tuples, lists or dicts. The check is made on the type, like for
+`__cuda_args__`: an instance attribute named `__host_args__` (e.g. a stored
+object) is not treated as the protocol. Subclassing is optional; both methods
+of the base class raise `NotImplementedError`, so a subclass overrides the ones
+it supports (a `KernelArguments` without `__cuda_args__` raises when it reaches
+a `CudaKernel`).
+
+In the example above both forms are built lazily on first access and cached,
+so a CPU run never builds device arguments and a GPU run never builds the host
+object. The owner is responsible for invalidating the cache (setting the
+stored forms to `None`, or replacing the `ParticleArguments` object) when its
+arrays are replaced, e.g. after resizing, `deepcopy` or unpickling.
+
+### `resolve_host_args(args, kwargs=None)`
+
+Returns `(args, kwargs)` with every top-level argument whose type defines a
+callable `__host_args__()` replaced by its result; everything else is passed
+through untouched. `Kernel` and `PyccelKernel` call it before the host kernel;
+it is exported for code that calls host kernels by other means:
+
+```python
+args, kwargs = xp.resolve_host_args((particles.kernel_args, dt), {"out": out})
+host_push(*args, **kwargs)
+```
+
 ## `Kernel`
 
 ```python
@@ -681,7 +753,9 @@ kernel(*args, n_threads=None, grid=None, block=None, shared_mem=0, stream=None)
 
 calls the kernel of the active backend. The launch arguments are passed to the
 CUDA kernel (`n_threads` or `grid` is required there) and ignored by the host
-kernel. `kernel.compile()` compiles the CUDA kernel now and returns whether
+kernel. Arguments implementing `KernelArguments` are replaced by their
+`__host_args__()` on the host path and flattened via `__cuda_args__()` on the
+CUDA path. `kernel.compile()` compiles the CUDA kernel now and returns whether
 there is one.
 
 Without a CUDA kernel on the CuPy backend, `missing_cuda="raise"` raises
