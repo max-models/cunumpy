@@ -159,6 +159,22 @@ active CuPy device and `None` on NumPy. `set_device_for_rank(rank)` is a
 round-robin convenience for MPI layouts where local ranks map contiguously to
 GPUs. If your scheduler uses a different mapping, select the device directly.
 
+For MPI programs with one rank per GPU, `bind_local_device()` selects the GPU
+from the node-local rank that the MPI launcher exports (`local_rank()`), so it
+can run before MPI is initialized, as CUDA-aware MPI requires. Before passing
+device buffers to MPI, call `synchronize_for_mpi(*buffers)`: kernels run
+asynchronously, and MPI would otherwise send a buffer a kernel is still
+writing, without an error.
+
+```python
+xp.set_backend("cupy")
+xp.bind_local_device()  # before MPI_Init
+from mpi4py import MPI
+
+xp.synchronize_for_mpi(send, recv)
+MPI.COMM_WORLD.Sendrecv(send, dest, recvbuf=recv, source=source)
+```
+
 CuPy caches released allocations in memory pools. This can make process-level
 GPU memory appear occupied after arrays go out of scope. `free_memory()` asks
 CuPy to release currently free cached blocks; it does not free memory still
@@ -253,11 +269,39 @@ with xp.use_backend("cupy"):
 
 On the CuPy backend, a `Kernel` without CUDA kernel raises
 `NotImplementedError` (or, with `missing_cuda="fallback"`, runs the host kernel
-through `PyccelKernel`, with host copies). Objects implementing
+through `PyccelKernel`, with host copies; `host_options` configure that
+`PyccelKernel`). `KernelCatalog.from_package()` collects kernel pairs from a
+package with one folder per kernel (`name/name_kernels.py` and
+`name/name_cuda.cu`), and `catalog.compile_all()` compiles all CUDA kernels at
+setup.
+
+Groups of arguments can be passed as one: objects implementing
 `__cuda_args__()` (see `CudaArguments`) are flattened into several kernel
-arguments. `KernelCatalog.from_package()` collects kernel pairs from a package
-with one folder per kernel (`name/name_kernels.py` and `name/name_cuda.cu`).
-See the [API reference](docs/source/api.md) for details.
+arguments, and `CudaStruct` defines a C struct once (its C `declaration` and
+the matching memory layout) and packs values into it, which the kernel takes
+as one parameter:
+
+```python
+Vec = xp.CudaStruct("Vec", [("data", "double*"), ("n", "int")])
+scale = xp.CudaKernel(
+    Vec.declaration
+    + r"""
+    extern "C" __global__ void scale(Vec v, double a) {
+        int i = blockDim.x * blockIdx.x + threadIdx.x;
+        if (i < v.n) v.data[i] *= a;
+    }""",
+    "scale",
+    structs=[Vec],
+)
+scale(Vec(data=y, n=y.size), 0.5, n_threads=y.size)
+```
+
+Launches can be 1D to 3D (`n_threads=(nx, ny)`, `block_size=(16, 16)`) or use
+an explicit `grid`, with dynamic shared memory (`shared_mem`) and a `stream`.
+C++ function templates are instantiated with `template_args`, and
+`CudaKernelVariants` caches kernels whose source is generated per variant
+(e.g. per dimension and dtype). See the [API reference](docs/source/api.md) for
+details.
 
 ## Pyodide
 

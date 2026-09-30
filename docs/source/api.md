@@ -227,6 +227,52 @@ mapping differs:
 device_id = xp.set_device_for_rank(mpi_rank)
 ```
 
+### `local_rank()`
+
+The rank of the process within its node, read from the environment variables
+that MPI launchers export (Open MPI, MVAPICH2, Intel MPI/MPICH, PMI, Cray
+PALS, Slurm, `LOCAL_RANK`), or `0` if none is set. The launcher sets them
+before `MPI_Init`, so this works before MPI is initialized and without
+importing `mpi4py`.
+
+### `bind_local_device()`
+
+Selects device `local_rank() % device_count()` for this process and creates its
+CUDA context. Returns the device id, or `None` on the NumPy backend or without
+devices. Call it before `MPI_Init` (before importing `mpi4py.MPI`), so that a
+CUDA-aware MPI sees the right device; otherwise all ranks of a node would use
+device 0. If the launcher gives each rank its own device through
+`CUDA_VISIBLE_DEVICES`, each process sees one device and selects it:
+
+```python
+import cunumpy as xp
+
+xp.set_backend("cupy")
+xp.bind_local_device()
+from mpi4py import MPI  # initializes MPI after the device is bound
+```
+
+Unlike `set_device_for_rank()`, it needs no MPI rank, and it uses the rank
+within the node rather than assuming contiguous ranks per node.
+
+### `synchronize_for_mpi(*arrays)`
+
+Waits for the work pending on the current stream if at least one of `arrays`
+is a CuPy array; `None` entries and host arrays are ignored, so it costs
+nothing for host buffers and on the NumPy backend. Call it before every MPI
+call that sends or receives device buffers: CuPy launches kernels
+asynchronously and MPI knows nothing about CUDA streams, so a buffer that a
+kernel is still writing would be sent as it is at that moment, without an
+error:
+
+```python
+xp.synchronize_for_mpi(send_buffer, recv_buffer)
+comm.Sendrecv(send_buffer, dest, recvbuf=recv_buffer, source=source)
+```
+
+No synchronization is needed after MPI returns: kernels launched afterwards see
+the received data.
+
 ### `memory_info()`
 
 Returns `(free_bytes, total_bytes)` reported by the CUDA runtime for the
@@ -365,15 +411,19 @@ xp.CudaKernel(
     block_size=128,
     options=(),
     include_dirs=(),
+    structs=(),
+    template_args=None,
     check_signature=True,
 )
 xp.CudaKernel.from_file(path, name=None, *, suffix="_cuda.cu", **kwargs)
 ```
 
-Wraps the `extern "C" __global__` function `name` in the CUDA C `source`. The
-kernel is compiled with NVRTC through `cupy.RawKernel` on the first call (or
-by `compile()`), and cached. CuPy is imported only then, so kernels can be
-created and their signatures parsed without CuPy.
+Wraps the `__global__` function `name` in the CUDA C `source` (declared
+`extern "C"`, unless it is a template). The kernel is compiled with NVRTC
+through CuPy on the first call (or by `compile()`), and cached, also on disk by
+CuPy. CuPy is imported only then, so kernels can be created and their
+signatures parsed without CuPy; `compile()` raises `RuntimeError` without a
+GPU.
 
 `from_file` reads the source from a file; the kernel name defaults to the file
 name without `suffix` (`axpy_cuda.cu` -> `axpy`), and the directory of the file
@@ -381,30 +431,79 @@ is added to the include directories.
 
 ### Parameters
 
-* `block_size`: threads per block.
+* `block_size`: threads per block, an integer for 1D launches or a tuple of 1
+  to 3 integers, e.g. `(16, 16)`; at most 1024 threads in total.
 * `options`: additional NVRTC options, e.g. `("-std=c++17",)`.
 * `include_dirs`: directories for `#include`, passed as `-I<dir>`.
+* `structs`: `CudaStruct` types that the kernel takes as parameters (by
+  value), see `CudaStruct` below.
+* `template_args`: template arguments if `name` is a function template, see
+  "Templates and generated kernels" below.
 * `check_signature`: parse the signature and check every call against it
   (default). Raises `ValueError` if the signature cannot be parsed, e.g. with
-  templates, macros or pointers to pointers in the parameter list; pass
-  `False` to launch with the arguments as they are, like `cupy.RawKernel`.
+  macros or pointers to pointers in the parameter list; pass `False` to launch
+  with the arguments as they are, like `cupy.RawKernel`.
+
+Properties: `name`, `expression` (`name`, or the template instantiation such
+as `"scale<double, 3>"`), `source`, `block_size`, `options`, `structs`,
+`template_args`, `signature`, `is_compiled`.
 
 ### Calling
 
 ```python
-kernel(*args, n_threads, shared_mem=0, stream=None)
+kernel(*args, n_threads=None, grid=None, block=None, shared_mem=0, stream=None)
 ```
 
-Launches `ceil(n_threads / block_size)` blocks of `block_size` threads on
-`stream` (the current stream if `None`); nothing is launched for
-`n_threads=0`. The arguments are prepared by `kernel.prepare_args(*args)`:
+Launches the kernel on `stream` (the current stream if `None`). The launch
+shape is given either by `n_threads` or by `grid`:
+
+* `n_threads`: number of threads, an integer or a tuple of 1 to 3 integers such
+  as `(nx, ny)`. The grid is `ceil(n_threads / block)` per dimension. With a 1D
+  `block_size` and multi-dimensional `n_threads`, the block is
+  `(block_size, 1, ...)`.
+* `grid`: number of blocks per dimension, instead of `n_threads`.
+* `block`: block shape for this call, instead of `block_size`.
+* `shared_mem`: dynamic shared memory per block in bytes, for
+  `extern __shared__` arrays.
+
+Nothing is launched if the grid has a zero dimension (e.g. `n_threads=0`).
+`kernel.launch_shape(n_threads=None, *, grid=None, block=None)` returns the
+`(grid, block)` a call would use, e.g. to size a per-block output:
+
+```python
+BLOCK_SUM = r"""
+extern "C" __global__ void block_sum(const double* x, double* out, int n) {
+    extern __shared__ double buffer[];
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    buffer[threadIdx.x] = i < n ? x[i] : 0.0;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s /= 2) {
+        if (threadIdx.x < s) buffer[threadIdx.x] += buffer[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) out[blockIdx.x] = buffer[0];
+}
+"""
+block_sum = xp.CudaKernel(BLOCK_SUM, "block_sum", block_size=128)
+(n_blocks,), _ = block_sum.launch_shape(x.size)
+partial = xp.zeros(n_blocks)
+block_sum(x, partial, x.size, n_threads=x.size, shared_mem=128 * 8)
+```
+
+In a 2D kernel, use `blockIdx.y`/`threadIdx.y` for the second dimension and
+launch with `n_threads=(nx, ny)` and, e.g., `block_size=(16, 16)`.
+
+### Argument checks
+
+The arguments are prepared by `kernel.prepare_args(*args)`:
 
 * arguments with a `__cuda_args__()` method are replaced by the values it
-  returns (see `CudaArguments`);
+  returns (see `CudaArguments` and `CudaStruct` below);
 * with a checked signature, the number of arguments must match, and
   * pointer parameters take CuPy arrays whose dtype matches the pointed-to type
     (any dtype for `void*`); host arrays raise `TypeError`, they are never
     copied to the device;
+  * struct parameters take values of that `CudaStruct`;
   * Python scalars are cast to the declared type: `int` into integer (with a
     range check, `OverflowError`), floating-point and complex parameters,
     `float` into floating-point and complex parameters, `bool` into boolean
@@ -425,9 +524,87 @@ itself costs about as much), which is negligible for kernels that run for
 C types are mapped to NumPy dtypes as on Linux (LP64): `int` is `int32`,
 `long` and `long long` are `int64`, `float` is `float32`, `double` is
 `float64`, `complex<double>` is `complex128`; fixed-width types such as
-`int64_t` and `size_t` are supported too. `xp.parse_cuda_signature(source,
-name)` returns the parsed parameters (`CudaParameter` tuples of `name`,
-`ctype`, `dtype`, `pointer`).
+`int64_t` and `size_t` are supported too. `xp.ctype_of(dtype)` gives the C
+type of a dtype (`xp.ctype_of(np.float64) == "double"`), e.g. to generate
+source. `xp.parse_cuda_signature(source, name, *, structs=(),
+template_args=None)` returns the parsed parameters (`CudaParameter` tuples of
+`name`, `ctype`, `dtype`, `pointer`, `struct`).
+
+### Templates and generated kernels
+
+A function template is instantiated with `template_args`: C types (or NumPy
+dtypes, converted with `ctype_of`) for type parameters, integers or booleans
+for non-type parameters. The template parameters are substituted into the
+signature, so calls are checked as for any other kernel:
+
+```python
+SCALE = r"""
+template <typename T, int N>
+__global__ void scale(T* x, T factor, int n) {
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i < n) x[i] = factor * x[i] * (T)N;
+}
+"""
+scale_f64 = xp.CudaKernel(SCALE, "scale", template_args=(np.float64, 3))
+scale_f64(x, 2.0, x.size, n_threads=x.size)  # instantiation scale<double, 3>
+```
+
+For kernels whose source is generated per variant (e.g. per number of
+dimensions and dtype), `CudaKernelVariants` creates and caches one kernel per
+key:
+
+```python
+matvec = xp.CudaKernelVariants(
+    lambda ndim, dtype: xp.CudaKernel(make_source(ndim, xp.ctype_of(dtype)), "matvec")
+)
+matvec.get(3, np.float64)(mat, x, out, n_threads=out.size)  # created once
+matvec.compile_all([(3, np.float64), (3, np.complex128)])   # at setup
+```
+
+`get(*key)` calls the factory the first time a key is used; `keys()` and
+`len()` list the variants created so far; `compile_all(keys=())` creates the
+given variants and compiles all of them.
+
+## `CudaStruct`
+
+```python
+Particles = xp.CudaStruct(
+    "Particles",
+    [("x", "double*"), ("v", "double*"), ("n", "int"), ("charge", "double")],
+)
+source = Particles.declaration + r"""
+extern "C" __global__ void push(Particles p, double dt) {
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i < p.n) p.x[i] += dt * p.charge * p.v[i];
+}
+"""
+push = xp.CudaKernel(source, "push", structs=[Particles])
+push(Particles(x=x, v=v, n=x.size, charge=-1.0), 0.1, n_threads=x.size)
+```
+
+A C struct passed to kernels by value. It groups arguments, e.g. all arrays
+describing a set of particles, into one kernel parameter, so adding a field
+changes one definition instead of every kernel signature.
+
+`CudaStruct(name, fields)` takes the fields as `(name, C type)` pairs; scalar
+fields and pointers to the scalar types above (or `void*`) are supported.
+
+* `declaration`: the C definition of the struct, to put in the CUDA source
+  or a header.
+* `dtype`: the NumPy structured dtype with the memory layout of the C struct
+  (C alignment and padding; pointers stored as 64-bit device addresses).
+* `fields`: the parsed fields (`CudaParameter` tuples).
+* `check_source(source)`: raises `ValueError` if `source` defines the struct
+  with other fields; a kernel created with `structs=[...]` does this check.
+* Calling the struct with keyword arguments, one per field, packs the values:
+  pointer fields take CuPy arrays of the declared dtype (never copied), scalar
+  fields are checked and cast like scalar kernel arguments.
+
+The result is a `CudaStructValue`: it keeps references to the arrays it points
+to (the packed struct only holds their addresses, so keep the value alive while
+the kernel may run), gives access to the field values with
+`value["field"]`, holds the packed struct in `value.packed`, and is flattened
+into it when passed to a kernel.
 
 ## `CudaArguments`
 
@@ -446,7 +623,8 @@ for several kernel parameters. `CudaArguments(*values)` stores the values;
 `__cuda_args__()` method returning a tuple is flattened. This lets an
 application keep its host argument objects (e.g. Pyccel classes holding NumPy
 arrays) and matching device argument objects that reference the same data on
-the device, and pass either to the same call.
+the device, and pass either to the same call. A `CudaArguments` object may also
+return struct values (`CudaStructValue.packed`) among its values.
 
 ## `Kernel`
 
@@ -458,21 +636,36 @@ xp.Kernel(
     name=None,
     missing_cuda="raise",
     cuda_path=None,
+    host_options=None,
 )
 ```
 
 A host kernel (a `PyccelKernel`; other callables are wrapped in one) and its
 CUDA counterpart. `kernel.get_kernel()` returns the host kernel on the NumPy
 backend and the CUDA kernel on the CuPy backend; call it once at setup to fail
-early if a CUDA kernel is missing. `kernel(*args, n_threads=None)` calls the
-kernel of the active backend; `n_threads` is required for the CUDA kernel and
-ignored by the host kernel.
+early if a CUDA kernel is missing.
+
+```python
+kernel(*args, n_threads=None, grid=None, block=None, shared_mem=0, stream=None)
+```
+
+calls the kernel of the active backend. The launch arguments are passed to the
+CUDA kernel (`n_threads` or `grid` is required there) and ignored by the host
+kernel. `kernel.compile()` compiles the CUDA kernel now and returns whether
+there is one.
 
 Without a CUDA kernel on the CuPy backend, `missing_cuda="raise"` raises
 `NotImplementedError` (naming `cuda_path`, if given), and
 `missing_cuda="fallback"` calls the host kernel through `PyccelKernel`, which
 copies the arrays to the host and back at every call (a `RuntimeWarning` is
 emitted once).
+
+`host_options` are keyword arguments for the `PyccelKernel` that wraps a plain
+callable `host_kernel`, e.g. `{"object_modules": ("my_package.",), "outputs":
+(2,)}`. They matter for the fallback: `object_modules` lets it find the device
+arrays inside application objects, and `outputs` limits the copies back to the
+device. Passing `host_options` together with a `PyccelKernel` raises
+`ValueError`; configure that `PyccelKernel` directly.
 
 Properties: `name`, `host_kernel`, `cuda_kernel`, `has_cuda`, `missing_cuda`,
 `cuda_path`.
@@ -486,6 +679,7 @@ catalog = xp.KernelCatalog.from_package(
     host_suffix="_kernels",
     cuda_suffix="_cuda.cu",
     missing_cuda="raise",
+    host_options=None,
     **cuda_options,
 )
 kernel = catalog["push"]
@@ -495,8 +689,8 @@ A read-only mapping from names to `Kernel` objects. `from_package` scans the
 subfolders of `package`: for every folder `<name>` containing the module
 `<name><host_suffix>.py`, the function `<name>` of that module is the host
 kernel, and `<name><cuda_suffix>` in the same folder, if present, is the CUDA
-kernel (`__global__` function `<name>`). `cuda_options` are passed on to
-`CudaKernel.from_file`. Typically called in the package's `__init__.py`:
+kernel (`__global__` function `<name>`). Typically called in the package's
+`__init__.py`:
 
 ```text
 my_kernels/
@@ -508,8 +702,18 @@ my_kernels/
     └── deposit_kernels.py   # no CUDA kernel yet
 ```
 
-`catalog.without_cuda` lists the kernels still to port. `KernelCatalog(kernels)`
-and `catalog.register(kernel, name=None)` build a catalog by hand.
+* `host_options`: `PyccelKernel` options for the host kernels (see `Kernel`),
+  the same for all kernels or a function of the kernel name, e.g.
+  `lambda name: {"outputs": OUTPUTS[name]}`.
+* `cuda_options`: passed on to `CudaKernel.from_file`, e.g. `block_size`,
+  `include_dirs` or `structs`.
+
+`catalog.without_cuda` lists the kernels still to port.
+`catalog.compile_all()` compiles every CUDA kernel and returns their names;
+call it at setup so that the first time step does not pay for compilation
+(after the first run, CuPy loads the kernels from its disk cache).
+`KernelCatalog(kernels)` and `catalog.register(kernel, name=None)` build a
+catalog by hand.
 
 ## Version
 
