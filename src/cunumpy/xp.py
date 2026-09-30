@@ -13,6 +13,9 @@ from typing import TYPE_CHECKING, Any, Literal
 import array_api_compat
 import array_api_compat.numpy as np
 
+from .transfers import _ACTIVE as _COUNTERS
+from .transfers import _describe, _record
+
 BackendType = Literal["numpy", "cupy"]
 
 
@@ -524,16 +527,72 @@ def timed_region(name: str, *, sync: bool = True) -> Generator[Timing, None, Non
             timing.elapsed = time.perf_counter() - start
 
 
-def to_numpy(array: Any) -> np.ndarray:
-    """Convert an array to a NumPy array."""
+# CUDA debug mode: `CudaKernel` compiles with line information and bounds
+# checks, and synchronizes after every launch so that asynchronous CUDA errors
+# are raised at the kernel that caused them.
+_CUDA_DEBUG_TRUE = ("1", "true", "yes", "on")
+
+
+def _debug_from_env(value: str | None) -> bool:
+    """Whether the value of ``CUNUMPY_CUDA_DEBUG`` enables the debug mode.
+
+    ``"1"``, ``"true"``, ``"yes"`` and ``"on"`` (any case, surrounding
+    whitespace ignored) enable it; anything else, including unset, does not.
+    """
+    if value is None:
+        return False
+    return value.strip().lower() in _CUDA_DEBUG_TRUE
+
+
+_cuda_debug: bool = _debug_from_env(os.getenv("CUNUMPY_CUDA_DEBUG"))
+
+
+def set_cuda_debug(enabled: bool) -> None:
+    """Enable or disable the CUDA debug mode globally.
+
+    In debug mode, `CudaKernel`s created with ``debug=None`` (the default)
+    compile with ``-lineinfo`` and ``-DCUNUMPY_BOUNDS_CHECK``, and synchronize
+    the stream after every launch, re-raising an asynchronous CUDA error as a
+    ``RuntimeError`` naming the kernel that caused it. The setting is read at
+    every launch, so it also applies to kernels created earlier; only their
+    compile options are fixed once they are compiled (call ``compile()`` again
+    or create the kernels after enabling debug mode). Initialised from the
+    environment variable ``CUNUMPY_CUDA_DEBUG`` (``1``, ``true``, ``yes`` or
+    ``on``) at import.
+    """
+    global _cuda_debug
+    _cuda_debug = bool(enabled)
+
+
+def get_cuda_debug() -> bool:
+    """Whether the CUDA debug mode is enabled globally, see `set_cuda_debug`."""
+    return _cuda_debug
+
+
+@contextmanager
+def cuda_debug(enabled: bool = True) -> Generator[None, None, None]:
+    """Temporarily enable (or disable) the CUDA debug mode.
+
+    Restores the previous setting on exit, see `set_cuda_debug`.
+    """
+    previous = _cuda_debug
+    set_cuda_debug(enabled)
+    try:
+        yield
+    finally:
+        set_cuda_debug(previous)
+
+
+def _to_numpy(array: Any) -> np.ndarray:
+    """`to_numpy` without transfer counting, for internal use."""
     if get_array_backend(array) == "cupy":
         return array.get()
 
     return np.asarray(array)
 
 
-def to_cupy(array: Any) -> Any:
-    """Convert an array to a CuPy array."""
+def _to_cupy(array: Any) -> Any:
+    """`to_cupy` without transfer counting, for internal use."""
     if not cupy_available():
         raise ImportError("CuPy is not available or not functional.")
 
@@ -542,8 +601,107 @@ def to_cupy(array: Any) -> Any:
     return cp.asarray(array)
 
 
+def to_numpy(array: Any) -> np.ndarray:
+    """Convert an array to a NumPy array.
+
+    A CuPy array is copied to the host, which `count_transfers()` counts as a
+    ``to_host`` transfer; anything else is passed through `numpy.asarray`.
+    """
+    if _COUNTERS and get_array_backend(array) == "cupy":
+        _record("to_host", f"to_numpy({_describe(array)})")
+    return _to_numpy(array)
+
+
+def to_cupy(array: Any) -> Any:
+    """Convert an array to a CuPy array.
+
+    Anything that is not a CuPy array already is copied to the device, which
+    `count_transfers()` counts as a ``to_device`` transfer.
+    """
+    if _COUNTERS and get_array_backend(array) != "cupy":
+        _record("to_device", f"to_cupy({_describe(array)})")
+    return _to_cupy(array)
+
+
+def as_device_array(
+    value: Any,
+    dtype: Any = None,
+    ndim: int | None = None,
+    *,
+    name: str | None = None,
+) -> Any:
+    """Reference `value` on the device, or make one device copy of it.
+
+    The "reference or copy once" rule for building CUDA argument objects
+    (`CudaArguments` subclasses, `CudaStruct` values): call it once when the
+    argument object is built, never per kernel call. A CuPy array that already
+    has the requested `dtype` (any dtype if `dtype` is None) and is C-contiguous
+    is returned unchanged, the same object without a copy, so kernels write
+    into the caller's array. Anything else is converted with one device copy,
+    ``cupy.ascontiguousarray(cupy.asarray(value, dtype))``: a tuple or list
+    (e.g. ``degree = (3, 3, 3)``), a host NumPy array (one explicit transfer
+    at build time), a device array of another dtype, or a non-contiguous view.
+    The result passes the pointer checks of `CudaKernel` and `CudaStruct`.
+
+    Raises on the NumPy backend: device argument objects are only built when
+    running on CuPy, and host data is never copied to the device implicitly.
+
+    Parameters
+    ----------
+    value : array-like
+        A CuPy array, a NumPy array, or a sequence of numbers.
+    dtype : dtype-like, optional
+        The dtype the kernel expects, e.g. the pointed-to type of the
+        parameter. None keeps the dtype of `value`.
+    ndim : int, optional
+        The expected number of dimensions of the result.
+    name : str, optional
+        Name of the argument, used in error messages.
+
+    Returns
+    -------
+    cupy.ndarray
+        `value` itself, or a C-contiguous device copy with dtype `dtype`.
+
+    Raises
+    ------
+    RuntimeError
+        The active backend is not CuPy.
+    ValueError
+        `ndim` is given and the array has another number of dimensions.
+    """
+    what = f"device argument {name!r}" if name is not None else "device argument"
+    if array_backend.backend != "cupy":
+        raise RuntimeError(
+            f"{what}: the active backend is {array_backend.backend!r}; device "
+            "arguments are only built on the CuPy backend, and host data is never "
+            "copied to the device implicitly (build host arguments instead)"
+        )
+
+    import cupy as cp
+
+    if (
+        isinstance(value, cp.ndarray)
+        and value.flags.c_contiguous
+        and (dtype is None or value.dtype == np.dtype(dtype))
+    ):
+        result = value
+    else:
+        result = cp.ascontiguousarray(cp.asarray(value, dtype=dtype))
+    if ndim is not None and result.ndim != ndim:
+        raise ValueError(
+            f"{what} must have {ndim} dimension(s), got {result.ndim} "
+            f"(shape {result.shape})"
+        )
+    return result
+
+
 def to_cunumpy(array: Any) -> Any:
-    """Convert an array to the currently active backend."""
+    """Convert an array to the currently active backend.
+
+    Delegates to `to_cupy()` or `to_numpy()`, so an actual copy is counted by
+    `count_transfers()` as a ``to_device`` or ``to_host`` transfer.
+    """
     if array_backend.backend == "cupy" and cupy_available():
         return to_cupy(array)
     return to_numpy(array)

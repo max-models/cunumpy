@@ -123,6 +123,21 @@ with xp.use_backend("cupy"):
     result = xp.to_numpy(filtered)  # one transfer for a CPU-only consumer
 ```
 
+To verify that a block, such as a time step, makes no transfer at all, count
+them: `count_transfers()` records every `to_numpy()`, `to_cupy()` and
+`to_cunumpy()` call that actually copies, every `PyccelKernel` call that
+converts device arrays, and every `Kernel` fallback to the host kernel, with
+the call site of each. `assert_no_transfers()` raises with that report if
+anything was counted. Only transfers made through CuNumpy are seen; raw
+`cupy.ndarray.get()` or `cupy.asarray()` calls need a profiler such as `nsys`.
+
+```python
+with xp.count_transfers() as counter:
+    propagator(dt)
+
+assert counter.total == 0, counter.report()
+```
+
 ## Random numbers and dtypes
 
 `get_rng(seed)` returns a random generator for the active backend. NumPy and
@@ -251,10 +266,11 @@ for `object_modules`, `is_array`, aliasing, and output declarations.
 `CudaKernel` wraps a CUDA C kernel (compiled with NVRTC through
 `cupy.RawKernel`) so that it is called with the same arguments as the host
 kernel it mirrors, plus the number of threads. Arrays are never copied: they
-must be CuPy arrays. The `extern "C" __global__` signature is parsed once and
-every call is checked against it: Python scalars are cast to the declared C
-types, and a wrong argument count, an array of the wrong dtype, or a scalar
-that does not fit its type raises instead of silently producing wrong values.
+must be C-contiguous CuPy arrays. The `extern "C" __global__` signature is
+parsed once and every call is checked against it: Python scalars are cast to
+the declared C types, and a wrong argument count, an array of the wrong dtype
+or a non-contiguous view, or a scalar that does not fit its type raises instead
+of silently producing wrong values.
 
 `Kernel` pairs a host kernel with its CUDA kernel and calls the one matching
 the active backend, so kernels can be ported to CUDA one at a time:
@@ -313,12 +329,56 @@ scale = xp.CudaKernel(
 scale(Vec(data=y, n=y.size), 0.5, n_threads=y.size)
 ```
 
+When building such argument objects, `xp.as_device_array(value, dtype,
+ndim=None)` applies the "reference or copy once" rule: a CuPy array that
+already has the dtype and is C-contiguous is returned as it is, anything else
+(a tuple such as `degree = (3, 3, 3)`, a host array, another dtype, a
+non-contiguous view) becomes one device copy. Call it once when the object is
+built, not per kernel call; on the NumPy backend it raises, so host data is
+never copied to the device implicitly.
+When the host kernel takes such a group as one object too (e.g. a Pyccel class
+holding NumPy arrays), give the group both forms with `KernelArguments`:
+`__host_args__()` returns the object for the host kernel, `__cuda_args__()`
+the flattened device arguments. `Kernel` and `PyccelKernel` resolve
+`__host_args__()` on the host path and `CudaKernel` flattens `__cuda_args__()`
+on the CUDA path, so the call site is the same on both backends and each form
+can be built lazily on first access (a CPU run never builds device arguments):
+
+```python
+class ParticleArguments(xp.KernelArguments):
+    def __init__(self, markers):
+        self.markers = markers
+        self._host = None
+
+    def __host_args__(self):
+        if self._host is None:
+            self._host = MarkerArguments(self.markers)  # Pyccel class
+        return self._host
+
+    def __cuda_args__(self):
+        return (self.markers, self.markers.shape[0])
+
+
+kernel(particles.kernel_args, dt, n_threads=n)  # host or CUDA kernel
+```
+
 Launches can be 1D to 3D (`n_threads=(nx, ny)`, `block_size=(16, 16)`) or use
 an explicit `grid`, with dynamic shared memory (`shared_mem`) and a `stream`.
 C++ function templates are instantiated with `template_args`, and
 `CudaKernelVariants` caches kernels whose source is generated per variant
 (e.g. per dimension and dtype). See the [API reference](docs/source/api.md) for
 details.
+
+Kernels run asynchronously, so a CUDA error (an illegal memory access, say)
+normally surfaces at a later `.get()` or MPI call, far from the kernel that
+caused it. In debug mode, enabled with `xp.set_cuda_debug(True)`, the
+context manager `xp.cuda_debug()`, `CudaKernel(..., debug=True)` or the
+environment variable `CUNUMPY_CUDA_DEBUG=1`, kernels are compiled with
+`-lineinfo` and `-DCUNUMPY_BOUNDS_CHECK` and every launch is synchronized, so
+the error is raised as a `RuntimeError` naming the kernel and its launch shape.
+To find the faulting line and out-of-bounds accesses that do not crash, the
+next step is NVIDIA's memory checker:
+`CUNUMPY_CUDA_DEBUG=1 compute-sanitizer python -m pytest ...`.
 
 ## Pyodide
 
