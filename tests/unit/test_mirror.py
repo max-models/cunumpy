@@ -140,13 +140,14 @@ def test_cuda_include_dir_contains_atomic_header():
 def test_cuda_kernel_options_include_cunumpy_headers():
     flag = f"-I{xp.cuda_include_dir()}"
     kernel = CudaKernel(BIN_ADD, "bin_add")
-    assert flag in kernel.options
+    assert flag not in kernel.options  # options are as given
+    assert flag in kernel.compile_options()
     # not duplicated when the caller adds it, and user dirs stay first
     kernel = CudaKernel(BIN_ADD, "bin_add", include_dirs=["/some/dir", flag[2:]])
-    assert kernel.options.count(flag) == 1
-    assert kernel.options[0] == "-I/some/dir"
+    assert kernel.compile_options().count(flag) == 1
+    assert kernel.compile_options()[0] == "-I/some/dir"
     kernel = CudaKernel(BIN_ADD, "bin_add", options=["-std=c++17", flag])
-    assert kernel.options == ("-std=c++17", flag)
+    assert kernel.compile_options() == ("-std=c++17", flag)
 
 
 # --- CuPy backend ------------------------------------------------------------

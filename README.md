@@ -123,6 +123,21 @@ with xp.use_backend("cupy"):
     result = xp.to_numpy(filtered)  # one transfer for a CPU-only consumer
 ```
 
+To verify that a block, such as a time step, makes no transfer at all, count
+them: `count_transfers()` records every `to_numpy()`, `to_cupy()` and
+`to_cunumpy()` call that actually copies, every `PyccelKernel` call that
+converts device arrays, and every `Kernel` fallback to the host kernel, with
+the call site of each. `assert_no_transfers()` raises with that report if
+anything was counted. Only transfers made through CuNumpy are seen; raw
+`cupy.ndarray.get()` or `cupy.asarray()` calls need a profiler such as `nsys`.
+
+```python
+with xp.count_transfers() as counter:
+    propagator(dt)
+
+assert counter.total == 0, counter.report()
+```
+
 ## Random numbers and dtypes
 
 `get_rng(seed)` returns a random generator for the active backend. NumPy and
@@ -159,17 +174,29 @@ active CuPy device and `None` on NumPy. `set_device_for_rank(rank)` is a
 round-robin convenience for MPI layouts where local ranks map contiguously to
 GPUs. If your scheduler uses a different mapping, select the device directly.
 
-For MPI programs with one rank per GPU, `bind_local_device()` selects the GPU
-from the node-local rank that the MPI launcher exports (`local_rank()`), so it
-can run before MPI is initialized, as CUDA-aware MPI requires. Before passing
-device buffers to MPI, call `synchronize_for_mpi(*buffers)`: kernels run
-asynchronously, and MPI would otherwise send a buffer a kernel is still
-writing, without an error.
+For MPI programs with one rank per GPU, the startup sequence is:
+
+1. `bind_local_device()` selects the GPU from the node-local rank that the MPI
+   launcher exports (`local_rank()`) and creates its CUDA context. It runs
+   before MPI is initialized because a CUDA-aware MPI binds to the device that
+   is current at `MPI_Init`; without it, every rank of a node would use
+   device 0.
+2. `from mpi4py import MPI` initializes MPI.
+3. `require_cuda_aware_mpi()` (or `mpi_is_cuda_aware(comm)`) checks, with one
+   tiny device `Sendrecv` on every rank, that the MPI library can pass device
+   buffers at all. Passing CuPy arrays to a plain MPI build segfaults or
+   silently sends garbage; the check turns that into a clear error at
+   startup. It is a no-op on the NumPy backend.
+4. `synchronize_for_mpi(*buffers)` before every MPI call with device buffers:
+   kernels run asynchronously, and MPI would otherwise send a buffer a kernel
+   is still writing, without an error.
 
 ```python
 xp.set_backend("cupy")
 xp.bind_local_device()  # before MPI_Init
-from mpi4py import MPI
+from mpi4py import MPI  # MPI_Init
+
+xp.require_cuda_aware_mpi()  # once, on all ranks
 
 xp.synchronize_for_mpi(send, recv)
 MPI.COMM_WORLD.Sendrecv(send, dest, recvbuf=recv, source=source)
@@ -193,6 +220,23 @@ with xp.stream():
 
 xp.synchronize()
 result = xp.to_numpy(transformed)
+```
+
+Because GPU work is asynchronous, a wall-clock timer around a kernel launch
+measures the launch, not the kernel. `timed_region(name)` synchronizes the
+device before reading the clock (on NumPy it is a plain timer), and
+`nvtx_range(name)` marks a region so it shows up in `nsys`/Nsight; both are
+no-ops or plain timers on NumPy, and `nvtx_range` also works as a decorator:
+
+```python
+with xp.timed_region("fft") as timing:
+    transformed = xp.fft.fft(device)
+print(timing.elapsed, timing.synced)
+
+
+@xp.nvtx_range("step")
+def step(dt):
+    ...
 ```
 
 ## Use NumPy-only kernels with CuPy arrays
@@ -234,10 +278,11 @@ for `object_modules`, `is_array`, aliasing, and output declarations.
 `CudaKernel` wraps a CUDA C kernel (compiled with NVRTC through
 `cupy.RawKernel`) so that it is called with the same arguments as the host
 kernel it mirrors, plus the number of threads. Arrays are never copied: they
-must be CuPy arrays. The `extern "C" __global__` signature is parsed once and
-every call is checked against it: Python scalars are cast to the declared C
-types, and a wrong argument count, an array of the wrong dtype, or a scalar
-that does not fit its type raises instead of silently producing wrong values.
+must be C-contiguous CuPy arrays. The `extern "C" __global__` signature is
+parsed once and every call is checked against it: Python scalars are cast to
+the declared C types, and a wrong argument count, an array of the wrong dtype
+or a non-contiguous view, or a scalar that does not fit its type raises instead
+of silently producing wrong values.
 
 `Kernel` pairs a host kernel with its CUDA kernel and calls the one matching
 the active backend, so kernels can be ported to CUDA one at a time:
@@ -296,12 +341,81 @@ scale = xp.CudaKernel(
 scale(Vec(data=y, n=y.size), 0.5, n_threads=y.size)
 ```
 
+When building such argument objects, `xp.as_device_array(value, dtype,
+ndim=None)` applies the "reference or copy once" rule: a CuPy array that
+already has the dtype and is C-contiguous is returned as it is, anything else
+(a tuple such as `degree = (3, 3, 3)`, a host array, another dtype, a
+non-contiguous view) becomes one device copy. Call it once when the object is
+built, not per kernel call; on the NumPy backend it raises, so host data is
+never copied to the device implicitly.
+When the host kernel takes such a group as one object too (e.g. a Pyccel class
+holding NumPy arrays), give the group both forms with `KernelArguments`:
+`__host_args__()` returns the object for the host kernel, `__cuda_args__()`
+the flattened device arguments. `Kernel` and `PyccelKernel` resolve
+`__host_args__()` on the host path and `CudaKernel` flattens `__cuda_args__()`
+on the CUDA path, so the call site is the same on both backends and each form
+can be built lazily on first access (a CPU run never builds device arguments):
+
+```python
+class ParticleArguments(xp.KernelArguments):
+    def __init__(self, markers):
+        self.markers = markers
+        self._host = None
+
+    def __host_args__(self):
+        if self._host is None:
+            self._host = MarkerArguments(self.markers)  # Pyccel class
+        return self._host
+
+    def __cuda_args__(self):
+        return (self.markers, self.markers.shape[0])
+
+
+kernel(particles.kernel_args, dt, n_threads=n)  # host or CUDA kernel
+```
+
 Launches can be 1D to 3D (`n_threads=(nx, ny)`, `block_size=(16, 16)`) or use
 an explicit `grid`, with dynamic shared memory (`shared_mem`) and a `stream`.
 C++ function templates are instantiated with `template_args`, and
 `CudaKernelVariants` caches kernels whose source is generated per variant
 (e.g. per dimension and dtype). See the [API reference](docs/source/api.md) for
 details.
+
+Kernels run asynchronously, so a CUDA error (an illegal memory access, say)
+normally surfaces at a later `.get()` or MPI call, far from the kernel that
+caused it. In debug mode, enabled with `xp.set_cuda_debug(True)`, the
+context manager `xp.cuda_debug()`, `CudaKernel(..., debug=True)` or the
+environment variable `CUNUMPY_CUDA_DEBUG=1`, kernels are compiled with
+`-lineinfo` and `-DCUNUMPY_BOUNDS_CHECK` and every launch is synchronized, so
+the error is raised as a `RuntimeError` naming the kernel and its launch shape.
+To find the faulting line and out-of-bounds accesses that do not crash, the
+next step is NVIDIA's memory checker:
+`CUNUMPY_CUDA_DEBUG=1 compute-sanitizer python -m pytest ...`.
+
+## Test kernel pairs
+
+`cunumpy.testing` helps to test the ports with pytest. `assert_kernels_agree`
+builds the arguments on both backends, runs the host and the CUDA kernel and
+compares the arrays they wrote; with `catalog.parity_cases()`, one
+parametrised test covers every ported kernel of a catalog. `BACKENDS` and
+`requires_cupy` parametrize tests over the backends, skipping CuPy without a
+GPU, and `device_function_kernel` wraps a `__device__` helper in an elementwise
+kernel so it can be checked against its host version without writing a test
+kernel:
+
+```python
+import pytest
+from cunumpy.testing import assert_kernels_agree
+
+
+def make_args(backend, seed):
+    x = xp.to_cunumpy(np.random.default_rng(seed).random(1000))
+    return (x, 2.0, x.size)
+
+
+@pytest.mark.parametrize("name, kernel", catalog.parity_cases())
+def test_parity(name, kernel):
+    assert_kernels_agree(kernel, make_args, n_threads=1000)
 
 Accumulation kernels often write into a buffer that another library owns on
 the host (a stencil vector's `_data`, exchanged over MPI). `DeviceMirror`
