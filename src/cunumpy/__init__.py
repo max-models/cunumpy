@@ -10,7 +10,9 @@ from .cuda_kernel import (
     CudaStruct,
     CudaStructValue,
     ctype_of,
+    cuda_include_dir,
     parse_cuda_signature,
+    write_cuda_header,
 )
 from .dispatch import Kernel, KernelCatalog
 from .kernel import PyccelKernel
@@ -62,6 +64,7 @@ __all__ = [
     "assert_same_backend",
     "bind_local_device",
     "ctype_of",
+    "cuda_include_dir",
     "cupy_available",
     "cupy_backend",
     "default_float_dtype",
@@ -89,6 +92,7 @@ __all__ = [
     "to_cupy",
     "to_numpy",
     "use_backend",
+    "write_cuda_header",
     "xp",
 ]
 

@@ -296,6 +296,37 @@ scale = xp.CudaKernel(
 scale(Vec(data=y, n=y.size), 0.5, n_threads=y.size)
 ```
 
+Kernels ported from pyccel index arrays like `markers[ip, j]`, which needs
+shapes and strides rather than bare pointers. The shipped header
+`cunumpy/array_view.cuh` (found by every `CudaKernel`) provides the strided
+views `Array1D<T>` to `Array3D<T>`; a parameter or struct field of that type
+takes a CuPy array, contiguous or not, and indexes `a(i, j)`. The struct can be
+generated from the annotations of the pyccel argument class, so the Python
+class is the one definition, and written to a header that a test keeps in sync:
+
+```python
+class MarkerArguments:
+    def __init__(self, markers: "float[:, :]", n_markers: int, valid: "bool[:]"):
+        ...
+
+MarkerArgs = xp.CudaStruct.from_signature(MarkerArguments.__init__, "MarkerArgs")
+MarkerArgs.to_header("marker_args.cuh")  # Array2D<double> markers; long long n_markers; ...
+push = xp.CudaKernel(
+    r"""
+    #include "marker_args.cuh"
+    #include <cunumpy/index.cuh>
+    extern "C" __global__ void push(MarkerArgs m, double dt) {
+        CUNUMPY_THREAD_1D(ip, m.n_markers);
+        if (m.valid(ip)) m.markers(ip, 0) += dt * m.markers(ip, 3);
+    }""",
+    "push",
+    structs=[MarkerArgs],
+    include_dirs=["."],
+)
+push(MarkerArgs(markers=markers, n_markers=markers.shape[0], valid=valid), 0.1,
+     n_threads=markers.shape[0])
+```
+
 Launches can be 1D to 3D (`n_threads=(nx, ny)`, `block_size=(16, 16)`) or use
 an explicit `grid`, with dynamic shared memory (`shared_mem`) and a `stream`.
 C++ function templates are instantiated with `template_args`, and

@@ -16,6 +16,11 @@ arguments as the host kernel it mirrors:
   the kernel as a silently wrong value, which is what ``cupy.RawKernel`` would
   do;
 * arrays are never converted or copied: they must already be CuPy arrays;
+* strided array views: a parameter or struct field of type ``Array2D<double>``
+  (from the shipped header ``cunumpy/array_view.cuh``, see
+  :func:`cuda_include_dir`) takes a 2D CuPy array, contiguous or not, and
+  receives its pointer, shape and strides, so that kernels index ``a(i, j)``
+  like the pyccel kernels they are ported from;
 * C++ function templates are instantiated with ``template_args``, and generated
   kernels (one source per variant) are compiled once per variant by
   :class:`CudaKernelVariants`.
@@ -23,15 +28,22 @@ arguments as the host kernel it mirrors:
 The launch shape is given at each call, either as the number of threads
 (``n_threads``, in 1 to 3 dimensions) or as an explicit ``grid``.
 
+Argument structs can be generated from the annotations of a Python class
+(:meth:`CudaStruct.from_signature`) and written to a header
+(:meth:`CudaStruct.to_header`, :func:`write_cuda_header`), so that the Python
+class is the one definition of the arguments.
+
 This module imports CuPy only when a kernel is compiled, so it can be imported
 (and signatures parsed) without CuPy.
 """
 
 from __future__ import annotations
 
+import inspect
 import math
 import re
-from collections.abc import Callable, Hashable, Iterable, Iterator, Sequence
+import typing
+from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping, Sequence
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -46,11 +58,29 @@ __all__ = [
     "CudaStruct",
     "CudaStructValue",
     "ctype_of",
+    "cuda_include_dir",
     "parse_cuda_signature",
+    "write_cuda_header",
 ]
 
 # CUDA limit on the number of threads per block
 _MAX_THREADS_PER_BLOCK = 1024
+
+# Headers shipped with cunumpy: #include <cunumpy/array_view.cuh> etc.
+_CUDA_INCLUDE_DIR = Path(__file__).resolve().parent / "cuda" / "include"
+_ARRAY_VIEW_INCLUDE = '#include "cunumpy/array_view.cuh"'
+
+
+def cuda_include_dir() -> str:
+    """The directory of the CUDA headers shipped with cunumpy.
+
+    :class:`CudaKernel` adds it to the include path automatically, so kernels
+    can ``#include "cunumpy/array_view.cuh"`` (strided ``Array1D<T>``,
+    ``Array2D<T>``, ``Array3D<T>`` views passed by value) and
+    ``#include "cunumpy/index.cuh"`` (thread-index and grid-stride macros such
+    as ``CUNUMPY_THREAD_1D(i, n)``). Pass it as ``-I`` to other compilers.
+    """
+    return str(_CUDA_INCLUDE_DIR)
 
 
 class CudaArguments:
@@ -91,14 +121,19 @@ class CudaParameter(NamedTuple):
     name : str
         Parameter name.
     ctype : str
-        Normalized C type without qualifiers or ``*``, e.g. ``"double"``.
+        Normalized C type without qualifiers or ``*``, e.g. ``"double"`` or
+        ``"Array2D<double>"``.
     dtype : numpy.dtype | None
-        NumPy dtype of the value (or of the pointed-to elements; the structured
-        dtype for a struct); ``None`` for ``void*``.
+        NumPy dtype of the value (or of the pointed-to elements, or of the
+        elements of an array view; the structured dtype for a struct);
+        ``None`` for ``void*``.
     pointer : bool
         Whether the parameter is a pointer (a device array).
     struct : CudaStruct | None
         The struct type, for a struct passed by value.
+    view_ndim : int | None
+        The number of dimensions, for an array view (``Array1D<T>`` to
+        ``Array3D<T>``, see :func:`cuda_include_dir`) passed by value.
     """
 
     name: str
@@ -106,6 +141,7 @@ class CudaParameter(NamedTuple):
     dtype: np.dtype | None
     pointer: bool
     struct: CudaStruct | None = None
+    view_ndim: int | None = None
 
 
 # C types (after removing qualifiers) and their NumPy dtypes. ``long`` is 64 bit,
@@ -169,7 +205,30 @@ _CTYPE_OF = {
 _QUALIFIERS = {"const", "volatile", "__restrict__", "__restrict", "restrict"}
 
 _COMPLEX = re.compile(r"(?:(?:thrust|cuda::std)::)?complex\s*<\s*(float|double)\s*>")
-_TOKEN = re.compile(r"complex<(?:float|double)>|[A-Za-z_]\w*|\*|\[\s*\]")
+# Array1D<T> to Array3D<T> (cunumpy/array_view.cuh), T a scalar type of _CTYPES
+_VIEW = re.compile(r"\bArray([123])D\s*<((?:[^<>]|complex<[^<>]*>)+?)>")
+_TOKEN = re.compile(
+    r"Array[123]D<[^<>]*(?:<[^<>]*>[^<>]*)?>|complex<(?:float|double)>"
+    r"|[A-Za-z_]\w*|\*|\[\s*\]"
+)
+
+
+def _normalize_view(match: re.Match) -> str:
+    """``Array2D< const double >`` -> ``Array2D<double>``."""
+    words = [w for w in match.group(2).split() if w not in _QUALIFIERS]
+    return f"Array{match.group(1)}D<{' '.join(words)}>"
+
+
+def _view_dtype(ndim: int) -> np.dtype:
+    """The structured dtype with the C layout of ``Array<ndim>D<T>``."""
+    return np.dtype(
+        [
+            ("data", np.uint64),
+            ("shape", np.int64, (ndim,)),
+            ("strides", np.int64, (ndim,)),
+        ],
+        align=True,
+    )
 
 
 def ctype_of(dtype: Any) -> str:
@@ -194,6 +253,7 @@ def _parse_parameter(
     text: str, structs: dict[str, CudaStruct] | None = None
 ) -> CudaParameter:
     text = _COMPLEX.sub(lambda m: f"complex<{m.group(1)}>", text)
+    text = _VIEW.sub(_normalize_view, text)
     tokens = _TOKEN.findall(text)
     pointers = sum(1 for t in tokens if t == "*" or t.startswith("["))
     words = [t for t in tokens if t != "*" and not t.startswith("[")]
@@ -212,6 +272,16 @@ def _parse_parameter(
             )
         struct = structs[ctype]
         return CudaParameter(name, ctype, struct.dtype, False, struct)
+    view = _VIEW.fullmatch(ctype)
+    if view is not None:
+        element = view.group(2)
+        if pointers or element not in _CTYPES:
+            raise ValueError(
+                f"cannot check the kernel parameter {text.strip()!r}: array views "
+                f"take a scalar element type and are passed by value"
+            )
+        ndim = int(view.group(1))
+        return CudaParameter(name, ctype, np.dtype(_CTYPES[element]), False, None, ndim)
     if ctype == "void" and pointers == 1:
         return CudaParameter(name, ctype, None, True)
     if pointers > 1 or ctype not in _CTYPES:
@@ -334,24 +404,61 @@ def _describe(param: CudaParameter, index: int) -> str:
     return f"argument {index} ({ctype} {param.name})"
 
 
+def _check_device_array(param: CudaParameter, index: int, value: Any) -> None:
+    """Raise unless `value` is a device array of the declared dtype."""
+    # checked on the class: on the instance, CuPy builds the whole interface dict
+    if not hasattr(type(value), "__cuda_array_interface__") and not hasattr(
+        value, "__cuda_array_interface__"
+    ):
+        raise TypeError(
+            f"{_describe(param, index)} must be a CuPy array, got "
+            f"{type(value).__name__}; arrays are never copied to the device"
+        )
+    if param.dtype is not None and value.dtype != param.dtype:
+        raise TypeError(
+            f"{_describe(param, index)} must have dtype {param.dtype}, got "
+            f"{value.dtype}"
+        )
+
+
 def _pointer_checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
     """Checker for a pointer parameter: a device array with the right dtype."""
-    dtype = param.dtype
 
     def check(value: Any) -> Any:
-        # checked on the class: on the instance, CuPy builds the whole interface dict
-        if not hasattr(type(value), "__cuda_array_interface__") and not hasattr(
-            value, "__cuda_array_interface__"
-        ):
-            raise TypeError(
-                f"{_describe(param, index)} must be a CuPy array, got "
-                f"{type(value).__name__}; arrays are never copied to the device"
-            )
-        if dtype is not None and value.dtype != dtype:
-            raise TypeError(
-                f"{_describe(param, index)} must have dtype {dtype}, got {value.dtype}"
-            )
+        _check_device_array(param, index, value)
         return value
+
+    return check
+
+
+def _view_checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
+    """Checker for an array view: packs (pointer, shape, strides) of a device array.
+
+    Strides are converted from bytes to elements; the array need not be
+    contiguous.
+    """
+    ndim = param.view_ndim
+    dtype = _view_dtype(ndim)
+
+    def check(value: Any) -> Any:
+        _check_device_array(param, index, value)
+        if value.ndim != ndim:
+            raise TypeError(
+                f"{_describe(param, index)} must be a {ndim}D array, got "
+                f"{value.ndim}D"
+            )
+        itemsize = value.dtype.itemsize
+        strides = [s // itemsize for s in value.strides]
+        if any(s * itemsize != stride for s, stride in zip(strides, value.strides)):
+            raise TypeError(
+                f"{_describe(param, index)}: strides {tuple(value.strides)} are not "
+                f"multiples of the element size {itemsize}"
+            )
+        packed = np.zeros((), dtype=dtype)
+        packed["data"] = value.data.ptr
+        packed["shape"] = value.shape
+        packed["strides"] = strides
+        return packed[()]
 
     return check
 
@@ -435,9 +542,138 @@ def _struct_checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
 def _checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
     if param.struct is not None:
         return _struct_checker(param, index)
+    if param.view_ndim is not None:
+        return _view_checker(param, index)
     if param.pointer:
         return _pointer_checker(param, index)
     return _scalar_checker(param, index)
+
+
+def _field_dtype(field: CudaParameter) -> np.dtype:
+    """The dtype of a struct field: pointers are stored as device addresses."""
+    if field.pointer:
+        return np.dtype(np.uint64)
+    if field.view_ndim is not None:
+        return _view_dtype(field.view_ndim)
+    return field.dtype
+
+
+# pyccel scalar annotations and their C types; ``int`` is set by ``int_type``
+_PYCCEL_SCALARS = {
+    "float": "double",
+    "float64": "double",
+    "float32": "float",
+    "bool": "bool",
+    "int64": "long long",
+    "int32": "int",
+    "int16": "short",
+    "int8": "signed char",
+    "complex": "complex<double>",
+    "complex128": "complex<double>",
+    "complex64": "complex<float>",
+}
+_PYCCEL_ANNOTATION = re.compile(
+    r"^(?:(?:typing\.)?Final\s*\[\s*)?(?:const\s+)?(?P<scalar>\w+)\s*"
+    r"(?:\[(?P<dims>[\s:,]*)\])?\s*\]?$"
+)
+
+
+def _pyccel_ctype(annotation: Any, scalars: Mapping[str, str], what: str) -> str:
+    """The C type for a pyccel-style annotation, e.g. ``"float[:, :]"``."""
+    if annotation is inspect.Parameter.empty:
+        raise ValueError(f"{what} has no type annotation")
+    if typing.get_origin(annotation) is typing.Final:
+        (annotation,) = typing.get_args(annotation)
+    if isinstance(annotation, typing.ForwardRef):
+        annotation = annotation.__forward_arg__
+    if isinstance(annotation, str):
+        match = _PYCCEL_ANNOTATION.match(annotation.strip())
+        if match is None:
+            raise ValueError(f"{what}: cannot parse the annotation {annotation!r}")
+        scalar, dims = match.group("scalar"), match.group("dims")
+        ndim = 0 if dims is None else len(dims.split(","))
+    elif annotation in (int, float, bool, complex):
+        scalar, ndim = annotation.__name__, 0
+    elif isinstance(annotation, type) and issubclass(annotation, np.generic):
+        scalar, ndim = np.dtype(annotation).name, 0
+    else:
+        raise ValueError(f"{what}: unsupported annotation {annotation!r}")
+    if scalar not in scalars:
+        raise ValueError(
+            f"{what}: unsupported scalar type {scalar!r} in {annotation!r}"
+        )
+    ctype = scalars[scalar]
+    if ndim == 0:
+        return ctype
+    if ndim > 3:
+        raise ValueError(f"{what}: arrays have at most 3 dimensions, got {ndim}")
+    return f"Array{ndim}D<{ctype}>"
+
+
+def _header_guard(name: str) -> str:
+    guard = re.sub(r"\W", "_", name).upper().strip("_")
+    return guard if re.match(r"[A-Z_]", guard) else f"_{guard}"
+
+
+def _header_source(
+    structs: Sequence[CudaStruct], guard: str, includes: Iterable[str]
+) -> str:
+    includes = list(includes)
+    if any(f.view_ndim is not None for s in structs for f in s.fields):
+        includes.insert(0, _ARRAY_VIEW_INCLUDE)
+    lines = [
+        "// Generated by cunumpy.CudaStruct from the Python definition; do not edit.",
+        f"#ifndef {guard}",
+        f"#define {guard}",
+        "",
+    ]
+    if includes:
+        lines += [
+            inc if inc.startswith("#include") else f'#include "{inc}"'
+            for inc in includes
+        ] + [""]
+    for struct in structs:
+        lines += [struct.declaration]
+    lines += [f"#endif  // {guard}", ""]
+    return "\n".join(lines)
+
+
+def write_cuda_header(
+    path: str | Path,
+    structs: Iterable[CudaStruct],
+    guard: str | None = None,
+    *,
+    includes: Iterable[str] = (),
+) -> str:
+    """Write the declarations of several structs to one header file.
+
+    The header has an include guard, ``#include "cunumpy/array_view.cuh"`` if
+    a struct has array view fields, then the struct definitions in order.
+    Generate the header at build or test time from the Python definitions,
+    and commit it next to the kernels; a test can regenerate it and compare
+    (see :meth:`CudaStruct.to_header`).
+
+    Parameters
+    ----------
+    path : str | Path
+        File to write.
+    structs : Iterable[CudaStruct]
+        The structs, in the order they are declared.
+    guard : str | None
+        Include guard macro; by default from the file name
+        (``pusher_args.cuh`` -> ``PUSHER_ARGS_CUH``).
+    includes : Iterable[str]
+        Additional headers to include, as file names or ``#include`` lines.
+
+    Returns
+    -------
+    str
+        The header source that was written.
+    """
+    path = Path(path)
+    source = _header_source(tuple(structs), guard or _header_guard(path.name), includes)
+    path.write_text(source)
+    return source
 
 
 class CudaStruct:
@@ -461,8 +697,10 @@ class CudaStruct:
         Name of the struct type in C.
     fields : Sequence[tuple[str, str]]
         ``(field name, C type)`` pairs, in order, e.g. ``("x", "double*")`` or
-        ``("n", "int")``. Scalar fields and pointers to the scalar types of
-        :func:`ctype_of` (or ``void*``) are supported.
+        ``("n", "int")``. Scalar fields, pointers to the scalar types of
+        :func:`ctype_of` (or ``void*``), and array views ``Array1D<T>`` to
+        ``Array3D<T>`` of those scalar types (from ``cunumpy/array_view.cuh``,
+        packed as pointer, shape and strides in elements) are supported.
 
     Examples
     --------
@@ -474,6 +712,17 @@ class CudaStruct:
     ... }'''
     >>> scale = CudaKernel(source, "scale", structs=[Vec])
     >>> scale(Vec(data=x, n=x.size), 2.0, n_threads=x.size)  # doctest: +SKIP
+
+    With array views, the kernel indexes like the pyccel kernel it mirrors:
+
+    >>> Markers = CudaStruct("Markers", [("markers", "Array2D<double>"), ("n", "int")])
+    >>> source = '#include "cunumpy/array_view.cuh"\n' + Markers.declaration + r'''
+    ... extern "C" __global__ void push(Markers m, double dt) {
+    ...     int ip = blockDim.x * blockIdx.x + threadIdx.x;
+    ...     if (ip < m.n) m.markers(ip, 0) += dt * m.markers(ip, 3);
+    ... }'''
+    >>> push = CudaKernel(source, "push", structs=[Markers])
+    >>> push(Markers(markers=markers, n=markers.shape[0]), 0.1, n_threads=markers.shape[0])  # doctest: +SKIP
     """
 
     def __init__(self, name: str, fields: Sequence[tuple[str, str]]) -> None:
@@ -486,13 +735,77 @@ class CudaStruct:
         self._name = name
         self._fields = tuple(parsed)
         self._dtype = np.dtype(
-            [(f.name, np.uint64 if f.pointer else f.dtype) for f in parsed],
+            [(f.name, _field_dtype(f)) for f in parsed],
             align=True,
         )
-        self._checkers = {
-            f.name: _pointer_checker(f, i) if f.pointer else _scalar_checker(f, i)
-            for i, f in enumerate(parsed)
-        }
+        self._checkers = {f.name: _checker(f, i) for i, f in enumerate(parsed)}
+
+    @classmethod
+    def from_signature(
+        cls,
+        func: Callable[..., Any],
+        name: str,
+        *,
+        int_type: str = "long long",
+        scalar_names: Mapping[str, str] | None = None,
+    ) -> CudaStruct:
+        """Build the struct from the annotated parameters of a Python function.
+
+        One field per parameter of `func` (``self`` is skipped), in order,
+        with the C type given by the parameter's annotation, written in the
+        pyccel style: ``"float"`` -> ``double``, ``"int"`` -> `int_type`,
+        ``"bool"`` -> ``bool``, and an array ``"float[:, :]"`` ->
+        ``Array2D<double>`` (``Final[...]`` and ``const`` are ignored). The
+        annotations may also be the real types ``int``, ``float``, ``bool``
+        (or NumPy scalar types such as ``np.float32``). Typically `func` is the
+        ``__init__`` of an argument class, so that the class is the one
+        definition of the arguments on the host and on the device.
+
+        Parameters
+        ----------
+        func : Callable
+            The function whose parameters define the fields.
+        name : str
+            Name of the struct type in C.
+        int_type : str
+            C type for ``int`` annotations: pyccel integers are 64 bit, so
+            ``"long long"`` by default; ``"int"`` for 32 bit.
+        scalar_names : Mapping[str, str] | None
+            Additional (or changed) mappings from annotation scalar names to
+            C types, e.g. ``{"float": "float"}`` for single precision.
+
+        Raises
+        ------
+        ValueError
+            A parameter without annotation, or with an annotation that cannot
+            be mapped (an unknown scalar, more than 3 dimensions).
+
+        Examples
+        --------
+        >>> class MarkerArguments:
+        ...     def __init__(self, markers: "float[:, :]", n_markers: "int", valid: "bool[:]"):
+        ...         ...
+        >>> MarkerArgs = CudaStruct.from_signature(MarkerArguments.__init__, "MarkerArgs")
+        >>> print(MarkerArgs.declaration)
+        struct MarkerArgs {
+            Array2D<double> markers;
+            long long n_markers;
+            Array1D<bool> valid;
+        };
+        """
+        scalars = dict(_PYCCEL_SCALARS, int=int_type)
+        if scalar_names:
+            scalars.update(scalar_names)
+        fields = []
+        for param in inspect.signature(func).parameters.values():
+            if param.name == "self" or param.kind in (
+                param.VAR_POSITIONAL,
+                param.VAR_KEYWORD,
+            ):
+                continue
+            what = f"parameter {param.name!r} of {getattr(func, '__qualname__', func)}"
+            fields.append((param.name, _pyccel_ctype(param.annotation, scalars, what)))
+        return cls(name, fields)
 
     def __repr__(self) -> str:
         return f"CudaStruct({self._name!r}, {len(self._fields)} fields)"
@@ -513,12 +826,61 @@ class CudaStruct:
         return self._dtype
 
     @property
+    def has_views(self) -> bool:
+        """Whether a field is an array view (``cunumpy/array_view.cuh`` is needed)."""
+        return any(f.view_ndim is not None for f in self._fields)
+
+    @property
     def declaration(self) -> str:
-        """The C definition of the struct, to include in the CUDA source."""
+        """The C definition of the struct, to include in the CUDA source.
+
+        A struct with array view fields needs
+        ``#include "cunumpy/array_view.cuh"`` before the definition (see
+        :attr:`has_views`); :meth:`to_header` adds it.
+        """
         lines = [
             f"    {f.ctype}{'*' if f.pointer else ''} {f.name};" for f in self._fields
         ]
         return f"struct {self._name} {{\n" + "\n".join(lines) + "\n};\n"
+
+    def to_header(
+        self,
+        path: str | Path | None = None,
+        *,
+        guard: str | None = None,
+        includes: Iterable[str] = (),
+    ) -> str:
+        """The struct definition as a header file, with include guard.
+
+        The header includes ``cunumpy/array_view.cuh`` if the struct has array
+        view fields, then any `includes`, then the definition. A generated
+        header committed next to the kernels stays in sync with the Python
+        definition through a test::
+
+            def test_header_is_up_to_date():
+                assert Path("pusher_args.cuh").read_text() == MarkerArgs.to_header()
+
+        Parameters
+        ----------
+        path : str | Path | None
+            If given, the header is also written to this file.
+        guard : str | None
+            Include guard macro; by default ``<NAME>_CUH`` from the struct
+            name.
+        includes : Iterable[str]
+            Additional headers to include, as file names or ``#include`` lines.
+
+        Returns
+        -------
+        str
+            The header source.
+        """
+        source = _header_source(
+            (self,), guard or _header_guard(f"{self._name}_cuh"), includes
+        )
+        if path is not None:
+            Path(path).write_text(source)
+        return source
 
     def check_source(self, source: str) -> None:
         """Check a definition of this struct in `source` against its fields.
@@ -555,7 +917,10 @@ class CudaStruct:
         """Pack values into the struct.
 
         Pointer fields take CuPy arrays of the declared dtype (never copied),
-        scalar fields are checked and cast like scalar kernel arguments.
+        array view fields take CuPy arrays of the declared dtype and number of
+        dimensions (contiguous or not; their pointer, shape and strides are
+        packed), scalar fields are checked and cast like scalar kernel
+        arguments.
 
         Raises
         ------
@@ -634,6 +999,10 @@ class CudaKernel:
         Additional NVRTC compiler options, e.g. ``("-std=c++17",)``.
     include_dirs : Sequence[str | Path]
         Directories searched for ``#include`` files (passed as ``-I<dir>``).
+        The headers shipped with cunumpy (:func:`cuda_include_dir`) are always
+        found: ``#include "cunumpy/array_view.cuh"`` gives the ``Array1D<T>``
+        to ``Array3D<T>`` views, ``#include "cunumpy/index.cuh"`` the
+        thread-index macros.
     structs : Iterable[CudaStruct]
         Struct types passed to the kernel by value.
     template_args : Sequence | None
@@ -672,7 +1041,11 @@ class CudaKernel:
         self._block = self._check_block(_as_shape(block_size, "block_size"))
         self._source = source
         self._name = name
-        self._options = tuple(options) + tuple(f"-I{d}" for d in include_dirs)
+        self._options = (
+            tuple(options)
+            + tuple(f"-I{d}" for d in include_dirs)
+            + (f"-I{cuda_include_dir()}",)
+        )
         self._structs = tuple(structs)
         self._template_args = None if template_args is None else tuple(template_args)
         self._signature = (
@@ -763,7 +1136,10 @@ class CudaKernel:
 
     @property
     def options(self) -> tuple[str, ...]:
-        """NVRTC compiler options, including ``-I`` include directories."""
+        """NVRTC compiler options, including ``-I`` include directories.
+
+        The last one is cunumpy's own include directory (:func:`cuda_include_dir`).
+        """
         return self._options
 
     @property
@@ -827,15 +1203,18 @@ class CudaKernel:
 
         Argument objects with ``__cuda_args__()`` (including struct values) are
         flattened. If the signature is checked, the number of arguments, the
-        dtype of every array, every struct and every scalar are checked, and
-        Python scalars are cast to the declared C types.
+        dtype of every array, every struct and every scalar are checked, Python
+        scalars are cast to the declared C types, and arrays for array view
+        parameters (``Array2D<double>``) are packed into (pointer, shape,
+        strides).
 
         Raises
         ------
         TypeError
             Wrong number of arguments, a host array or an array of the wrong
-            dtype for a pointer parameter, a value of the wrong struct, or a
-            scalar of an incompatible type.
+            dtype for a pointer parameter, an array of the wrong dtype or
+            number of dimensions for an array view, a value of the wrong
+            struct, or a scalar of an incompatible type.
         OverflowError
             A Python integer out of range of the declared integer type.
         """

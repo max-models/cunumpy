@@ -16,7 +16,9 @@ from .cuda_kernel import CudaParameter as CudaParameter
 from .cuda_kernel import CudaStruct as CudaStruct
 from .cuda_kernel import CudaStructValue as CudaStructValue
 from .cuda_kernel import ctype_of as ctype_of
+from .cuda_kernel import cuda_include_dir as cuda_include_dir
 from .cuda_kernel import parse_cuda_signature as parse_cuda_signature
+from .cuda_kernel import write_cuda_header as write_cuda_header
 from .dispatch import Kernel as Kernel
 from .dispatch import KernelCatalog as KernelCatalog
 from .kernel import PyccelKernel as PyccelKernel

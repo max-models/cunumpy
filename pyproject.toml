@@ -51,7 +51,7 @@ urls."Source" = "https://github.com/max-models/cunumpy"
 where = [ "src" ]
 
 [tool.setuptools.package-data]
-cunumpy = [ "py.typed", "*.pyi" ]
+cunumpy = [ "py.typed", "*.pyi", "cuda/include/cunumpy/*.cuh" ]
 
 [tool.isort]
 profile = "black"
