@@ -77,9 +77,12 @@ def test_kernel_on_cupy():
 def test_missing_cuda_raises_on_cupy():
     _skip_without_cupy()
     kernel = Kernel(scale, cuda_path="kernels/scale/scale_cuda.cu")
-    with xp.use_backend("cupy"), pytest.raises(
-        NotImplementedError,
-        match="No CUDA version of kernel 'scale'.*scale_cuda.cu",
+    with (
+        xp.use_backend("cupy"),
+        pytest.raises(
+            NotImplementedError,
+            match="No CUDA version of kernel 'scale'.*scale_cuda.cu",
+        ),
     ):
         kernel.get_kernel()
 
@@ -131,6 +134,12 @@ def kernel_package(tmp_path, monkeypatch):
         del sys.modules[module]
 
 
+@pytest.fixture
+def kernel_package_factory(kernel_package):
+    """Build catalogs of the `kernel_package` package with other options."""
+    return lambda **options: KernelCatalog.from_package("demo_kernel_pkg", **options)
+
+
 def test_catalog_from_package(kernel_package):
     catalog = kernel_package
     assert list(catalog) == ["scale", "shift"] and len(catalog) == 2
@@ -169,3 +178,82 @@ def test_catalog_register():
     catalog.register(Kernel(scale), name="scale_again")
     assert dict(catalog).keys() == {"scale", "scale_again"}
     assert KernelCatalog({"x": kernel})["x"] is kernel
+
+
+# ---------------------------------------------------------------------------
+# host kernel options, launch configuration and compile_all
+# ---------------------------------------------------------------------------
+
+
+class Holder:
+    """An application object holding an array, as passed to host kernels."""
+
+    def __init__(self, x):
+        self.x = x
+
+
+def scale_holder(holder, factor, n):
+    for i in range(n):
+        holder.x[i] *= factor
+
+
+def test_host_options():
+    kernel = Kernel(scale, host_options={"outputs": (0,)})
+    assert kernel.host_kernel.outputs == (0,)
+
+    with pytest.raises(ValueError, match="host_options are for wrapping"):
+        Kernel(PyccelKernel(scale), host_options={"outputs": (0,)})
+
+
+def test_host_options_in_fallback_on_cupy():
+    """object_modules lets the fallback find the device arrays inside objects."""
+    _skip_without_cupy()
+    import cupy as cp
+
+    kernel = Kernel(
+        scale_holder,
+        missing_cuda="fallback",
+        host_options={"object_modules": (__name__,), "outputs": (0,)},
+    )
+    holder = Holder(cp.ones(4))
+    with xp.use_backend("cupy"), pytest.warns(RuntimeWarning):
+        kernel(holder, 3.0, 4)
+    assert cp.all(holder.x == 3.0)
+
+
+def test_catalog_host_options(kernel_package_factory):
+    catalog = kernel_package_factory(host_options={"outputs": (0,)})
+    assert all(catalog[name].host_kernel.outputs == (0,) for name in catalog)
+
+    catalog = kernel_package_factory(
+        host_options=lambda name: {"outputs": (0,) if name == "scale" else ()}
+    )
+    assert catalog["scale"].host_kernel.outputs == (0,)
+    assert catalog["shift"].host_kernel.outputs == ()
+
+
+def test_kernel_launch_configuration_on_cupy():
+    _skip_without_cupy()
+    import cupy as cp
+
+    kernel = Kernel(scale, CudaKernel(SCALE_CUDA, "scale"))
+    x = cp.ones(300)
+    with xp.use_backend("cupy"):
+        kernel(x, 2.0, 300, grid=5, block=64)  # 320 threads
+        kernel(x, 2.0, 300, n_threads=300, block=32, stream=cp.cuda.Stream.null)
+        with pytest.raises(ValueError, match="n_threads is required"):
+            kernel(x, 2.0, 300, block=32)
+    assert cp.all(x == 4.0)
+
+
+def test_compile(kernel_package_factory):
+    catalog = kernel_package_factory()
+    assert not Kernel(scale).compile()  # no CUDA kernel: nothing to compile
+
+    if not xp.cupy_available():
+        with pytest.raises(RuntimeError, match="CuPy is not installed"):
+            catalog.compile_all()
+        return
+
+    assert catalog.compile_all() == ["scale"]
+    assert catalog["scale"].cuda_kernel.is_compiled

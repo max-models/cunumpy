@@ -5,11 +5,21 @@ device array (`FakeDeviceArray`) takes the place of CuPy arrays. Launching
 kernels needs a GPU and is skipped without one.
 """
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
 import cunumpy as xp
-from cunumpy import CudaArguments, CudaKernel, parse_cuda_signature
+from cunumpy import (
+    CudaArguments,
+    CudaKernel,
+    CudaKernelVariants,
+    CudaStruct,
+    CudaStructValue,
+    ctype_of,
+    parse_cuda_signature,
+)
 
 AXPY = r"""
 // y = a * x + y
@@ -37,12 +47,13 @@ void all_types(bool b, char c, unsigned char uc, short s, int i, unsigned u,
 
 
 class FakeDeviceArray:
-    """Enough of a CuPy array for the argument checks: a dtype and the interface."""
+    """Enough of a CuPy array for the argument checks: dtype, interface, address."""
 
     __cuda_array_interface__ = {}
 
-    def __init__(self, dtype):
+    def __init__(self, dtype, ptr=0x1000):
         self.dtype = np.dtype(dtype)
+        self.data = SimpleNamespace(ptr=ptr)
 
 
 def _skip_without_cupy():
@@ -229,7 +240,7 @@ def test_launch_argument_validation():
     kernel = CudaKernel(AXPY, "axpy")
     with pytest.raises(ValueError, match="non-negative"):
         kernel(1.0, n_threads=-1)
-    with pytest.raises(ValueError, match="block_size"):
+    with pytest.raises(ValueError, match="block sizes must be positive"):
         CudaKernel(AXPY, "axpy", block_size=0)
     # n_threads=0 checks the arguments but launches nothing (works without a GPU)
     x = FakeDeviceArray(np.float64)
@@ -307,3 +318,351 @@ def test_scalars_arrive_correctly_on_gpu():
     out = cp.zeros(5)
     CudaKernel(source, "write")(out, 3, 2**40, 1.5, 2, True, n_threads=1)
     assert out.get().tolist() == [3.0, float(2**40), 1.5, 2.0, 1.0]
+
+
+# ---------------------------------------------------------------------------
+# ctype_of
+# ---------------------------------------------------------------------------
+
+
+def test_ctype_of():
+    assert ctype_of(np.float64) == "double"
+    assert ctype_of("float32") == "float"
+    assert ctype_of(np.dtype(np.int64)) == "long long"
+    assert ctype_of(np.complex128) == "complex<double>"
+    with pytest.raises(ValueError, match="no C type"):
+        ctype_of(np.dtype("U3"))
+
+
+# ---------------------------------------------------------------------------
+# structs
+# ---------------------------------------------------------------------------
+
+PARTICLES = CudaStruct(
+    "Particles",
+    [
+        ("x", "double*"),
+        ("n", "int"),
+        ("charge", "double"),
+        ("alive", "bool*"),
+        ("ids", "long long*"),
+        ("weight", "float"),
+    ],
+)
+
+PUSH_SOURCE = (
+    PARTICLES.declaration
+    + r"""
+extern "C" __global__
+void push(Particles p, double dt, double* out, unsigned long long* size) {
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i == 0) {
+        size[0] = sizeof(Particles);
+        out[0] = p.n; out[1] = p.charge; out[2] = (double)p.ids[1]; out[3] = p.weight;
+    }
+    if (i < p.n && p.alive[i]) p.x[i] += dt * p.charge;
+}
+"""
+)
+
+
+def test_struct_layout_and_declaration():
+    assert PARTICLES.name == "Particles"
+    assert [f.name for f in PARTICLES.fields] == [
+        "x",
+        "n",
+        "charge",
+        "alive",
+        "ids",
+        "weight",
+    ]
+    # C layout: 8 (x) + 4 (n) + 4 padding + 8 (charge) + 8 + 8 + 4 (weight) + 4 padding
+    assert PARTICLES.dtype.itemsize == 48
+    assert PARTICLES.dtype.fields["charge"][1] == 16
+    assert "    double* x;" in PARTICLES.declaration
+    assert PARTICLES.declaration.startswith("struct Particles {")
+
+
+def test_struct_errors():
+    with pytest.raises(ValueError, match="duplicate field"):
+        CudaStruct("S", [("a", "int"), ("a", "double")])
+    with pytest.raises(ValueError, match="invalid struct name"):
+        CudaStruct("not a name", [("a", "int")])
+    with pytest.raises(ValueError, match="unsupported type"):
+        CudaStruct("S", [("a", "Other")])
+
+
+def test_struct_values():
+    x = FakeDeviceArray(np.float64, ptr=0xABC0)
+    value = PARTICLES(
+        x=x,
+        n=3,
+        charge=2,
+        alive=FakeDeviceArray(np.bool_),
+        ids=FakeDeviceArray(np.int64),
+        weight=0.5,
+    )
+    assert isinstance(value, CudaStructValue) and value.struct is PARTICLES
+    assert value["x"] is x
+    assert value.packed["x"] == 0xABC0  # the device address
+    assert value.packed["charge"] == 2.0 and value.packed["n"] == 3
+    assert value.__cuda_args__() == (value.packed,)
+
+    with pytest.raises(TypeError, match=r"missing fields \['ids', 'weight'\]"):
+        PARTICLES(x=x, n=3, charge=2.0, alive=FakeDeviceArray(np.bool_))
+    with pytest.raises(TypeError, match="must have dtype float64"):
+        PARTICLES(
+            x=FakeDeviceArray(np.float32),
+            n=3,
+            charge=2.0,
+            alive=FakeDeviceArray(np.bool_),
+            ids=FakeDeviceArray(np.int64),
+            weight=0.5,
+        )
+    with pytest.raises(TypeError, match="must be a CuPy array"):
+        PARTICLES(
+            x=np.zeros(3),
+            n=3,
+            charge=2.0,
+            alive=FakeDeviceArray(np.bool_),
+            ids=FakeDeviceArray(np.int64),
+            weight=0.5,
+        )
+
+
+def test_struct_parameters():
+    kernel = CudaKernel(PUSH_SOURCE, "push", structs=[PARTICLES])
+    param = kernel.signature[0]
+    assert param.struct is PARTICLES and param.dtype == PARTICLES.dtype
+
+    value = PARTICLES(
+        x=FakeDeviceArray(np.float64),
+        n=3,
+        charge=1.0,
+        alive=FakeDeviceArray(np.bool_),
+        ids=FakeDeviceArray(np.int64),
+        weight=1.0,
+    )
+    out, size = FakeDeviceArray(np.float64), FakeDeviceArray(np.uint64)
+    packed, dt, _, _ = kernel.prepare_args(value, 1, out, size)
+    assert packed is value.packed and type(dt) is np.float64
+
+    other = CudaStruct("Particles", [("x", "double*")])
+    with pytest.raises(TypeError, match="must be a value of struct Particles"):
+        kernel.prepare_args(other(x=FakeDeviceArray(np.float64)), 1.0, out, size)
+    with pytest.raises(TypeError, match="must be a value of struct"):
+        kernel.prepare_args(1.0, 1.0, out, size)
+
+    # without the struct, the parameter type is unknown
+    with pytest.raises(ValueError, match="unsupported type 'Particles'"):
+        CudaKernel(PUSH_SOURCE, "push")
+
+
+def test_struct_definition_must_match():
+    changed = CudaStruct("Particles", [("x", "double*"), ("n", "long long")])
+    with pytest.raises(ValueError, match="does not match its CudaStruct"):
+        CudaKernel(PUSH_SOURCE, "push", structs=[changed])
+    # no definition in the source (e.g. in a header): nothing to compare
+    source = r'extern "C" __global__ void f(Particles p) {}'
+    CudaKernel(source, "f", structs=[PARTICLES])
+    with pytest.raises(ValueError, match="only be passed by value"):
+        CudaKernel(r"__global__ void f(Particles* p) {}", "f", structs=[PARTICLES])
+
+
+def test_struct_on_gpu():
+    _skip_without_cupy()
+    import cupy as cp
+
+    n = 300
+    x = cp.zeros(n)
+    alive = cp.ones(n, dtype=bool)
+    alive[::2] = False
+    value = PARTICLES(
+        x=x,
+        n=n,
+        charge=2.0,
+        alive=alive,
+        ids=cp.array([7, 42], dtype=cp.int64),
+        weight=1.5,
+    )
+    out, size = cp.zeros(4), cp.zeros(1, dtype=cp.uint64)
+    CudaKernel(PUSH_SOURCE, "push", structs=[PARTICLES])(
+        value, 0.5, out, size, n_threads=n
+    )
+    assert int(size.get()[0]) == PARTICLES.dtype.itemsize  # same layout as in C
+    assert out.get().tolist() == [n, 2.0, 42.0, 1.5]
+    assert cp.all(x[1::2] == 1.0) and cp.all(x[::2] == 0.0)
+
+
+# ---------------------------------------------------------------------------
+# templates and generated variants
+# ---------------------------------------------------------------------------
+
+SCALE_TEMPLATE = r"""
+#include <cupy/complex.cuh>
+template <typename T, int N>
+__global__ void scale(T* x, T factor, int n) {
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i < n) x[i] = factor * x[i] * (T)N;
+}
+"""
+
+
+def test_template_signature():
+    kernel = CudaKernel(SCALE_TEMPLATE, "scale", template_args=(np.float32, 2))
+    assert kernel.expression == "scale<float, 2>"
+    assert [(p.ctype, p.pointer) for p in kernel.signature] == [
+        ("float", True),
+        ("float", False),
+        ("int", False),
+    ]
+    assert CudaKernel(SCALE_TEMPLATE, "scale", template_args=("double", 1)).signature[
+        0
+    ].dtype == np.dtype(np.float64)
+
+    with pytest.raises(ValueError, match="template with 2 parameters"):
+        CudaKernel(SCALE_TEMPLATE, "scale")
+    with pytest.raises(ValueError, match="template with 2 parameters"):
+        CudaKernel(SCALE_TEMPLATE, "scale", template_args=("double",))
+    with pytest.raises(ValueError, match="not a template"):
+        CudaKernel(AXPY, "axpy", template_args=("double",))
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64, np.complex128])
+def test_template_on_gpu(dtype):
+    _skip_without_cupy()
+    import cupy as cp
+
+    kernel = CudaKernel(SCALE_TEMPLATE, "scale", template_args=(dtype, 3))
+    x = cp.arange(10).astype(dtype)
+    kernel(x, 2, 10, n_threads=10)
+    assert cp.allclose(x, 6 * cp.arange(10).astype(dtype))
+
+
+def _generated_source(ndim, ctype):
+    index = " + ".join(f"i{k}" for k in range(ndim))
+    params = ", ".join(f"int i{k}" for k in range(ndim))
+    return f"""
+    extern "C" __global__ void fill({ctype}* out, {params}) {{
+        out[threadIdx.x] = ({ctype})({index});
+    }}
+    """
+
+
+def test_variants():
+    created = []
+
+    def factory(ndim, dtype):
+        created.append((ndim, dtype))
+        return CudaKernel(_generated_source(ndim, ctype_of(dtype)), "fill")
+
+    variants = CudaKernelVariants(factory)
+    k3 = variants.get(3, np.float64)
+    assert variants.get(3, np.float64) is k3  # created once
+    assert variants.get(2, np.float32) is not k3
+    assert created == [(3, np.float64), (2, np.float32)] and len(variants) == 2
+    assert variants.keys() == [(3, np.float64), (2, np.float32)]
+    assert [p.ctype for p in k3.signature] == ["double", "int", "int", "int"]
+
+    with pytest.raises(TypeError, match="must return a CudaKernel"):
+        CudaKernelVariants(lambda n: n).get(1)
+
+
+def test_variants_on_gpu():
+    _skip_without_cupy()
+    import cupy as cp
+
+    variants = CudaKernelVariants(
+        lambda ndim, dtype: CudaKernel(
+            _generated_source(ndim, ctype_of(dtype)), "fill", block_size=1
+        )
+    )
+    variants.compile_all([(2, np.float64), (1, np.int32)])
+    assert all(variants.get(*key).is_compiled for key in variants.keys())
+
+    out = cp.zeros(1)
+    variants.get(2, np.float64)(out, 3, 4, n_threads=1)
+    assert out.get()[0] == 7.0
+
+
+# ---------------------------------------------------------------------------
+# launch shapes and shared memory
+# ---------------------------------------------------------------------------
+
+
+def test_launch_shape():
+    kernel = CudaKernel(AXPY, "axpy")  # block_size 128
+    assert kernel.launch_shape(1000) == ((8,), (128,))
+    assert kernel.launch_shape((300, 5)) == ((3, 5), (128, 1))
+    assert kernel.launch_shape((300, 5), block=(16, 8)) == ((19, 1), (16, 8))
+    assert kernel.launch_shape(grid=(4, 2), block=(8, 8)) == ((4, 2), (8, 8))
+    assert kernel.launch_shape(0) == ((0,), (128,))
+
+    k2 = CudaKernel(AXPY, "axpy", block_size=(16, 16))
+    assert k2.block_size == (16, 16)
+    assert k2.launch_shape((100, 33)) == ((7, 3), (16, 16))
+
+    with pytest.raises(ValueError, match="different numbers of dimensions"):
+        k2.launch_shape(100)
+    with pytest.raises(TypeError, match="exactly one of n_threads and grid"):
+        kernel.launch_shape()
+    with pytest.raises(TypeError, match="exactly one of n_threads and grid"):
+        kernel.launch_shape(10, grid=1)
+    with pytest.raises(ValueError, match="at most 1024 threads"):
+        CudaKernel(AXPY, "axpy", block_size=(64, 32))
+    with pytest.raises(ValueError, match="1 to 3 dimensions"):
+        kernel.launch_shape((1, 2, 3, 4))
+    with pytest.raises(ValueError, match="shared_mem"):
+        kernel(1.0, n_threads=1, shared_mem=-1)
+
+
+MATRIX_SOURCE = r"""
+extern "C" __global__ void add_indices(double* a, int nx, int ny) {
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    int j = blockDim.y * blockIdx.y + threadIdx.y;
+    if (i < nx && j < ny) a[i * ny + j] += 10 * i + j;
+}
+"""
+
+BLOCK_SUM_SOURCE = r"""
+extern "C" __global__ void block_sum(const double* x, double* out, int n) {
+    extern __shared__ double buffer[];
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    buffer[threadIdx.x] = i < n ? x[i] : 0.0;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s /= 2) {
+        if (threadIdx.x < s) buffer[threadIdx.x] += buffer[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) out[blockIdx.x] = buffer[0];
+}
+"""
+
+
+def test_2d_launch_on_gpu():
+    _skip_without_cupy()
+    import cupy as cp
+
+    nx, ny = 37, 21
+    expected = 10 * cp.arange(nx)[:, None] + cp.arange(ny)[None, :]
+    kernel = CudaKernel(MATRIX_SOURCE, "add_indices", block_size=(8, 4))
+    a = cp.zeros((nx, ny))
+    kernel(a, nx, ny, n_threads=(nx, ny))
+    assert cp.array_equal(a, expected)
+
+    b = cp.zeros((nx, ny))  # explicit grid and block
+    kernel(b, nx, ny, grid=(3, 2), block=(16, 16))
+    assert cp.array_equal(b, expected)
+
+
+def test_shared_memory_on_gpu():
+    _skip_without_cupy()
+    import cupy as cp
+
+    n, block = 1000, 128
+    x = cp.arange(n, dtype=cp.float64)
+    kernel = CudaKernel(BLOCK_SUM_SOURCE, "block_sum", block_size=block)
+    grid = kernel.launch_shape(n)[0][0]
+    out = cp.zeros(grid)
+    kernel(x, out, n, n_threads=n, shared_mem=block * 8)
+    assert float(out.sum()) == n * (n - 1) / 2
