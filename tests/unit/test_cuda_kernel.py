@@ -1040,7 +1040,10 @@ def test_editing_a_header_recompiles_on_gpu(header_tree):
     _skip_without_cupy()
     import cupy as cp
 
+    # the fixture's source has a deliberately missing include (ignored by
+    # resolve_includes); NVRTC would reject it, so compile without it
     path = header_tree / "double_it_cuda.cu"
+    path.write_text(INCLUDING_SOURCE.replace('#include "missing.cuh"\n', ""))
     y = cp.ones(10)
     CudaKernel.from_file(path)(y, 10, n_threads=10)
     assert cp.all(y == 2)
