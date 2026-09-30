@@ -436,7 +436,7 @@ class nvtx_range(ContextDecorator):
         self.color = color
         self._stack: list[ModuleType | None] = []
 
-    def __enter__(self) -> nvtx_range:
+    def __enter__(self):
         nvtx = _nvtx_module()
         if nvtx is not None:
             if self.color is None:
@@ -446,7 +446,7 @@ class nvtx_range(ContextDecorator):
         self._stack.append(nvtx)
         return self
 
-    def __exit__(self, *exc_info: Any) -> None:
+    def __exit__(self, *exc_info: object) -> None:
         nvtx = self._stack.pop()
         if nvtx is not None:
             nvtx.RangePop()
