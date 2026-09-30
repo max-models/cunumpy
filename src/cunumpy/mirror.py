@@ -158,7 +158,7 @@ class DeviceMirror:
         if not _cupy_backend():
             return self
         if self._device is None:
-            self.device  # allocates as a copy of the host, through to_cupy
+            _ = self.device  # allocates as a copy of the host, through to_cupy
         else:
             # host -> device copy into the existing device buffer
             self._device.set(self._host)
