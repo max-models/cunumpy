@@ -49,9 +49,11 @@ def test_invalid_backend_selection_preserves_active_backend():
             xp.set_backend("invalid")
         assert xp.get_backend() == "numpy"
 
-        with pytest.raises(ValueError, match="Array backend"):
-            with xp.use_backend("invalid"):
-                pass
+        with (
+            pytest.raises(ValueError, match="Array backend"),
+            xp.use_backend("invalid"),
+        ):
+            pass
         assert xp.get_backend() == "numpy"
 
 

@@ -20,6 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `xp.parse_cuda_signature(source, name)` and `xp.CudaParameter`: Parse the parameters of a `__global__` function.
 - `xp.Kernel`: A host kernel (`PyccelKernel`) and its CUDA counterpart, calling the one matching the active backend. Without a CUDA kernel on the CuPy backend it raises `NotImplementedError` (`missing_cuda="raise"`, default) or falls back to the host kernel with host copies (`missing_cuda="fallback"`).
 - `xp.KernelCatalog`: Read-only mapping of `Kernel`s; `KernelCatalog.from_package()` collects them from a package with one folder per kernel (`name/name_kernels.py`, `name/name_cuda.cu`); `without_cuda` lists the kernels still to port.
+- `xp.CudaStruct` and `xp.CudaStructValue`: C structs passed to CUDA kernels by value. A `CudaStruct` is defined once from `(field, C type)` pairs; it provides the C `declaration`, the NumPy `dtype` with the C memory layout, and packs values (device arrays as addresses, scalars checked and cast) into a `CudaStructValue` that is passed as one kernel argument. `CudaKernel(..., structs=[...])` checks struct parameters and that a struct definition in the source matches.
+- `CudaKernel(..., template_args=...)`: Instantiate C++ function templates (e.g. `template_args=(np.float64, 3)` for `name<double, 3>`); the template parameters are substituted into the checked signature.
+- `xp.CudaKernelVariants`: Creates and caches one `CudaKernel` per variant key for generated kernel sources (e.g. per dimension and dtype); `compile_all()` compiles given and existing variants.
+- `xp.ctype_of(dtype)`: The C type of a NumPy dtype, e.g. for generating CUDA source.
+- 1D to 3D launches: `CudaKernel` accepts a tuple `block_size`, and calls take `n_threads` as an integer or tuple, or an explicit `grid`, plus a per-call `block`; `launch_shape()` returns the `(grid, block)` of a call. Dynamic shared memory (`shared_mem`) and `stream` are passed through by `Kernel` as well.
+- Compiling at setup: `CudaKernel.compile()` and `is_compiled`, `Kernel.compile()`, and `KernelCatalog.compile_all()`.
+- `Kernel(..., host_options=...)` and `KernelCatalog.from_package(..., host_options=...)`: `PyccelKernel` options (e.g. `object_modules`, `outputs`) for the host kernels, for all kernels or per kernel name; needed for the fallback to find device arrays inside application objects.
+- `xp.local_rank()`: The node-local rank from the MPI launcher's environment (Open MPI, MVAPICH2, Intel MPI/MPICH, PMI, Cray PALS, Slurm, `LOCAL_RANK`), available before `MPI_Init`.
+- `xp.bind_local_device()`: Selects the GPU `local_rank() % device_count()` and creates its context, before `MPI_Init`, for one-rank-per-GPU MPI programs.
+- `xp.synchronize_for_mpi(*arrays)`: Waits for pending work on the current stream before MPI uses device buffers (no-op for host buffers and on the NumPy backend).
 
 ## [0.2.0] - 2026-09-28
 

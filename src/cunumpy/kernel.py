@@ -16,7 +16,8 @@ caller's responsibility.
 from __future__ import annotations
 
 import copy
-from typing import Any, Callable, Sequence
+from collections.abc import Callable, Sequence
+from typing import Any
 
 import array_api_compat
 import numpy as np

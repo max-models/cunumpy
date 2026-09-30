@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import os
 import warnings
+from collections.abc import Generator
 from contextlib import contextmanager
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Generator, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import array_api_compat
 import array_api_compat.numpy as np
@@ -182,6 +183,92 @@ def set_device_for_rank(rank: int, devices_per_node: int | None = None) -> int:
     device_id = rank % n
     set_device(device_id)
     return device_id
+
+
+# Node-local rank of the process, as exported by common MPI launchers. They are
+# set before ``MPI_Init``, so the device can be chosen before MPI starts.
+_LOCAL_RANK_VARIABLES = (
+    "OMPI_COMM_WORLD_LOCAL_RANK",  # Open MPI
+    "MV2_COMM_WORLD_LOCAL_RANK",  # MVAPICH2
+    "MPI_LOCALRANKID",  # Intel MPI, MPICH (Hydra)
+    "PMI_LOCAL_RANK",  # MPICH / PMI
+    "PALS_LOCAL_RANKID",  # Cray PALS
+    "SLURM_LOCALID",  # Slurm (srun)
+    "LOCAL_RANK",  # torchrun and others
+)
+
+
+def local_rank() -> int:
+    """Rank of this process within its node, from the MPI launcher's environment.
+
+    Reads the node-local rank that common launchers export (Open MPI, MVAPICH2,
+    Intel MPI/MPICH, PMI, Cray PALS, Slurm, ``LOCAL_RANK``). These variables are
+    set before ``MPI_Init``, so this works before MPI is initialized, and
+    without importing ``mpi4py``. Returns 0 if none is set (e.g. a serial run).
+    """
+    for variable in _LOCAL_RANK_VARIABLES:
+        value = os.environ.get(variable)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except ValueError:
+            continue
+    return 0
+
+
+def bind_local_device() -> int | None:
+    """Bind this process to one GPU of its node, by node-local rank.
+
+    Selects device ``local_rank() % device_count()`` and creates its CUDA
+    context. Call it before ``MPI_Init`` (i.e. before importing
+    ``mpi4py.MPI``), so that CUDA-aware MPI sees the right device. Without it,
+    every rank on a node would use device 0. If the launcher already restricts
+    each rank to its own device with ``CUDA_VISIBLE_DEVICES``, every process
+    sees a single device and selects it.
+
+    Returns
+    -------
+    int | None
+        The selected device id, or None on the NumPy backend or if no device
+        is available.
+    """
+    if array_backend.backend != "cupy":
+        return None
+    count = device_count()
+    if count == 0:
+        return None
+
+    import cupy as cp
+
+    device_id = local_rank() % count
+    cp.cuda.Device(device_id).use()
+    cp.cuda.Stream.null.synchronize()  # creates the CUDA context now
+    return device_id
+
+
+def synchronize_for_mpi(*arrays: Any) -> None:
+    """Wait for pending device work before MPI reads or writes `arrays`.
+
+    CuPy launches kernels asynchronously; MPI does not know about CUDA streams.
+    Passing a device buffer to MPI while a kernel is still writing it sends
+    whatever is in memory at that moment -- silently wrong data, no error. Call
+    this before every MPI call that uses device buffers. It synchronizes the
+    current stream only if at least one of `arrays` is a CuPy array, so host
+    buffers and the NumPy backend cost nothing. (After MPI returns, no
+    synchronization is needed: kernels launched later see the received data.)
+
+    Parameters
+    ----------
+    *arrays
+        The buffers about to be passed to MPI; ``None`` entries are ignored.
+    """
+    if not any(array_api_compat.is_cupy_array(a) for a in arrays if a is not None):
+        return
+
+    import cupy as cp
+
+    cp.cuda.get_current_stream().synchronize()
 
 
 def memory_info() -> tuple[int, int] | None:

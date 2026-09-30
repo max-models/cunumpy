@@ -22,9 +22,9 @@ from __future__ import annotations
 
 import importlib
 import warnings
-from collections.abc import Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any
 
 from .cuda_kernel import CudaKernel
 from .kernel import PyccelKernel
@@ -55,12 +55,17 @@ class Kernel:
         host and back at every call (a warning is emitted once).
     cuda_path : str | Path | None
         Where the CUDA kernel is expected, for the error message if it is missing.
+    host_options : Mapping[str, Any] | None
+        Keyword arguments for the :class:`~cunumpy.PyccelKernel` that wraps a
+        plain callable `host_kernel`, e.g. ``{"object_modules": ("my_pkg.",),
+        "outputs": (2,)}``; they matter for the fallback on the CuPy backend.
+        Not allowed if `host_kernel` already is a ``PyccelKernel``.
 
     Notes
     -----
     Both kernels take the same arguments, except that the CUDA kernel gets the
-    number of threads, ``n_threads``, and argument objects in their CUDA form
-    (see :class:`~cunumpy.CudaArguments`).
+    launch shape (``n_threads`` or ``grid``) and argument objects in their CUDA
+    form (see :class:`~cunumpy.CudaArguments` and :class:`~cunumpy.CudaStruct`).
     """
 
     def __init__(
@@ -71,6 +76,7 @@ class Kernel:
         name: str | None = None,
         missing_cuda: str = "raise",
         cuda_path: str | Path | None = None,
+        host_options: Mapping[str, Any] | None = None,
     ) -> None:
         if missing_cuda not in _MISSING_CUDA:
             raise ValueError(
@@ -82,7 +88,12 @@ class Kernel:
                 f"got {type(cuda_kernel).__name__}"
             )
         if not isinstance(host_kernel, PyccelKernel):
-            host_kernel = PyccelKernel(host_kernel)
+            host_kernel = PyccelKernel(host_kernel, **(host_options or {}))
+        elif host_options:
+            raise ValueError(
+                "host_options are for wrapping a plain callable; configure the "
+                "given PyccelKernel directly"
+            )
         self._host_kernel = host_kernel
         self._cuda_kernel = cuda_kernel
         self._name = name if name is not None else host_kernel.name
@@ -161,25 +172,56 @@ class Kernel:
             self._warned = True
         return self._host_kernel
 
-    def __call__(self, *args: Any, n_threads: int | None = None) -> Any:
+    def compile(self) -> bool:
+        """Compile the CUDA kernel now, if there is one.
+
+        Returns
+        -------
+        bool
+            Whether there is a CUDA kernel (and it was compiled).
+        """
+        if self._cuda_kernel is None:
+            return False
+        self._cuda_kernel.compile()
+        return True
+
+    def __call__(
+        self,
+        *args: Any,
+        n_threads: int | Sequence[int] | None = None,
+        grid: int | Sequence[int] | None = None,
+        block: int | Sequence[int] | None = None,
+        shared_mem: int = 0,
+        stream: Any = None,
+    ) -> Any:
         """Call the kernel for the active backend.
 
         Parameters
         ----------
         *args
             Kernel arguments.
-        n_threads : int | None
-            Number of CUDA threads; required when the CUDA kernel is called,
-            ignored by the host kernel.
+        n_threads, grid, block, shared_mem, stream
+            Launch configuration of the CUDA kernel, see
+            :meth:`CudaKernel.__call__ <cunumpy.CudaKernel.__call__>`;
+            `n_threads` (or `grid`) is required when the CUDA kernel is called.
+            Ignored by the host kernel.
         """
         kernel = self.get_kernel()
         if kernel is self._host_kernel:
             return kernel(*args)
-        if n_threads is None:
+        if n_threads is None and grid is None:
             raise ValueError(
-                f"{self._name}: n_threads is required to launch the CUDA kernel"
+                f"{self._name}: n_threads is required to launch the CUDA kernel "
+                "(or pass grid)"
             )
-        return kernel(*args, n_threads=n_threads)
+        return kernel(
+            *args,
+            n_threads=n_threads,
+            grid=grid,
+            block=block,
+            shared_mem=shared_mem,
+            stream=stream,
+        )
 
 
 class KernelCatalog(Mapping):
@@ -207,6 +249,9 @@ class KernelCatalog(Mapping):
         host_suffix: str = "_kernels",
         cuda_suffix: str = "_cuda.cu",
         missing_cuda: str = "raise",
+        host_options: (
+            Mapping[str, Any] | Callable[[str], Mapping[str, Any]] | None
+        ) = None,
         **cuda_options: Any,
     ) -> KernelCatalog:
         """Collect the kernels of a package with one folder per kernel.
@@ -226,9 +271,13 @@ class KernelCatalog(Mapping):
             File name suffix of the CUDA kernels.
         missing_cuda : {"raise", "fallback"}
             Passed on to every :class:`Kernel`.
+        host_options : Mapping | Callable[[str], Mapping] | None
+            Keyword arguments for the :class:`~cunumpy.PyccelKernel` wrapping each
+            host kernel (see :class:`Kernel`): the same for all kernels, or a
+            function of the kernel name, e.g. to declare per-kernel ``outputs``.
         **cuda_options
-            Passed on to :meth:`CudaKernel.from_file`, e.g. ``block_size`` or
-            ``include_dirs``.
+            Passed on to :meth:`CudaKernel.from_file`, e.g. ``block_size``,
+            ``include_dirs`` or ``structs``.
         """
         root = Path(importlib.import_module(package).__file__).parent
         kernels = {}
@@ -249,6 +298,9 @@ class KernelCatalog(Mapping):
                 name=name,
                 missing_cuda=missing_cuda,
                 cuda_path=cuda_path,
+                host_options=(
+                    host_options(name) if callable(host_options) else host_options
+                ),
             )
         return cls(kernels)
 
@@ -280,3 +332,21 @@ class KernelCatalog(Mapping):
     def without_cuda(self) -> list[str]:
         """Names of the kernels without a CUDA kernel, i.e. still to port."""
         return [name for name, kernel in self._kernels.items() if not kernel.has_cuda]
+
+    def compile_all(self) -> list[str]:
+        """Compile all CUDA kernels now, e.g. at setup instead of in the first step.
+
+        Compilation is cached on disk by CuPy, so after the first run this mostly
+        loads the compiled kernels.
+
+        Returns
+        -------
+        list[str]
+            Names of the compiled kernels.
+
+        Raises
+        ------
+        RuntimeError
+            If CuPy or a GPU is not available (and there are CUDA kernels).
+        """
+        return [name for name, kernel in self._kernels.items() if kernel.compile()]
