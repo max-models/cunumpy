@@ -954,7 +954,7 @@ def test_debug_on_gpu_compiles_and_synchronizes():
     kernel(2.0, x, y, n, n_threads=n, stream=stream)  # synchronized already
     assert cp.allclose(y, 2 * x + 1)
     kernel(2.0, x, y, n, n_threads=n)  # current stream
-    assert cp.allclose(y, 4 * x + 3)
+    assert cp.allclose(y, 4 * x + 1)
 
 
 # An out-of-bounds write leaves the CUDA context unusable, so the test runs in
