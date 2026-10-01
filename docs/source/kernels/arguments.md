@@ -170,8 +170,33 @@ push(args, dt, n_threads=args.n_markers)
 
 * The `CudaStruct` is built when the class is defined (`CudaMarkerArguments.struct`),
   so a bad field type raises at import, not at the first launch.
-* `pack()` checks every field like `CudaStruct` does. Call it again after
-  replacing an array attribute, e.g. after the marker array was resized.
+* `pack()` checks every field like `CudaStruct` does.
+* The struct is packed again automatically, at the next launch, when a field
+  attribute changed: another array (address, shape or strides) or another
+  scalar value. Make the fields properties when the arrays belong to another
+  object that replaces them, e.g. a particle container that resizes its marker
+  array:
+
+  ```python
+  class CudaMarkerArguments(xp.CudaStructArguments):
+      struct_name = "MarkerArgs"
+      fields = (("markers", "Array2D<double>"), ("n_markers", "int"))
+
+      def __init__(self, particles):
+          self._particles = particles
+          self.pack()
+
+      @property
+      def markers(self):
+          return self._particles.markers
+
+      @property
+      def n_markers(self):
+          return self._particles.markers.shape[0]
+  ```
+
+  Without the properties, the object keeps the old array alive and kernels
+  keep working on it: assign the new array to the attribute instead.
 * Copies and unpickled objects are packed again from their own arrays, so a
   `deepcopy` never points at the device memory of the original.
 * When the same call site must also reach a host kernel, pair it with the host

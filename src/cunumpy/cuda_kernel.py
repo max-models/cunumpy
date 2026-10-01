@@ -1168,9 +1168,15 @@ class CudaStructArguments(CudaArguments):
     argument: pointers need C-contiguous CuPy arrays of the declared dtype
     (never copied), scalars are range-checked and cast.
 
-    The packed struct holds device addresses. Call :meth:`pack` again after
-    replacing an array attribute. Copies (``copy.copy``, ``copy.deepcopy``)
-    and unpickled objects are packed again from their own arrays.
+    The packed struct always reflects the current field attributes: at every
+    use (:attr:`packed`, :meth:`__cuda_args__`, so at every kernel launch) the
+    device address, shape and strides of every array field and the value of
+    every scalar field are compared with those that were packed, and the
+    struct is packed again if any changed. A field may therefore be a
+    property that reads the owner's current array, so that resizing the
+    owner's arrays never leaves the struct pointing at freed device memory
+    (see the second example). Copies (``copy.copy``, ``copy.deepcopy``) and
+    unpickled objects are packed again from their own arrays.
 
     A subclass that sets neither :attr:`struct_name` nor :attr:`fields` is an
     intermediate base class; a subclass that sets only one of them raises
@@ -1209,6 +1215,25 @@ class CudaStructArguments(CudaArguments):
     };
     >>> push = CudaKernel(source, "push", structs=[MarkerArguments.struct])  # doctest: +SKIP
     >>> push(MarkerArguments(markers, valid), 0.1, n_threads=markers.shape[0])  # doctest: +SKIP
+
+    Fields as properties follow the arrays of an owner object, also after the
+    owner replaced them (e.g. when it resized its marker array):
+
+    >>> class ParticleArguments(CudaStructArguments):
+    ...     struct_name = "ParticleArgs"
+    ...     fields = (("markers", "Array2D<double>"), ("n_markers", "int"))
+    ...
+    ...     def __init__(self, particles):
+    ...         self._particles = particles
+    ...         self.pack()
+    ...
+    ...     @property
+    ...     def markers(self):
+    ...         return self._particles.markers
+    ...
+    ...     @property
+    ...     def n_markers(self):
+    ...         return self._particles.markers.shape[0]
     """
 
     struct_name: str
@@ -1230,8 +1255,10 @@ class CudaStructArguments(CudaArguments):
     def pack(self) -> None:
         """Pack the field attributes into the struct.
 
-        Called at the end of the constructor, and again after an array
-        attribute has been replaced.
+        Called at the end of the constructor, so that invalid field values
+        raise there. Afterwards the struct is packed again automatically when
+        a field changes (see the class documentation); calling this method
+        again is never needed, but harmless.
 
         Raises
         ------
@@ -1246,6 +1273,12 @@ class CudaStructArguments(CudaArguments):
             raise TypeError(
                 f"{type(self).__qualname__} does not define struct_name and fields"
             )
+        values = self._field_values(struct)
+        self._struct_value = struct(**values)
+        self._packed_state = _field_state(struct, values)
+
+    def _field_values(self, struct: CudaStruct) -> dict[str, Any]:
+        """The current value of every field attribute, by field name."""
         values = {}
         for field in struct.fields:
             try:
@@ -1255,13 +1288,24 @@ class CudaStructArguments(CudaArguments):
                     f"{type(self).__qualname__} has no attribute {field.name!r} "
                     f"for the field of struct {struct.name}"
                 ) from None
-        self._struct_value = struct(**values)
+        return values
 
     @property
     def packed(self) -> np.void:
-        """The packed struct, with the memory layout of the C struct; packs on first use."""
-        if self.__dict__.get("_struct_value") is None:
+        """The packed struct, with the memory layout of the C struct.
+
+        Packed on first use, and again whenever a field attribute changed
+        since the last packing (a different array, or a different scalar).
+        """
+        value = self.__dict__.get("_struct_value")
+        if value is None:
             self.pack()
+            return self._struct_value.packed
+        struct = value.struct
+        values = self._field_values(struct)
+        if _field_state(struct, values) != self._packed_state:
+            self._struct_value = struct(**values)
+            self._packed_state = _field_state(struct, values)
         return self._struct_value.packed
 
     def __cuda_args__(self) -> tuple[np.void]:
@@ -1273,11 +1317,38 @@ class CudaStructArguments(CudaArguments):
         # which a copy (or another process) does not share
         state = self.__dict__.copy()
         state.pop("_struct_value", None)
+        state.pop("_packed_state", None)
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         self.__dict__.update(state)
         self.pack()
+
+
+def _field_state(struct: CudaStruct, values: Mapping[str, Any]) -> tuple[Any, ...]:
+    """What the packed struct depends on, to detect changed field attributes.
+
+    For an array field the device address, shape and strides (the address
+    alone for a pointer field); for a scalar field its value. A value that is
+    neither (e.g. a host array in a pointer field) is identified by its id,
+    so replacing it triggers a repack, which then raises the type error.
+    """
+    state = []
+    for field in struct.fields:
+        value = values[field.name]
+        if field.pointer or field.view_ndim is not None:
+            ptr = getattr(getattr(value, "data", None), "ptr", None)
+            if ptr is None:
+                state.append(("id", id(value)))
+            elif field.pointer:
+                state.append(ptr)
+            else:
+                state.append((ptr, tuple(value.shape), tuple(value.strides)))
+        elif isinstance(value, (bool, int, float, complex, np.generic)):
+            state.append((type(value), value))
+        else:
+            state.append(("id", id(value)))
+    return tuple(state)
 
 
 def _as_shape(value: int | Sequence[int], what: str) -> tuple[int, ...]:
@@ -1769,21 +1840,44 @@ class CudaKernel:
     def _synchronize_after_launch(
         self, stream: Any, grid: tuple[int, ...], block: tuple[int, ...]
     ) -> None:
-        """Wait for the launch and re-raise a CUDA error naming this kernel."""
-        import cupy as cp
+        """Wait for the launch and re-raise a CUDA error naming this kernel.
 
+        Skipped while the stream is being captured into a CUDA graph: the
+        launch is only recorded then, and synchronizing would invalidate the
+        capture. Errors of the captured kernels surface when the graph is
+        launched (in debug mode, synchronize after ``graph.launch()``).
+        """
+        if stream is None:
+            import cupy as cp
+
+            stream = cp.cuda.get_current_stream()
+        if _is_capturing(stream):
+            return
         try:
-            if stream is None:
-                stream = cp.cuda.get_current_stream()
             stream.synchronize()
-        except (
-            cp.cuda.runtime.CUDARuntimeError,
-            cp.cuda.driver.CUDADriverError,
-        ) as error:
+        except Exception as error:
+            import cupy as cp
+
+            if not isinstance(
+                error,
+                (cp.cuda.runtime.CUDARuntimeError, cp.cuda.driver.CUDADriverError),
+            ):
+                raise
             raise RuntimeError(
                 f"CUDA error after launching kernel {self.expression!r} with "
                 f"grid {grid} and block {block}: {error}"
             ) from error
+
+
+def _is_capturing(stream: Any) -> bool:
+    """Whether `stream` is being captured into a CUDA graph."""
+    is_capturing = getattr(stream, "is_capturing", None)
+    if is_capturing is None:
+        return False
+    try:
+        return bool(is_capturing())
+    except Exception:  # noqa: BLE001 -- e.g. the legacy null stream, which cannot capture
+        return False
 
 
 class CudaKernelVariants:

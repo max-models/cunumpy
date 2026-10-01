@@ -30,7 +30,10 @@ In debug mode a `CudaKernel`:
   and shape, then traps);
 * synchronizes after every launch, so a failure raises at the launch that
   caused it, as a `RuntimeError` naming the kernel and its grid and block, with
-  the CUDA error chained.
+  the CUDA error chained. While the stream is being captured into a CUDA graph
+  (`stream.begin_capture()`), the synchronization is skipped, since it would
+  invalidate the capture; errors of captured kernels surface when the graph is
+  launched, so synchronize after `graph.launch()` to see them.
 
 ```python
 with xp.cuda_debug():

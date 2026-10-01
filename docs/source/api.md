@@ -1061,8 +1061,14 @@ built once per subclass when the class is defined and is the class attribute
 
 * `pack()` packs the field attributes, with the checks of `CudaStruct`
   (C-contiguous CuPy arrays of the declared dtype, range-checked scalars). A
-  field without an attribute raises `AttributeError`. Call it again after
-  replacing an array attribute: the packed struct holds device addresses.
+  field without an attribute raises `AttributeError`.
+* The packed struct always matches the current attributes: at every use
+  (`packed`, `__cuda_args__()`, so at every launch) the device address, shape
+  and strides of each array field and the value of each scalar field are
+  compared with what was packed, and the struct is packed again if anything
+  changed. Fields may be properties that read an owner's current arrays, so a
+  resized array is picked up at the next launch. Calling `pack()` again is
+  never needed.
 * `packed` is the packed struct (`numpy.void`); `__cuda_args__()` returns
   `(packed,)`, so a `CudaKernel` receives the struct.
 * Copies (`copy.copy`, `copy.deepcopy`) and unpickled objects are packed again

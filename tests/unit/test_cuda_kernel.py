@@ -1710,12 +1710,71 @@ def test_struct_arguments_class_definition():
     assert Derived.struct is ParticleArguments.struct
 
 
-def test_struct_arguments_repack_after_replacing_an_array():
+def test_struct_arguments_repack_when_a_field_changes():
     args = _particle_arguments(ptr=0x100)
+    packed = args.packed
+    assert args.packed is packed  # nothing changed: no repacking
+
     args.x = FakeDeviceArray(np.float64, ptr=0x200, shape=(3,))
-    assert args.packed["x"] == 0x100  # still the old address
-    args.pack()
-    assert args.packed["x"] == 0x200
+    assert args.packed["x"] == 0x200  # a new array: repacked at the next use
+    assert args.__cuda_args__() == (args.packed,)
+
+    args.charge = 5.0
+    assert args.packed["charge"] == 5.0  # a scalar changed: repacked too
+    args.charge = 5  # equal value of another type: repacked, same result
+    assert args.packed["charge"] == 5.0
+
+    args.x = np.zeros(3)  # an invalid value raises at the next use
+    with pytest.raises(TypeError, match="must be a CuPy array"):
+        args.packed  # noqa: B018
+
+
+class Owner:
+    """An object owning a marker array that it replaces when it grows."""
+
+    def __init__(self, n, ptr=0x100):
+        self.markers = FakeDeviceArray(np.float64, ptr=ptr, shape=(n, 4))
+
+    def grow(self, n, ptr):
+        self.markers = FakeDeviceArray(np.float64, ptr=ptr, shape=(n, 4))
+
+
+class OwnerArguments(xp.CudaStructArguments):
+    struct_name = "OwnerArgs"
+    fields = (("markers", "Array2D<double>"), ("n_markers", "int"))
+
+    def __init__(self, owner):
+        self._owner = owner
+        self.pack()
+
+    @property
+    def markers(self):
+        return self._owner.markers
+
+    @property
+    def n_markers(self):
+        return self._owner.markers.shape[0]
+
+
+def test_struct_arguments_follow_the_arrays_of_an_owner():
+    owner = Owner(3)
+    args = OwnerArguments(owner)
+    assert args.packed["markers"]["data"] == 0x100
+    assert args.packed["n_markers"] == 3
+
+    owner.grow(8, ptr=0x900)
+    assert args.packed["markers"]["data"] == 0x900
+    assert args.packed["markers"]["shape"].tolist() == [8, 4]
+    assert args.packed["n_markers"] == 8
+
+
+def test_struct_arguments_repack_when_a_view_changes_shape():
+    # a view of the same allocation with fewer rows: same address, new shape
+    owner = Owner(8, ptr=0x100)
+    args = OwnerArguments(owner)
+    owner.markers = FakeDeviceArray(np.float64, ptr=0x100, shape=(5, 4))
+    assert args.packed["markers"]["shape"].tolist() == [5, 4]
+    assert args.packed["n_markers"] == 5
 
 
 def test_struct_arguments_are_packed_again_when_copied():
@@ -1772,3 +1831,47 @@ def test_struct_arguments_on_gpu():
     assert int(size.get()[0]) == ParticleArguments.struct.dtype.itemsize
     assert out.get().tolist() == [n, 2.0, 42.0, 1.5]
     assert cp.all(args.x[1::2] == 1.0) and cp.all(args.x[::2] == 0.0)
+
+
+def test_debug_synchronization_is_skipped_while_capturing():
+    kernel = CudaKernel(AXPY, "axpy")
+    calls = []
+
+    class Stream:
+        def __init__(self, capturing):
+            self.capturing = capturing
+
+        def is_capturing(self):
+            return self.capturing
+
+        def synchronize(self):
+            calls.append(self.capturing)
+
+    class LegacyStream(Stream):
+        def is_capturing(self):
+            raise RuntimeError("not supported on the legacy stream")
+
+    kernel._synchronize_after_launch(Stream(True), (1,), (128,))
+    assert calls == []
+    kernel._synchronize_after_launch(Stream(False), (1,), (128,))
+    kernel._synchronize_after_launch(LegacyStream(False), (1,), (128,))
+    assert calls == [False, False]
+
+
+def test_debug_kernel_in_a_cuda_graph():
+    _skip_without_cupy()
+    import cupy as cp
+
+    n = 1000
+    x, y = cp.ones(n), cp.zeros(n)
+    kernel = CudaKernel(AXPY, "axpy", debug=True)
+    kernel(2.0, x, y, n, n_threads=n)  # compile outside the capture
+    stream = cp.cuda.Stream(non_blocking=True)
+    with stream:
+        stream.begin_capture()
+        kernel(2.0, x, y, n, n_threads=n, stream=stream)
+        graph = stream.end_capture()
+    graph.launch(stream)
+    graph.launch(stream)
+    stream.synchronize()
+    assert cp.all(y == 6.0)

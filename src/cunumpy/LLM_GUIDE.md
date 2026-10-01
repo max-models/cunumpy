@@ -248,14 +248,15 @@ class A(xp.CudaStructArguments):         # the struct as a class; A.struct is th
     fields = (("x", "double*"), ("n", "int"))
     def __init__(self, x):
         self.x, self.n = x, x.shape[0]
-        self.pack()                      # again after replacing an array; copies repack
+        self.pack()                      # repacks itself when a field changes; copies repack
 xp.CudaKernel(S.declaration + src, "k", structs=[S])
 xp.resolve_host_args(args, kwargs)
 ```
 
 Only top-level arguments are resolved. Cache both forms lazily and invalidate
 them when the underlying arrays are replaced. A packed struct holds device
-addresses: re-pack after replacing an array.
+addresses: re-pack after replacing an array (a `CudaStructArguments` does this
+itself at the next launch; make its fields properties to follow an owner's arrays).
 
 `DeviceMirror`:
 
