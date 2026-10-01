@@ -416,6 +416,22 @@ def make_args(backend, seed):
 @pytest.mark.parametrize("name, kernel", catalog.parity_cases())
 def test_parity(name, kernel):
     assert_kernels_agree(kernel, make_args, n_threads=1000)
+
+Accumulation kernels often write into a buffer that another library owns on
+the host (a stencil vector's `_data`, exchanged over MPI). `DeviceMirror`
+pairs that NumPy array with a device copy: `mirror.device` is the CuPy array
+on the GPU and the host array itself on the CPU, `to_host()` copies back in
+place (the host array keeps its identity) and `zero()` clears the buffer, so
+the one transfer per accumulation is explicit. The shipped header
+`cunumpy/atomic.cuh` (found automatically, see `cuda_include_dir()`) provides
+`cunumpy_atomic_add()` and 2D/3D indexed variants for the many-threads-to-one-cell
+writes:
+
+```python
+mirror = xp.DeviceMirror(vector._data)
+mirror.zero()
+accumulate(markers, mirror.device, n_threads=n_markers)
+mirror.to_host()  # vector._data holds the result on both backends
 ```
 
 ## Pyodide

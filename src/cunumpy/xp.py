@@ -8,6 +8,7 @@ import warnings
 from collections.abc import Generator
 from contextlib import ContextDecorator, contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -433,6 +434,16 @@ def free_memory() -> None:
 
         cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
+
+
+def cuda_include_dir() -> str:
+    """Directory of the CUDA headers shipped with cunumpy (``cunumpy/*.cuh``).
+
+    `CudaKernel` adds it to the NVRTC options automatically, so kernel sources
+    can ``#include <cunumpy/atomic.cuh>``. Returned as a string, ready for an
+    ``-I`` option or for other compilers.
+    """
+    return str(Path(__file__).parent / "cuda" / "include")
 
 
 def pin_memory(array: Any) -> Any:

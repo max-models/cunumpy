@@ -31,6 +31,13 @@ extern "C" __global__ void scale(double* x, double factor, int n) {
 """
 
 
+def _user_options(kernel):
+    """`compile_options()` without cunumpy's own include directory."""
+    return tuple(
+        o for o in kernel.compile_options() if o != f"-I{xp.cuda_include_dir()}"
+    )
+
+
 def scale(x, factor, n):
     """Host version of the `scale` kernel."""
     for i in range(n):

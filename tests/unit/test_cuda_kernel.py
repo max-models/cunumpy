@@ -50,6 +50,13 @@ void all_types(bool b, char c, unsigned char uc, short s, int i, unsigned u,
 """
 
 
+def _user_options(kernel):
+    """`compile_options()` without cunumpy's own include directory."""
+    return tuple(
+        o for o in kernel.compile_options() if o != f"-I{xp.cuda_include_dir()}"
+    )
+
+
 class FakeDeviceArray:
     """Enough of a CuPy array for the argument checks: dtype, interface, address.
 
@@ -889,26 +896,26 @@ def test_compile_options_follow_the_global_setting(debug_off):
     kernel = CudaKernel(AXPY, "axpy", options=("-std=c++17",))
     assert kernel.debug is None
     assert kernel.debug_active() is False
-    assert kernel.compile_options() == ("-std=c++17",)
+    assert _user_options(kernel) == ("-std=c++17",)
     assert "-lineinfo" not in kernel.compile_options()
 
     with xp.cuda_debug():
         # decided at call time: the kernel created before is affected
         assert kernel.debug_active() is True
-        assert kernel.compile_options() == (
+        assert _user_options(kernel) == (
             "-std=c++17",
             "-lineinfo",
             "-DCUNUMPY_BOUNDS_CHECK",
         )
-    assert kernel.compile_options() == ("-std=c++17",)
+    assert _user_options(kernel) == ("-std=c++17",)
     assert kernel.options == ("-std=c++17",)  # the given options are unchanged
 
 
 def test_compile_options_no_duplicates(debug_off):
     kernel = CudaKernel(AXPY, "axpy", options=("-lineinfo",), debug=True)
-    assert kernel.compile_options() == ("-lineinfo", "-DCUNUMPY_BOUNDS_CHECK")
+    assert _user_options(kernel) == ("-lineinfo", "-DCUNUMPY_BOUNDS_CHECK")
     kernel = CudaKernel(AXPY, "axpy", options=xp.DEBUG_OPTIONS[::-1], debug=True)
-    assert kernel.compile_options() == xp.DEBUG_OPTIONS[::-1]
+    assert _user_options(kernel) == xp.DEBUG_OPTIONS[::-1]
 
 
 def test_explicit_debug_overrides_the_global_setting(debug_off):
@@ -921,14 +928,14 @@ def test_explicit_debug_overrides_the_global_setting(debug_off):
 
     with xp.cuda_debug():
         assert off.debug_active() is False
-        assert off.compile_options() == ()
-        assert on.compile_options() == xp.DEBUG_OPTIONS
+        assert _user_options(off) == ()
+        assert _user_options(on) == xp.DEBUG_OPTIONS
 
 
 def test_debug_options_include_dirs_and_from_file(tmp_path, debug_off):
     (tmp_path / "axpy_cuda.cu").write_text(AXPY)
     kernel = CudaKernel.from_file(tmp_path / "axpy_cuda.cu", debug=True)
-    assert kernel.compile_options() == (f"-I{tmp_path}", *xp.DEBUG_OPTIONS)
+    assert _user_options(kernel) == (f"-I{tmp_path}", *xp.DEBUG_OPTIONS)
 
 
 def test_debug_option_is_not_G():
@@ -1084,7 +1091,7 @@ def test_compile_options_contain_the_header_hash(header_tree):
 
     digest = include_hash(kernel.included_headers)
     define = f"-DCUNUMPY_INCLUDE_HASH=0x{digest}"
-    assert kernel.compile_options() == (f"-I{header_tree}", define)
+    assert _user_options(kernel) == (f"-I{header_tree}", define)
     assert kernel.options == (f"-I{header_tree}",)  # the define is not in options
 
     (header_tree / "sub" / "c.cuh").write_text("#define FACTOR 3\n")
@@ -1098,13 +1105,13 @@ def test_compile_options_contain_the_header_hash(header_tree):
         include_dirs=[header_tree],
     )
     assert kernel.source_dir is None
-    assert kernel.compile_options()[:2] == ("-std=c++17", f"-I{header_tree}")
-    assert kernel.compile_options()[2].startswith("-DCUNUMPY_INCLUDE_HASH=0x")
+    assert _user_options(kernel)[:2] == ("-std=c++17", f"-I{header_tree}")
+    assert _user_options(kernel)[2].startswith("-DCUNUMPY_INCLUDE_HASH=0x")
 
     # without quoted includes (or without found headers) nothing is added
-    assert CudaKernel(AXPY, "axpy").compile_options() == ()
+    assert _user_options(CudaKernel(AXPY, "axpy")) == ()
     assert CudaKernel(INCLUDING_SOURCE, "double_it").included_headers == ()
-    assert CudaKernel(INCLUDING_SOURCE, "double_it").compile_options() == ()
+    assert _user_options(CudaKernel(INCLUDING_SOURCE, "double_it")) == ()
 
 
 def test_editing_a_header_recompiles_on_gpu(header_tree):

@@ -48,6 +48,8 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
+from .xp import cuda_include_dir
+
 __all__ = [
     "DEBUG_OPTIONS",
     "CudaArguments",
@@ -810,6 +812,9 @@ class CudaKernel:
         Additional NVRTC compiler options, e.g. ``("-std=c++17",)``.
     include_dirs : Sequence[str | Path]
         Directories searched for ``#include`` files (passed as ``-I<dir>``).
+        cunumpy's own header directory (`cuda_include_dir()`) is always
+        added at compile time (see :meth:`compile_options`), so sources can
+        ``#include <cunumpy/atomic.cuh>``.
     source_dir : str | Path | None
         Directory the source was read from (set by :meth:`from_file`), where
         ``#include "..."`` files are looked up first.
@@ -1054,7 +1059,9 @@ class CudaKernel:
     def compile_options(self) -> tuple[str, ...]:
         """The NVRTC options a compilation now would use.
 
-        :attr:`options`, followed by :data:`DEBUG_OPTIONS` (``-lineinfo`` and
+        :attr:`options`, followed by ``-I`` for cunumpy's own header directory
+        (:func:`cunumpy.cuda_include_dir`) unless already present, then
+        :data:`DEBUG_OPTIONS` (``-lineinfo`` and
         ``-DCUNUMPY_BOUNDS_CHECK``) if :meth:`debug_active` and they are not
         already among the options (``-G`` is not added: NVRTC does not support
         it), and, if the source includes header files,
@@ -1063,6 +1070,10 @@ class CudaKernel:
         kernel cache on the options, so a changed header means a recompile.
         """
         options = self._options
+        # cunumpy's own headers (<cunumpy/atomic.cuh>, ...) are always found
+        cunumpy_include = f"-I{cuda_include_dir()}"
+        if cunumpy_include not in options:
+            options += (cunumpy_include,)
         if self.debug_active():
             options += tuple(o for o in DEBUG_OPTIONS if o not in options)
         headers = self.included_headers

@@ -18,6 +18,7 @@ from .cuda_kernel import (
 )
 from .dispatch import Kernel, KernelCatalog
 from .kernel import KernelArguments, PyccelKernel, resolve_host_args
+from .mirror import DeviceMirror
 from .transfers import (
     TransferCounter,
     TransferEvent,
@@ -30,6 +31,7 @@ from .xp import (
     assert_same_backend,
     bind_local_device,
     cuda_debug,
+    cuda_include_dir,
     cupy_available,
     default_float_dtype,
     device_count,
@@ -75,6 +77,7 @@ __all__ = [
     "CudaParameter",
     "CudaStruct",
     "CudaStructValue",
+    "DeviceMirror",
     "Kernel",
     "KernelArguments",
     "KernelCatalog",
@@ -90,6 +93,7 @@ __all__ = [
     "count_transfers",
     "ctype_of",
     "cuda_debug",
+    "cuda_include_dir",
     "cuda_kernel_names",
     "cupy_available",
     "cupy_backend",
