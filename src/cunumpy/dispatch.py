@@ -26,13 +26,23 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .cuda_kernel import CudaKernel
-from .kernel import PyccelKernel
+from .cuda_kernel import CudaKernel, _compile_in_threads
+from .kernel import PyccelKernel, resolve_host_args
+from .transfers import _ACTIVE as _COUNTERS
+from .transfers import _record
 from .xp import get_backend
 
 __all__ = ["Kernel", "KernelCatalog"]
 
 _MISSING_CUDA = ("raise", "fallback")
+
+
+def _source_root(package: str) -> Path:
+    """The directory containing the top-level package of `package`."""
+    top = importlib.import_module(package.partition(".")[0])
+    if top.__file__ is not None:
+        return Path(top.__file__).parent.parent
+    return Path(next(iter(top.__path__))).parent  # namespace package
 
 
 class Kernel:
@@ -66,6 +76,10 @@ class Kernel:
     Both kernels take the same arguments, except that the CUDA kernel gets the
     launch shape (``n_threads`` or ``grid``) and argument objects in their CUDA
     form (see :class:`~cunumpy.CudaArguments` and :class:`~cunumpy.CudaStruct`).
+    An argument object implementing :class:`~cunumpy.KernelArguments` is
+    replaced by its ``__host_args__()`` on the host path and flattened via
+    ``__cuda_args__()`` on the CUDA path, so the call site is the same on both
+    backends.
     """
 
     def __init__(
@@ -199,7 +213,9 @@ class Kernel:
         Parameters
         ----------
         *args
-            Kernel arguments.
+            Kernel arguments. Objects implementing
+            :class:`~cunumpy.KernelArguments` are resolved per backend (see
+            :func:`~cunumpy.resolve_host_args`).
         n_threads, grid, block, shared_mem, stream
             Launch configuration of the CUDA kernel, see
             :meth:`CudaKernel.__call__ <cunumpy.CudaKernel.__call__>`;
@@ -208,6 +224,13 @@ class Kernel:
         """
         kernel = self.get_kernel()
         if kernel is self._host_kernel:
+            if _COUNTERS and self._cuda_kernel is None and get_backend() == "cupy":
+                _record(
+                    "fallback",
+                    f"Kernel {self._name!r} has no CUDA kernel: host kernel "
+                    "called on the CuPy backend",
+                )
+            args, _ = resolve_host_args(args)
             return kernel(*args)
         if n_threads is None and grid is None:
             raise ValueError(
@@ -252,6 +275,7 @@ class KernelCatalog(Mapping):
         host_options: (
             Mapping[str, Any] | Callable[[str], Mapping[str, Any]] | None
         ) = None,
+        include_dirs: Sequence[str | Path] | None = None,
         **cuda_options: Any,
     ) -> KernelCatalog:
         """Collect the kernels of a package with one folder per kernel.
@@ -259,7 +283,10 @@ class KernelCatalog(Mapping):
         For every subfolder ``<name>`` of the package that contains the module
         ``<name><host_suffix>.py``, the function ``<name>`` of that module is the
         host kernel, and ``<name><cuda_suffix>`` in the same folder, if present,
-        is the CUDA kernel (with a ``__global__`` function ``<name>``).
+        is the CUDA kernel (with a ``__global__`` function ``<name>``). Other
+        ``__global__`` functions in that file are ignored by the catalog; load
+        them with :meth:`CudaKernel.all_from_file
+        <cunumpy.CudaKernel.all_from_file>`.
 
         Parameters
         ----------
@@ -275,11 +302,19 @@ class KernelCatalog(Mapping):
             Keyword arguments for the :class:`~cunumpy.PyccelKernel` wrapping each
             host kernel (see :class:`Kernel`): the same for all kernels, or a
             function of the kernel name, e.g. to declare per-kernel ``outputs``.
+        include_dirs : Sequence[str | Path] | None
+            Include directories of the CUDA kernels, in addition to each
+            kernel's own folder. By default the source root of the top-level
+            package (the directory containing it), so that a kernel in
+            ``my_pkg.kernels`` can ``#include "my_pkg/common.cuh"``.
         **cuda_options
-            Passed on to :meth:`CudaKernel.from_file`, e.g. ``block_size``,
-            ``include_dirs`` or ``structs``.
+            Passed on to :meth:`CudaKernel.from_file`, e.g. ``block_size`` or
+            ``structs``.
         """
         root = Path(importlib.import_module(package).__file__).parent
+        if include_dirs is None:
+            include_dirs = (_source_root(package),)
+        cuda_options["include_dirs"] = tuple(include_dirs)
         kernels = {}
         for folder in sorted(p for p in root.iterdir() if p.is_dir()):
             name = folder.name
@@ -328,16 +363,71 @@ class KernelCatalog(Mapping):
             f"KernelCatalog({len(self)} kernels, {len(self.without_cuda)} without CUDA)"
         )
 
+    def __str__(self) -> str:
+        return self.summary()
+
+    def summary(self, max_missing: int = 10) -> str:
+        """One line on the porting status, e.g. for a ``--status`` command.
+
+        Parameters
+        ----------
+        max_missing : int
+            How many of the kernels without CUDA kernel to name; the rest is
+            shortened to ``...``.
+
+        Returns
+        -------
+        str
+            ``"CUDA kernels: 3 of 60 (missing: a, b, c)"``; without the
+            parenthesis if every kernel has a CUDA kernel.
+        """
+        text = f"CUDA kernels: {len(self.with_cuda)} of {len(self)}"
+        missing = self.without_cuda
+        if missing:
+            names = missing[:max_missing]
+            if len(missing) > max_missing:
+                names.append("...")
+            text += f" (missing: {', '.join(names)})"
+        return text
+
+    @property
+    def with_cuda(self) -> list[str]:
+        """Names of the kernels with a CUDA kernel."""
+        return [name for name, kernel in self._kernels.items() if kernel.has_cuda]
+
     @property
     def without_cuda(self) -> list[str]:
         """Names of the kernels without a CUDA kernel, i.e. still to port."""
         return [name for name, kernel in self._kernels.items() if not kernel.has_cuda]
 
-    def compile_all(self) -> list[str]:
+    def parity_cases(self) -> list[tuple[str, Kernel]]:
+        """The ``(name, kernel)`` pairs of the kernels that have a CUDA kernel.
+
+        For a parametrised parity test of the whole catalog with
+        :func:`cunumpy.testing.assert_kernels_agree`::
+
+            @pytest.mark.parametrize("name, kernel", catalog.parity_cases())
+            def test_parity(name, kernel):
+                assert_kernels_agree(kernel, make_args[name], n_threads=1000)
+        """
+        return [
+            (name, kernel) for name, kernel in self._kernels.items() if kernel.has_cuda
+        ]
+
+    def compile_all(self, jobs: int | None = 1) -> list[str]:
         """Compile all CUDA kernels now, e.g. at setup instead of in the first step.
 
         Compilation is cached on disk by CuPy, so after the first run this mostly
         loads the compiled kernels.
+
+        Parameters
+        ----------
+        jobs : int | None
+            Number of kernels compiled at a time. With ``jobs > 1`` the kernels
+            are compiled in threads (NVRTC compilation releases the GIL, and
+            all threads use the current device); None uses the number of CPUs.
+            All kernels are compiled even if one fails; the first error is
+            raised afterwards.
 
         Returns
         -------
@@ -349,4 +439,11 @@ class KernelCatalog(Mapping):
         RuntimeError
             If CuPy or a GPU is not available (and there are CUDA kernels).
         """
-        return [name for name, kernel in self._kernels.items() if kernel.compile()]
+        return _compile_in_threads(
+            {
+                name: kernel.compile
+                for name, kernel in self._kernels.items()
+                if kernel.has_cuda
+            },
+            jobs,
+        )
