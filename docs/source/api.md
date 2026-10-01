@@ -241,6 +241,8 @@ too. An exception raised inside the block propagates as it is:
 def test_time_step_stays_on_the_device():
     with xp.assert_no_transfers():
         propagator(dt)
+```
+
 ### `as_device_array(value, dtype=None, ndim=None, *, name=None)`
 
 The "reference or copy once" rule for building CUDA argument objects
@@ -432,7 +434,7 @@ does not necessarily indicate a leak.
 ### `cuda_include_dir()`
 
 Returns the directory (as `str`) of the CUDA headers shipped with CuNumpy,
-currently `cunumpy/atomic.cuh`. `CudaKernel` adds it to its NVRTC options as
+`cunumpy/array_view.cuh`, `cunumpy/atomic.cuh` and `cunumpy/index.cuh`. `CudaKernel` adds it to its NVRTC options as
 `-I<dir>` automatically (and only once), so kernel sources can write
 `#include <cunumpy/atomic.cuh>` without configuration. Use it to pass the
 same headers to other compilers.
@@ -668,11 +670,9 @@ kernels["shift"](x, 1.0, x.size, n_threads=x.size)
   fix it for this kernel, see "Debugging" below.
 
 Properties: `name`, `expression` (`name`, or the template instantiation such
-as `"scale<double, 3>"`), `source`, `block_size`, `options`, `structs`,
-`template_args`, `signature`, `is_compiled`, `debug`.
 as `"scale<double, 3>"`), `source`, `block_size`, `options`, `include_dirs`,
 `source_dir`, `included_headers`, `structs`, `template_args`, `signature`,
-`is_compiled`.
+`is_compiled`, `debug`.
 
 ### Included headers and the compile cache
 

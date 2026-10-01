@@ -372,6 +372,7 @@ class ParticleArguments(xp.KernelArguments):
 
 
 kernel(particles.kernel_args, dt, n_threads=n)  # host or CUDA kernel
+```
 
 Kernels ported from pyccel index arrays like `markers[ip, j]`, which needs
 shapes and strides rather than bare pointers. The shipped header
@@ -446,6 +447,7 @@ def make_args(backend, seed):
 @pytest.mark.parametrize("name, kernel", catalog.parity_cases())
 def test_parity(name, kernel):
     assert_kernels_agree(kernel, make_args, n_threads=1000)
+```
 
 Accumulation kernels often write into a buffer that another library owns on
 the host (a stencil vector's `_data`, exchanged over MPI). `DeviceMirror`
@@ -473,6 +475,39 @@ installation example and compatibility notes.
 
 ## Documentation
 
-The [user guide](docs/source/quickstart.md) explains common workflows. The
-[API reference](docs/source/api.md) documents each helper and its behavior.
-The [Pyodide guide](docs/source/pyodide.md) covers WebAssembly usage.
+The full documentation lives in [`docs/source`](docs/source/index.md) and is
+published at <https://max-models.github.io/cunumpy/>:
+
+* Getting started: [installation](docs/source/installation.md) and a
+  [quickstart](docs/source/quickstart.md) with a map of which guide covers what.
+* User guide: [choosing a backend](docs/source/guides/backends.md),
+  [backend-agnostic code](docs/source/guides/portable-code.md),
+  [data movement](docs/source/guides/data-movement.md),
+  [devices, memory and streams](docs/source/guides/gpu-devices.md),
+  [MPI with one rank per GPU](docs/source/guides/mpi.md),
+  [timing and profiling](docs/source/guides/profiling.md).
+* Porting kernels: [overview](docs/source/kernels/overview.md),
+  [`PyccelKernel`](docs/source/kernels/pyccel-kernel.md),
+  [`CudaKernel`](docs/source/kernels/cuda-kernel.md),
+  [`Kernel` and `KernelCatalog`](docs/source/kernels/dispatch.md),
+  [argument objects and structs](docs/source/kernels/arguments.md),
+  [accumulation kernels](docs/source/kernels/accumulation.md),
+  [debugging](docs/source/kernels/debugging.md),
+  [testing](docs/source/kernels/testing.md).
+* [Worked examples](docs/source/examples/index.md),
+  [best practices](docs/source/best-practices.md),
+  [troubleshooting](docs/source/troubleshooting.md),
+  [Pyodide](docs/source/pyodide.md) and the
+  [API reference](docs/source/api.md).
+
+### For AI coding assistants
+
+[`src/cunumpy/LLM_GUIDE.md`](src/cunumpy/LLM_GUIDE.md) is a compact,
+self-contained guide to the API and its rules for LLM-based coding assistants.
+It ships inside the installed package, so an assistant working in a project that
+depends on CuNumpy can read it from `site-packages/cunumpy/LLM_GUIDE.md`, or
+locate it with:
+
+```bash
+python -c "import cunumpy, pathlib; print(pathlib.Path(cunumpy.__file__).parent / 'LLM_GUIDE.md')"
+```
