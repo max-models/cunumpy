@@ -66,7 +66,7 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
 | launch a hand-written CUDA C kernel | `xp.CudaKernel(source, "name")` / `CudaKernel.from_file(path)` |
 | host kernel + CUDA port, chosen by backend | `xp.Kernel(host_fn, cuda_kernel_or_None)` |
 | many kernels in a package, ported incrementally | `xp.KernelCatalog.from_package(__name__, missing_cuda="fallback")` |
-| group arrays/scalars into one kernel argument | `xp.CudaArguments` (device only), `xp.KernelArguments` (host object + device tuple), `xp.CudaStruct` (C struct) |
+| group arrays/scalars into one kernel argument | `xp.CudaArguments` (device only), `xp.KernelArguments` (host object + device tuple), `xp.CudaStruct` (C struct), `xp.CudaStructArguments` (C struct as a class) |
 | CUDA struct from a Pyccel argument class | `xp.CudaStruct.from_signature(Cls.__init__, "Name")`, `xp.write_cuda_header(...)` |
 | kernel writes into a host buffer owned by another library | `xp.DeviceMirror(host_array)` + `<cunumpy/atomic.cuh>` |
 | N-D indexing in CUDA, non-contiguous arrays | `Array1D<T>`..`Array3D<T>` params from `<cunumpy/array_view.cuh>` |
@@ -242,6 +242,13 @@ S = xp.CudaStruct("S", [("x", "double*"), ("n", "long long"), ("a", "Array2D<dou
 S.declaration; S.dtype; S.to_header(path); value = S(x=..., n=..., a=...)
 S = xp.CudaStruct.from_signature(Cls.__init__, "S", int_type="long long")
 xp.write_cuda_header("args.cuh", [S1, S2])
+
+class A(xp.CudaStructArguments):         # the struct as a class; A.struct is the CudaStruct
+    struct_name = "A"
+    fields = (("x", "double*"), ("n", "int"))
+    def __init__(self, x):
+        self.x, self.n = x, x.shape[0]
+        self.pack()                      # again after replacing an array; copies repack
 xp.CudaKernel(S.declaration + src, "k", structs=[S])
 xp.resolve_host_args(args, kwargs)
 ```

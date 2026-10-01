@@ -11,6 +11,7 @@ argument:
 | `CudaArguments` | (not used) | several parameters, flattened | grouping device arguments only |
 | `KernelArguments` | one object (`__host_args__()`) | several parameters (`__cuda_args__()`) | the host kernel takes an argument class, the CUDA kernel flat parameters |
 | `CudaStruct` | (not used) | one C struct parameter | many fields; one definition shared by all CUDA kernels |
+| `CudaStructArguments` | (not used) | one C struct parameter | the struct as a class: an object with attributes, built once and reused |
 
 They combine: a `KernelArguments` object can return a `CudaStruct` value from
 `__cuda_args__()`.
@@ -133,6 +134,49 @@ field back; `Particles.dtype` is the NumPy structured dtype of the layout.
 `CudaKernel(..., structs=[Particles])` also checks that a struct definition in
 the kernel source matches the Python definition, so a hand-edited header that
 drifted raises a `ValueError` instead of reading fields at wrong offsets.
+
+### `CudaStructArguments`: the struct as a class
+
+When the device arguments are an object of their own (built once per particle
+species, domain or grid, and kept next to the host argument object), subclass
+`CudaStructArguments`. The class declares the struct, the instance holds the
+field values as attributes and is passed to kernels as it is:
+
+```python
+class CudaMarkerArguments(xp.CudaStructArguments):
+    struct_name = "MarkerArgs"
+    fields = (
+        ("markers", "double*"),
+        ("valid_mks", "bool*"),
+        ("n_markers", "int"),
+        ("n_cols", "int"),
+        ("weight_idx", "int"),
+    )
+
+    def __init__(self, markers, valid_mks, weight_idx):
+        self.markers = xp.as_device_array(markers, np.float64, ndim=2, name="markers")
+        self.valid_mks = xp.as_device_array(valid_mks, np.bool_, ndim=1, name="valid_mks")
+        self.n_markers, self.n_cols = self.markers.shape
+        self.weight_idx = weight_idx
+        self.pack()
+
+
+xp.write_cuda_header("kernels/marker_args.cuh", [CudaMarkerArguments.struct])
+push = xp.CudaKernel.from_file("kernels/push_cuda.cu", structs=[CudaMarkerArguments.struct])
+
+args = CudaMarkerArguments(markers, valid_mks, weight_idx=6)
+push(args, dt, n_threads=args.n_markers)
+```
+
+* The `CudaStruct` is built when the class is defined (`CudaMarkerArguments.struct`),
+  so a bad field type raises at import, not at the first launch.
+* `pack()` checks every field like `CudaStruct` does. Call it again after
+  replacing an array attribute, e.g. after the marker array was resized.
+* Copies and unpickled objects are packed again from their own arrays, so a
+  `deepcopy` never points at the device memory of the original.
+* When the same call site must also reach a host kernel, pair it with the host
+  argument object in a `KernelArguments`: `__host_args__()` returns the host
+  object, `__cuda_args__()` returns `cuda_args.__cuda_args__()`.
 
 ### Generate the struct from the host argument class
 

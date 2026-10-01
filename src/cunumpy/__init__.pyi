@@ -14,6 +14,7 @@ from .cuda_kernel import CudaKernel as CudaKernel
 from .cuda_kernel import CudaKernelVariants as CudaKernelVariants
 from .cuda_kernel import CudaParameter as CudaParameter
 from .cuda_kernel import CudaStruct as CudaStruct
+from .cuda_kernel import CudaStructArguments as CudaStructArguments
 from .cuda_kernel import CudaStructValue as CudaStructValue
 from .cuda_kernel import ctype_of as ctype_of
 from .cuda_kernel import cuda_include_dir as cuda_include_dir
