@@ -1601,3 +1601,174 @@ def test_as_device_array_checks_ndim():
             as_device_array(x, np.float64, ndim=1, name="x")
         with pytest.raises(ValueError, match="device argument must have 2"):
             as_device_array((1, 2, 3), np.int32, ndim=2)
+
+
+# ---------------------------------------------------------------------------
+# struct argument classes
+# ---------------------------------------------------------------------------
+
+
+class ParticleArguments(xp.CudaStructArguments):
+    """The class form of PARTICLES."""
+
+    struct_name = "Particles"
+    fields = tuple(
+        (f.name, f"{f.ctype}{'*' if f.pointer else ''}") for f in PARTICLES.fields
+    )
+
+    def __init__(self, x, alive, ids, charge=2.0, weight=0.5):
+        self.x = x
+        self.n = x.shape[0]
+        self.charge = charge
+        self.alive = alive
+        self.ids = ids
+        self.weight = weight
+        self.pack()
+
+
+def _particle_arguments(ptr=0xABC0, n=3, **kwargs):
+    return ParticleArguments(
+        FakeDeviceArray(np.float64, ptr=ptr, shape=(n,)),
+        FakeDeviceArray(np.bool_, shape=(n,)),
+        FakeDeviceArray(np.int64, shape=(2,)),
+        **kwargs,
+    )
+
+
+def test_struct_arguments_define_the_struct_once():
+    struct = ParticleArguments.struct
+    assert isinstance(struct, CudaStruct) and struct.name == "Particles"
+    assert struct.declaration == PARTICLES.declaration
+    assert struct.dtype == PARTICLES.dtype
+    assert ParticleArguments.struct is _particle_arguments().struct  # one per class
+
+
+def test_struct_arguments_pack_their_attributes():
+    args = _particle_arguments(ptr=0xF00, charge=3)
+    assert isinstance(args, CudaArguments)
+    assert args.packed["x"] == 0xF00 and args.packed["n"] == 3
+    assert args.packed["charge"] == 3.0 and args.packed["weight"] == 0.5
+    assert args.__cuda_args__() == (args.packed,)
+
+
+def test_struct_arguments_check_their_fields():
+    with pytest.raises(TypeError, match="must have dtype float64"):
+        ParticleArguments(
+            FakeDeviceArray(np.float32),
+            FakeDeviceArray(np.bool_),
+            FakeDeviceArray(np.int64),
+        )
+    with pytest.raises(TypeError, match="must be a CuPy array"):
+        ParticleArguments(
+            np.zeros(3), FakeDeviceArray(np.bool_), FakeDeviceArray(np.int64)
+        )
+    args = _particle_arguments()
+    args.n = 2.5  # a float for the int field n
+    with pytest.raises(TypeError, match="int n"):
+        args.pack()
+    with pytest.raises(OverflowError):
+        _particle_arguments(n=2**31)
+
+
+def test_struct_arguments_need_every_field_attribute():
+    class Incomplete(xp.CudaStructArguments):
+        struct_name = "Incomplete"
+        fields = (("x", "double*"), ("n", "int"))
+
+        def __init__(self, x):
+            self.x = x
+            self.pack()
+
+    with pytest.raises(
+        AttributeError, match="no attribute 'n' for the field of struct Incomplete"
+    ):
+        Incomplete(FakeDeviceArray(np.float64))
+
+
+def test_struct_arguments_class_definition():
+    with pytest.raises(TypeError, match="must define both struct_name and fields"):
+
+        class OnlyName(xp.CudaStructArguments):
+            struct_name = "OnlyName"
+
+    with pytest.raises(ValueError, match="unsupported type"):
+
+        class BadField(xp.CudaStructArguments):
+            struct_name = "BadField"
+            fields = (("a", "Other"),)
+
+    class Base(xp.CudaStructArguments):  # intermediate base: no struct
+        def __init__(self):
+            self.pack()
+
+    with pytest.raises(TypeError, match="does not define struct_name and fields"):
+        Base()
+
+    class Derived(ParticleArguments):  # inherits the struct of its parent
+        pass
+
+    assert Derived.struct is ParticleArguments.struct
+
+
+def test_struct_arguments_repack_after_replacing_an_array():
+    args = _particle_arguments(ptr=0x100)
+    args.x = FakeDeviceArray(np.float64, ptr=0x200, shape=(3,))
+    assert args.packed["x"] == 0x100  # still the old address
+    args.pack()
+    assert args.packed["x"] == 0x200
+
+
+def test_struct_arguments_are_packed_again_when_copied():
+    import copy
+    import pickle
+
+    args = _particle_arguments(ptr=0x100)
+    shallow = copy.copy(args)
+    assert shallow.packed["x"] == 0x100 and shallow.packed is not args.packed
+
+    deep = copy.deepcopy(args)
+    deep_x = deep.x
+    assert deep_x is not args.x and deep.packed["x"] == deep_x.data.ptr
+
+    restored = pickle.loads(pickle.dumps(args))
+    assert "_struct_value" in vars(restored)
+    assert restored.packed["charge"] == 2.0
+    assert "_struct_value" not in args.__getstate__()
+
+
+def test_struct_arguments_as_kernel_arguments():
+    kernel = CudaKernel(PUSH_SOURCE, "push", structs=[ParticleArguments.struct])
+    args = _particle_arguments()
+    out, size = FakeDeviceArray(np.float64), FakeDeviceArray(np.uint64)
+    packed, dt, _, _ = kernel.prepare_args(args, 1, out, size)
+    assert packed is args.packed and type(dt) is np.float64
+
+    class Other(xp.CudaStructArguments):
+        struct_name = "Other"
+        fields = (("x", "double*"),)
+
+        def __init__(self, x):
+            self.x = x
+            self.pack()
+
+    with pytest.raises(TypeError, match="must be a value of struct Particles"):
+        kernel.prepare_args(Other(FakeDeviceArray(np.float64)), 1.0, out, size)
+
+
+def test_struct_arguments_on_gpu():
+    _skip_without_cupy()
+    import cupy as cp
+
+    n = 300
+    alive = cp.ones(n, dtype=bool)
+    alive[::2] = False
+    args = ParticleArguments(
+        cp.zeros(n), alive, cp.array([7, 42], dtype=cp.int64), weight=1.5
+    )
+    out, size = cp.zeros(4), cp.zeros(1, dtype=cp.uint64)
+    CudaKernel(PUSH_SOURCE, "push", structs=[ParticleArguments.struct])(
+        args, 0.5, out, size, n_threads=n
+    )
+    assert int(size.get()[0]) == ParticleArguments.struct.dtype.itemsize
+    assert out.get().tolist() == [n, 2.0, 42.0, 1.5]
+    assert cp.all(args.x[1::2] == 1.0) and cp.all(args.x[::2] == 0.0)

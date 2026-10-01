@@ -1034,6 +1034,43 @@ def test_pusher_args_header_is_up_to_date():
 Kernels created with `structs=[MarkerArgs, ...]` also check a definition in
 their own source against the Python definition (`check_source`).
 
+## `CudaStructArguments`
+
+```python
+class MarkerArguments(xp.CudaStructArguments):
+    struct_name = "MarkerArgs"
+    fields = (("markers", "Array2D<double>"), ("valid", "bool*"), ("n_markers", "int"))
+
+    def __init__(self, markers, valid):
+        self.markers = markers
+        self.valid = valid
+        self.n_markers = markers.shape[0]
+        self.pack()
+
+push = xp.CudaKernel(source, "push", structs=[MarkerArguments.struct])
+push(MarkerArguments(markers, valid), dt, n_threads=markers.shape[0])
+```
+
+Base class for argument objects that are one C struct: the class form of
+`CudaStruct`. A subclass sets `struct_name` and `fields` (`(field name, C type)`
+pairs, as for `CudaStruct`), stores every field as an attribute of the same
+name, and calls `pack()` at the end of its constructor. The `CudaStruct` is
+built once per subclass when the class is defined and is the class attribute
+`struct` (for `structs=[...]`, `declaration`, `to_header()`,
+`write_cuda_header()`); invalid field types raise when the class is defined.
+
+* `pack()` packs the field attributes, with the checks of `CudaStruct`
+  (C-contiguous CuPy arrays of the declared dtype, range-checked scalars). A
+  field without an attribute raises `AttributeError`. Call it again after
+  replacing an array attribute: the packed struct holds device addresses.
+* `packed` is the packed struct (`numpy.void`); `__cuda_args__()` returns
+  `(packed,)`, so a `CudaKernel` receives the struct.
+* Copies (`copy.copy`, `copy.deepcopy`) and unpickled objects are packed again
+  from their own arrays; the packed struct is not part of the pickled state.
+* A subclass that sets neither `struct_name` nor `fields` is an intermediate
+  base class (its instances cannot be packed); setting only one raises
+  `TypeError`. Subclasses of a complete class inherit its struct.
+
 ## `CudaArguments`
 
 ```python

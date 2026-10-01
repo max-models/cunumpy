@@ -67,6 +67,7 @@ __all__ = [
     "CudaKernelVariants",
     "CudaParameter",
     "CudaStruct",
+    "CudaStructArguments",
     "CudaStructValue",
     "ctype_of",
     "cuda_include_dir",
@@ -1149,6 +1150,134 @@ class CudaStructValue:
 
     def __cuda_args__(self) -> tuple[np.void]:
         return (self._packed,)
+
+
+class CudaStructArguments(CudaArguments):
+    """Base class for argument objects that are passed to CUDA kernels as one C struct.
+
+    The class form of :class:`CudaStruct`: a subclass names the struct
+    (:attr:`struct_name`) and lists its fields (:attr:`fields`), stores every
+    field as an attribute of the same name, and calls :meth:`pack` at the end
+    of its constructor. The object is then passed to a :class:`CudaKernel` as
+    it is and arrives as the packed struct.
+
+    The :class:`CudaStruct` is built once per subclass, when the class is
+    defined, and is available as :attr:`struct` (for ``CudaKernel(...,
+    structs=[...])``, :attr:`CudaStruct.declaration` and
+    :meth:`CudaStruct.to_header`). Packing checks every field like a kernel
+    argument: pointers need C-contiguous CuPy arrays of the declared dtype
+    (never copied), scalars are range-checked and cast.
+
+    The packed struct holds device addresses. Call :meth:`pack` again after
+    replacing an array attribute. Copies (``copy.copy``, ``copy.deepcopy``)
+    and unpickled objects are packed again from their own arrays.
+
+    A subclass that sets neither :attr:`struct_name` nor :attr:`fields` is an
+    intermediate base class; a subclass that sets only one of them raises
+    ``TypeError``.
+
+    Attributes
+    ----------
+    struct_name : str
+        Name of the C struct type.
+    fields : Sequence[tuple[str, str]]
+        ``(field name, C type)`` pairs, in declaration order, as for
+        :class:`CudaStruct`.
+    struct : CudaStruct
+        The struct type, built from :attr:`struct_name` and :attr:`fields`.
+
+    Examples
+    --------
+    >>> class MarkerArguments(CudaStructArguments):
+    ...     struct_name = "MarkerArgs"
+    ...     fields = (
+    ...         ("markers", "Array2D<double>"),
+    ...         ("valid", "bool*"),
+    ...         ("n_markers", "int"),
+    ...     )
+    ...
+    ...     def __init__(self, markers, valid):
+    ...         self.markers = markers
+    ...         self.valid = valid
+    ...         self.n_markers = markers.shape[0]
+    ...         self.pack()
+    >>> print(MarkerArguments.struct.declaration)
+    struct MarkerArgs {
+        Array2D<double> markers;
+        bool* valid;
+        int n_markers;
+    };
+    >>> push = CudaKernel(source, "push", structs=[MarkerArguments.struct])  # doctest: +SKIP
+    >>> push(MarkerArguments(markers, valid), 0.1, n_threads=markers.shape[0])  # doctest: +SKIP
+    """
+
+    struct_name: str
+    fields: Sequence[tuple[str, str]]
+    struct: CudaStruct
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        has_name = "struct_name" in cls.__dict__
+        has_fields = "fields" in cls.__dict__
+        if not has_name and not has_fields:
+            return  # an intermediate base class, or a subclass of a complete one
+        if not (has_name and has_fields):
+            raise TypeError(
+                f"{cls.__qualname__} must define both struct_name and fields"
+            )
+        cls.struct = CudaStruct(cls.struct_name, cls.fields)
+
+    def pack(self) -> None:
+        """Pack the field attributes into the struct.
+
+        Called at the end of the constructor, and again after an array
+        attribute has been replaced.
+
+        Raises
+        ------
+        TypeError
+            If the class does not define a struct, or a field value has the
+            wrong type (see :meth:`CudaStruct.__call__`).
+        AttributeError
+            If a field has no attribute of the same name.
+        """
+        struct = getattr(type(self), "struct", None)
+        if struct is None:
+            raise TypeError(
+                f"{type(self).__qualname__} does not define struct_name and fields"
+            )
+        values = {}
+        for field in struct.fields:
+            try:
+                values[field.name] = getattr(self, field.name)
+            except AttributeError:
+                raise AttributeError(
+                    f"{type(self).__qualname__} has no attribute {field.name!r} "
+                    f"for the field of struct {struct.name}"
+                ) from None
+        self._struct_value = struct(**values)
+
+    @property
+    def packed(self) -> np.void:
+        """The packed struct, with the memory layout of the C struct; packs on first use."""
+        if self.__dict__.get("_struct_value") is None:
+            self.pack()
+        return self._struct_value.packed
+
+    def __cuda_args__(self) -> tuple[np.void]:
+        """The packed struct, as the one kernel argument this object stands for."""
+        return (self.packed,)
+
+    def __getstate__(self) -> dict[str, Any]:
+        # the packed struct holds the device addresses of the original arrays,
+        # which a copy (or another process) does not share
+        state = self.__dict__.copy()
+        state.pop("_struct_value", None)
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        self.__dict__.update(state)
+        self.pack()
 
 
 def _as_shape(value: int | Sequence[int], what: str) -> tuple[int, ...]:
