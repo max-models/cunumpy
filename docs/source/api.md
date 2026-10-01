@@ -877,6 +877,63 @@ CUNUMPY_CUDA_DEBUG=1 compute-sanitizer python -m pytest tests/unit/test_my_kerne
 Note that after an illegal memory access the CUDA context is unusable; the
 process (or the pytest run) has to be restarted.
 
+### Debugging
+
+```python
+xp.set_cuda_debug(enabled)
+xp.get_cuda_debug()
+xp.cuda_debug(enabled=True)   # context manager
+xp.CudaKernel(..., debug=None)
+kernel.debug_active()
+kernel.compile_options()
+xp.DEBUG_OPTIONS  # ("-lineinfo", "-DCUNUMPY_BOUNDS_CHECK")
+```
+
+Kernel launches are asynchronous: a CUDA error such as an illegal memory
+access or a launch failure is reported by the next operation that
+synchronizes (a `.get()`, an MPI call, ...), which may be far from the kernel
+that caused it. In debug mode, a `CudaKernel`
+
+* is compiled with `-lineinfo` (source line information for
+  `compute-sanitizer` and profilers) and `-DCUNUMPY_BOUNDS_CHECK` (bounds
+  checks in cunumpy's array views, and available to your own `#ifdef`s),
+  unless the option is already among its `options`. `-G` (device debug
+  symbols) is not added, because NVRTC does not support it;
+* synchronizes the stream after every launch (the `stream` passed, else the
+  current one), so an error is raised at the launch that caused it, as a
+  `RuntimeError` that names the kernel and its grid and block, with the CuPy
+  error chained.
+
+Debug mode is enabled globally with `xp.set_cuda_debug(True)`, temporarily
+with the context manager `xp.cuda_debug()`, or before starting Python with
+the environment variable `CUNUMPY_CUDA_DEBUG=1` (`true`, `yes` and `on` work
+too); `xp.get_cuda_debug()` returns the current setting. A kernel created with
+`debug=None` (the default) reads the global setting at every launch, so
+enabling it also affects kernels created earlier; `debug=True` or
+`debug=False` fix the mode for one kernel. Only the compile options are fixed
+at compile time: a kernel compiled before debug mode was enabled keeps its
+options, so call `compile()` after enabling, or create the kernels after
+enabling. `kernel.debug_active()` tells whether debug mode applies to a
+kernel now, and `kernel.compile_options()` returns the options a compilation
+now would use.
+
+```python
+with xp.cuda_debug():
+    kernel = xp.CudaKernel(SOURCE, "kernel")
+    kernel(x, y, n, n_threads=n)  # RuntimeError: CUDA error after launching kernel 'kernel' ...
+```
+
+The `RuntimeError` says which kernel failed, not where. The next step is
+NVIDIA's memory checker, which reports the faulting source line (thanks to
+`-lineinfo`) and also finds out-of-bounds accesses that do not crash:
+
+```bash
+CUNUMPY_CUDA_DEBUG=1 compute-sanitizer python -m pytest tests/unit/test_my_kernel.py
+```
+
+Note that after an illegal memory access the CUDA context is unusable; the
+process (or the pytest run) has to be restarted.
+
 ## `CudaStruct`
 
 ```python
