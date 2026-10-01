@@ -412,6 +412,57 @@ work_stream.synchronize()  # on CuPy; the yielded value is None on NumPy
 Do not call methods on the yielded value without checking the backend. Use
 `xp.synchronize()` for code that should work on both backends.
 
+## Profiling
+
+CUDA kernels run asynchronously: a wall-clock timer around a launch measures
+the launch, not the kernel, and regions of an application profiler are not
+visible to `nsys`. These helpers address both; they are no-ops (or plain
+timers) on NumPy, so instrumented code runs unchanged on both backends.
+
+### `nvtx_range(name, color=None)`
+
+Context manager and decorator marking a code region as an NVTX range. On CuPy
+it calls `cupy.cuda.nvtx.RangePush(name)` on entry and `RangePop()` on exit
+(also when the block raises), so the region appears on the `nsys`/Nsight
+timeline next to the kernels launched inside it. `color` is an optional index
+into NVTX's colour table (the `id_color` argument of `RangePush`). On NumPy,
+or if NVTX is not available in the CuPy build, it does nothing. The same
+instance may be nested or re-entered, e.g. as the decorator of a recursive
+function.
+
+```python
+with xp.nvtx_range("push markers"):
+    kernel(markers, dt, n_threads=n)
+
+
+@xp.nvtx_range("accumulate")
+def accumulate(particles, grid):
+    ...
+```
+
+### `timed_region(name, *, sync=True)`
+
+Context manager timing a code region, including the device work it queues.
+It yields a `Timing` object whose `elapsed` (seconds, from
+`time.perf_counter`) is set when the block exits, also when it raises. On
+CuPy it synchronizes the device on entry, so earlier queued work is not
+charged to the region, and, if `sync` is true, again on exit before reading
+the clock; `synced` records whether that happened. It also pushes an
+`nvtx_range()` of the same name. On NumPy it is a plain timer and `synced`
+is `False`. With `sync=False` only the host time is measured.
+
+```python
+with xp.timed_region("push markers") as timing:
+    kernel(markers, dt, n_threads=n)
+
+print(f"{timing.name}: {timing.elapsed:.4f} s, synced={timing.synced}")
+```
+
+### `Timing`
+
+Dataclass returned by `timed_region()`, with the fields `name` (`str`),
+`elapsed` (`float`, `None` until the block exits) and `synced` (`bool`).
+
 ## `PyccelKernel`
 
 ### Constructor
