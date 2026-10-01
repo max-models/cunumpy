@@ -174,17 +174,29 @@ active CuPy device and `None` on NumPy. `set_device_for_rank(rank)` is a
 round-robin convenience for MPI layouts where local ranks map contiguously to
 GPUs. If your scheduler uses a different mapping, select the device directly.
 
-For MPI programs with one rank per GPU, `bind_local_device()` selects the GPU
-from the node-local rank that the MPI launcher exports (`local_rank()`), so it
-can run before MPI is initialized, as CUDA-aware MPI requires. Before passing
-device buffers to MPI, call `synchronize_for_mpi(*buffers)`: kernels run
-asynchronously, and MPI would otherwise send a buffer a kernel is still
-writing, without an error.
+For MPI programs with one rank per GPU, the startup sequence is:
+
+1. `bind_local_device()` selects the GPU from the node-local rank that the MPI
+   launcher exports (`local_rank()`) and creates its CUDA context. It runs
+   before MPI is initialized because a CUDA-aware MPI binds to the device that
+   is current at `MPI_Init`; without it, every rank of a node would use
+   device 0.
+2. `from mpi4py import MPI` initializes MPI.
+3. `require_cuda_aware_mpi()` (or `mpi_is_cuda_aware(comm)`) checks, with one
+   tiny device `Sendrecv` on every rank, that the MPI library can pass device
+   buffers at all. Passing CuPy arrays to a plain MPI build segfaults or
+   silently sends garbage; the check turns that into a clear error at
+   startup. It is a no-op on the NumPy backend.
+4. `synchronize_for_mpi(*buffers)` before every MPI call with device buffers:
+   kernels run asynchronously, and MPI would otherwise send a buffer a kernel
+   is still writing, without an error.
 
 ```python
 xp.set_backend("cupy")
 xp.bind_local_device()  # before MPI_Init
-from mpi4py import MPI
+from mpi4py import MPI  # MPI_Init
+
+xp.require_cuda_aware_mpi()  # once, on all ranks
 
 xp.synchronize_for_mpi(send, recv)
 MPI.COMM_WORLD.Sendrecv(send, dest, recvbuf=recv, source=source)
