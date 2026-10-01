@@ -1091,8 +1091,167 @@ my_kernels/
 `catalog.compile_all()` compiles every CUDA kernel and returns their names;
 call it at setup so that the first time step does not pay for compilation
 (after the first run, CuPy loads the kernels from its disk cache).
-`KernelCatalog(kernels)` and `catalog.register(kernel, name=None)` build a
-catalog by hand.
+`catalog.parity_cases()` returns the `(name, kernel)` pairs of the kernels
+that have a CUDA kernel, for a parametrised parity test (see "Testing
+utilities"). `KernelCatalog(kernels)` and `catalog.register(kernel, name=None)`
+build a catalog by hand.
+
+## Testing utilities
+
+```python
+from cunumpy.testing import (
+    BACKENDS,
+    assert_kernels_agree,
+    device_function_kernel,
+    requires_cupy,
+)
+```
+
+`cunumpy.testing` holds helpers for testing kernels with pytest. It is not
+imported by `import cunumpy` (so `xp.testing` remains NumPy's or CuPy's
+`testing` module until `cunumpy.testing` is imported), and it imports pytest
+only when one of its pytest objects is used, so `device_function_kernel` works
+without pytest.
+
+### `requires_cupy`, `BACKENDS`, `backend`
+
+`requires_cupy` is `pytest.mark.skipif(not cupy_available(), reason="CuPy/GPU
+not available")`, for tests that need a GPU. `BACKENDS` is
+`["numpy", pytest.param("cupy", marks=requires_cupy)]`, so a test parametrised
+with it runs on NumPy everywhere and on CuPy where a GPU is available:
+
+```python
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_norm(backend):
+    with xp.use_backend(backend):
+        assert xp.linalg.norm(xp.ones(4)) == 2.0
+```
+
+The `backend` fixture does the same and activates the backend for the test;
+import it into a `conftest.py` (`from cunumpy.testing import backend`) or the
+test module, then take `backend` as a test argument.
+
+### `assert_kernels_agree(kernel, make_args, ...)`
+
+```python
+assert_kernels_agree(
+    kernel,
+    make_args,
+    *,
+    n_threads=None,
+    grid=None,
+    block=None,
+    rtol=1e-12,
+    atol=0.0,
+    n_calls=1,
+    outputs=None,
+    seed=0,
+)
+```
+
+Checks that the host and the CUDA version of a `Kernel` compute the same. For
+each backend, `"numpy"` then `"cupy"`, the backend is activated with
+`use_backend`, the positional arguments are built with `make_args(backend,
+seed)` (a tuple or list; kernels take positional arguments only), the kernel is
+called `n_calls` times (with `n_threads`, `grid` and `block` on CuPy), and the
+arrays among the arguments are collected. The CUDA results are copied to the
+host and compared with the host results using `numpy.testing.assert_allclose`
+with `rtol` and `atol`; the `AssertionError` names the argument that differs.
+The test is skipped (`pytest.skip`) without a GPU, and `ValueError` is raised
+for a kernel without CUDA version. The host arrays are returned by argument
+name (`"argument 0"`, `"argument 3.x"`) for further checks.
+
+`make_args` runs with the backend active, so arrays created through `cunumpy`
+land on it. NumPy and CuPy generators do not produce the same random sequence
+from one seed, so build random data on the host and convert it:
+
+```python
+def make_args(backend, seed):
+    x = xp.to_cunumpy(np.random.default_rng(seed).random(1000))
+    return (x, 2.0, x.size)
+
+
+def test_scale():
+    assert_kernels_agree(catalog["scale"], make_args, n_threads=1000)
+```
+
+`outputs` selects the arguments to compare by index (negative indices count
+from the end), like `PyccelKernel(outputs=...)`; by default the `outputs`
+declared by the host kernel are used, and if it declares none, every argument.
+An argument that is an array is compared directly. For a tuple, list, dict or
+object argument (e.g. a `CudaArguments` object), the arrays it holds one level
+deep are compared, plus the arrays in a container attribute of an object.
+
+Together with `KernelCatalog.parity_cases()`, one test covers a catalog:
+
+```python
+MAKE_ARGS = {"scale": make_scale_args, "push": make_push_args}
+
+
+@pytest.mark.parametrize("name, kernel", catalog.parity_cases())
+def test_parity(name, kernel):
+    assert_kernels_agree(kernel, MAKE_ARGS[name], n_threads=1000)
+```
+
+### `device_function_kernel(header_source, signature, ...)`
+
+```python
+device_function_kernel(
+    header_source,
+    signature,
+    *,
+    name=None,
+    includes=(),
+    n_threads_param="n",
+    out_param="out",
+    **cuda_kernel_options,
+)
+```
+
+Generates an elementwise `extern "C" __global__` kernel that calls a
+`__device__` function once per thread and returns it as a `CudaKernel`, so
+device helpers (B-spline evaluation, mapping evaluation, small linear algebra)
+can be run from Python on many inputs at once and compared with their host
+versions. `header_source` is the CUDA source defining the function (or the
+content of its header; `includes` adds `#include` lines before it, with quotes,
+or with angle brackets for `"<cupy/complex.cuh>"`), and `signature` is its C
+prototype, e.g. `"int find_span(const double* t, int p, double eta)"`.
+Additional keyword arguments such as `include_dirs` and `block_size` go to
+`CudaKernel`.
+
+The generated kernel takes the parameters of the function in their order,
+followed by the output array and the number of elements:
+
+* a pointer parameter is kept as it is and passed unchanged to every call (an
+  array shared by all threads);
+* a scalar parameter `T x` becomes a device array `const T* x` of length `n`,
+  and thread `i` calls the function with `x[i]`;
+* the return value of thread `i` is stored in `out[i]` (`R* out`, with `R` the
+  return type); a `void` function has no `out`;
+* `int n` is the number of elements; threads `i >= n` do nothing.
+
+The prototype above gives:
+
+```c
+extern "C" __global__ void find_span_kernel(
+    const double* t, const int* p, const double* eta, int* out, int n)
+{
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i >= n) return;
+    out[i] = find_span(t, p[i], eta[i]);
+}
+```
+
+```python
+find_span = device_function_kernel(BSPLINES_CUH, "int find_span(const double* t, int p, double eta)")
+find_span(t, p, eta, spans, eta.size, n_threads=eta.size)
+```
+
+The kernel is named `<function>_kernel` unless `name` is given. Scalar
+parameters and return types are those `CudaKernel` supports; a struct or
+pointer return type, an unsupported parameter type, or a parameter named like
+`out_param` or `n_threads_param` raises `ValueError` (rename the generated
+parameter in that case).
 
 ## Version
 
