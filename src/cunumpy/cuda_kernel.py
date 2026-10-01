@@ -273,12 +273,23 @@ def _strip_comments(source: str) -> str:
 
 
 # ``#include "name"``: quoted includes are the project's own headers. Angle
-# bracket includes are system headers and are not tracked.
-_QUOTED_INCLUDE = re.compile(r'^[ \t]*#[ \t]*include[ \t]*"([^"\n]+)"', re.MULTILINE)
+# bracket includes are system headers and are not tracked, except in the
+# directories given as ``angle_dirs`` (cunumpy's shipped headers).
+_INCLUDE = re.compile(
+    r'^[ \t]*#[ \t]*include[ \t]*(?:"([^"\n]+)"|<([^>\n]+)>)', re.MULTILINE
+)
+
+
+def _includes(source: str) -> list[tuple[str, bool]]:
+    """``(name, quoted)`` of every ``#include`` in `source`, in order."""
+    return [
+        (quoted or angle, bool(quoted))
+        for quoted, angle in _INCLUDE.findall(_strip_comments(source))
+    ]
 
 
 def _quoted_includes(source: str) -> list[str]:
-    return _QUOTED_INCLUDE.findall(_strip_comments(source))
+    return [name for name, quoted in _includes(source) if quoted]
 
 
 def resolve_includes(
@@ -286,15 +297,17 @@ def resolve_includes(
     include_dirs: Iterable[str | Path] = (),
     *,
     base_dir: str | Path | None = None,
+    angle_dirs: Iterable[str | Path] = (),
 ) -> list[Path]:
     """The header files a CUDA source includes, recursively.
 
     Scans `source` (comments removed) for ``#include "name"`` and resolves each
     name like NVRTC does: relative to `base_dir` (the directory of the
-    including file), then in `include_dirs`, in order. Found headers are
-    scanned in turn, relative to their own directory. Includes in angle
-    brackets (system headers) and includes that cannot be found are ignored;
-    NVRTC reports the latter when the kernel is compiled.
+    including file), then in `include_dirs`, then in `angle_dirs`, in order.
+    Found headers are scanned in turn, relative to their own directory.
+    Includes in angle brackets (``#include <name>``) are system headers and
+    ignored, unless they are found in `angle_dirs`. Includes that cannot be
+    found are ignored; NVRTC reports them when the kernel is compiled.
 
     Parameters
     ----------
@@ -305,22 +318,32 @@ def resolve_includes(
     base_dir : str | Path | None
         Directory of the file `source` was read from, searched first; None if
         the source is not from a file.
+    angle_dirs : Iterable[str | Path]
+        Directories whose headers are tracked also when included in angle
+        brackets, searched last; :class:`CudaKernel` passes
+        :func:`cuda_include_dir`, so that ``#include <cunumpy/reduce.cuh>``
+        is tracked.
 
     Returns
     -------
     list[Path]
         The resolved header files, each once, in order of first inclusion
-        (depth first). Empty if the source has no quoted includes; the file
+        (depth first). Empty if the source has no includes to track; the file
         system is not touched in that case.
     """
+    angle = tuple(Path(d) for d in angle_dirs)
     dirs = tuple(Path(d) for d in include_dirs)
+    dirs += tuple(d for d in angle if d not in dirs)
     found: list[Path] = []
     seen: set[Path] = set()
 
     def visit(code: str, directory: Path | None) -> None:
-        for name in _quoted_includes(code):
-            candidates = [directory / name] if directory is not None else []
-            candidates += [d / name for d in dirs]
+        for name, quoted in _includes(code):
+            if quoted:
+                candidates = [directory / name] if directory is not None else []
+                candidates += [d / name for d in dirs]
+            else:
+                candidates = [d / name for d in angle]
             for candidate in candidates:
                 if candidate.is_file():
                     path = candidate.resolve()
@@ -1521,7 +1544,9 @@ class CudaKernel:
     options, but not on the files pulled in by ``#include "..."``. At compile
     time the headers are resolved (:attr:`included_headers`) and a define with
     the hash of their contents is added to the options
-    (:meth:`compile_options`), so editing a header recompiles the kernel.
+    (:meth:`compile_options`), so editing a header recompiles the kernel; this
+    includes cunumpy's own headers (``#include <cunumpy/reduce.cuh>``), so an
+    upgrade that changes them recompiles too.
 
     Examples
     --------
@@ -1721,15 +1746,22 @@ class CudaKernel:
 
     @property
     def included_headers(self) -> tuple[Path, ...]:
-        """The header files the source includes with ``#include "..."``.
+        """The header files the source includes, recursively.
 
-        Resolved recursively in `source_dir` and `include_dirs` at every access
-        (see :func:`resolve_includes`), so the result follows the files on
-        disk. Empty if the source has no quoted includes.
+        Quoted includes (``#include "..."``) are resolved in `source_dir`,
+        `include_dirs` and cunumpy's header directory
+        (:func:`cuda_include_dir`); cunumpy's shipped headers are tracked
+        also when included in angle brackets (``#include <cunumpy/...>``).
+        Resolved at every access (see :func:`resolve_includes`), so the result
+        follows the files on disk. Empty if the source includes no project or
+        cunumpy headers.
         """
         return tuple(
             resolve_includes(
-                self._source, self._include_dirs, base_dir=self._source_dir
+                self._source,
+                self._include_dirs,
+                base_dir=self._source_dir,
+                angle_dirs=(cuda_include_dir(),),
             )
         )
 
@@ -1744,7 +1776,8 @@ class CudaKernel:
         it), and, if the source includes header files,
         ``-DCUNUMPY_INCLUDE_HASH=0x<hash>`` with the hash of the contents of
         :attr:`included_headers` (see :func:`include_hash`). CuPy keys its
-        kernel cache on the options, so a changed header means a recompile.
+        kernel cache on the options, so a changed header means a recompile,
+        also for a header shipped with cunumpy that changed in an upgrade.
         """
         options = self._options
         # cunumpy's own headers (<cunumpy/atomic.cuh>, ...) are always found

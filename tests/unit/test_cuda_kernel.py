@@ -1517,6 +1517,59 @@ def test_compile_options_contain_the_header_hash(header_tree):
     assert _user_options(CudaKernel(INCLUDING_SOURCE, "double_it")) == ()
 
 
+def test_resolve_includes_angle_dirs(tmp_path):
+    shipped = tmp_path / "shipped"
+    (shipped / "lib").mkdir(parents=True)
+    (shipped / "lib" / "a.cuh").write_text('#include "lib/b.cuh"\n')
+    (shipped / "lib" / "b.cuh").write_text("")
+    source = "#include <lib/a.cuh>\n#include <cupy/complex.cuh>\n"
+    # angle brackets: system headers, not tracked by default
+    assert resolve_includes(source, [shipped]) == []
+    # in angle_dirs they are, and their quoted includes resolve there too
+    expected = [shipped / "lib" / "a.cuh", shipped / "lib" / "b.cuh"]
+    assert resolve_includes(source, angle_dirs=[shipped]) == expected
+    assert resolve_includes('#include "lib/a.cuh"\n', angle_dirs=[shipped]) == expected
+    # include_dirs come first for quoted includes
+    user = tmp_path / "user"
+    (user / "lib").mkdir(parents=True)
+    (user / "lib" / "a.cuh").write_text("")
+    assert resolve_includes('#include "lib/a.cuh"\n', [user], angle_dirs=[shipped]) == [
+        user / "lib" / "a.cuh"
+    ]
+
+
+def test_shipped_headers_are_part_of_the_hash():
+    include = Path(cuda_include_dir()) / "cunumpy"
+    for line in ("#include <cunumpy/reduce.cuh>", '#include "cunumpy/reduce.cuh"'):
+        kernel = CudaKernel(line + "\n" + AXPY, "axpy")
+        assert kernel.included_headers == (
+            include / "reduce.cuh",
+            include / "atomic.cuh",
+        )
+        digest = include_hash(kernel.included_headers)
+        assert _user_options(kernel) == (f"-DCUNUMPY_INCLUDE_HASH=0x{digest}",)
+    # a source without includes still gets no define
+    assert _user_options(CudaKernel(AXPY, "axpy")) == ()
+
+
+def test_changed_shipped_header_changes_the_hash(tmp_path, monkeypatch):
+    # a copy of the shipped headers stands for the installed ones before and
+    # after an upgrade of cunumpy
+    import shutil
+
+    from cunumpy import cuda_kernel
+
+    installed = tmp_path / "include"
+    shutil.copytree(cuda_include_dir(), installed)
+    monkeypatch.setattr(cuda_kernel, "_CUDA_INCLUDE_DIR", installed)
+    kernel = CudaKernel("#include <cunumpy/atomic.cuh>\n" + AXPY, "axpy")
+    before = kernel.compile_options()[-1]
+    assert before.startswith("-DCUNUMPY_INCLUDE_HASH=0x")
+    header = installed / "cunumpy" / "atomic.cuh"
+    header.write_text(header.read_text() + "\n// changed in an upgrade\n")
+    assert kernel.compile_options()[-1] != before
+
+
 def test_editing_a_header_recompiles_on_gpu(header_tree):
     _skip_without_cupy()
     import cupy as cp

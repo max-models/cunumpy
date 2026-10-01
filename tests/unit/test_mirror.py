@@ -147,7 +147,10 @@ def test_cuda_kernel_options_include_cunumpy_headers():
     assert kernel.compile_options().count(flag) == 1
     assert kernel.compile_options()[0] == "-I/some/dir"
     kernel = CudaKernel(BIN_ADD, "bin_add", options=["-std=c++17", flag])
-    assert kernel.compile_options() == ("-std=c++17", flag)
+    options = kernel.compile_options()
+    assert options[:2] == ("-std=c++17", flag)
+    # the shipped atomic.cuh is part of the header hash
+    assert len(options) == 3 and options[2].startswith("-DCUNUMPY_INCLUDE_HASH=0x")
 
 
 # --- CuPy backend ------------------------------------------------------------

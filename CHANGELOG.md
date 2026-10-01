@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `CudaKernel`'s header hash (`-DCUNUMPY_INCLUDE_HASH`) now covers the headers shipped with cunumpy (`cunumpy/atomic.cuh`, `reduce.cuh`, ...), also when included in angle brackets. Before, an upgrade of cunumpy that changed one of them left CuPy's kernel cache serving the kernel compiled with the old header. `resolve_includes(..., angle_dirs=...)` tracks angle-bracket includes found in the given directories.
 - `xp.testing.assert_kernels_agree` reads `CudaStructArguments` objects and struct values through their struct fields, so their arrays get the same names as the attributes of the host argument object (before, arrays behind properties were named after the private attribute holding the owner, and the comparison failed with "do not have the same array arguments").
 
 ### Removed
@@ -15,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Python 3.14 is supported.
+- The `test` extra installs SciPy, so the `xp.scipy` tests run in CI instead of being skipped.
 - `KernelCatalog.compile_all(jobs=1)` and `CudaKernelVariants.compile_all(keys, jobs=1)`: With `jobs > 1` the CUDA kernels are compiled in threads (NVRTC releases the GIL); `jobs=None` uses the number of CPUs. All kernels are compiled even if one fails, and the first error is raised afterwards.
 - CI now tests every supported Python version (3.10, 3.11, 3.12, 3.13 and 3.14) instead of 3.8/3.10/3.13.
 - `CudaKernel.compile()` passes `compile_options()` to CuPy: the given `options` plus `-DCUNUMPY_INCLUDE_HASH=0x<hash>` when the source includes header files, so CuPy's kernel cache (keyed on source and options only) is invalidated when an included header changes. `options` still returns the options as given.

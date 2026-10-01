@@ -694,19 +694,24 @@ kernel.compile_options()  # options + ('-DCUNUMPY_INCLUDE_HASH=0x3f9a...',)
   `#include "name"`, recursively, each once in order of first inclusion. A
   name is looked up relative to the including file (`source_dir` for the
   kernel source, the header's own directory for nested includes), then in
-  `include_dirs` in order, like NVRTC does. System headers in angle brackets
-  and includes that cannot be found are ignored (NVRTC reports the latter).
-  Recomputed at every access, so it follows the files on disk.
+  `include_dirs` in order, then in cunumpy's header directory, like NVRTC
+  does. cunumpy's shipped headers are tracked also when included in angle
+  brackets (`#include <cunumpy/reduce.cuh>`), so upgrading cunumpy with a
+  changed header recompiles the kernels that use it. Other angle-bracket
+  (system) headers and includes that cannot be found are ignored (NVRTC
+  reports the latter). Recomputed at every access, so it follows the files on
+  disk.
 * `compile_options()`: the options passed to CuPy at compile time: `options`
   plus `-DCUNUMPY_INCLUDE_HASH=0x<hash>` if the source includes any header,
   where the hash covers the contents of `included_headers` (not their paths).
   A changed header gives another define, hence another cache entry. Sources
-  without quoted includes never touch the file system.
+  without includes never touch the file system.
 
 The two building blocks are available on their own:
 
-* `xp.resolve_includes(source, include_dirs=(), *, base_dir=None)`: the
-  resolved header paths of a source, as a list.
+* `xp.resolve_includes(source, include_dirs=(), *, base_dir=None,
+  angle_dirs=())`: the resolved header paths of a source, as a list;
+  `angle_dirs` are searched last and also for `#include <name>`.
 * `xp.include_hash(paths)`: the first 16 hex digits of the SHA-256 digest of
   the contents of the files, in order.
 
