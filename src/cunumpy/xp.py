@@ -385,6 +385,62 @@ def synchronize() -> None:
             )
 
 
+# CUDA debug mode: `CudaKernel` compiles with line information and bounds
+# checks, and synchronizes after every launch so that asynchronous CUDA errors
+# are raised at the kernel that caused them.
+_CUDA_DEBUG_TRUE = ("1", "true", "yes", "on")
+
+
+def _debug_from_env(value: str | None) -> bool:
+    """Whether the value of ``CUNUMPY_CUDA_DEBUG`` enables the debug mode.
+
+    ``"1"``, ``"true"``, ``"yes"`` and ``"on"`` (any case, surrounding
+    whitespace ignored) enable it; anything else, including unset, does not.
+    """
+    if value is None:
+        return False
+    return value.strip().lower() in _CUDA_DEBUG_TRUE
+
+
+_cuda_debug: bool = _debug_from_env(os.getenv("CUNUMPY_CUDA_DEBUG"))
+
+
+def set_cuda_debug(enabled: bool) -> None:
+    """Enable or disable the CUDA debug mode globally.
+
+    In debug mode, `CudaKernel`s created with ``debug=None`` (the default)
+    compile with ``-lineinfo`` and ``-DCUNUMPY_BOUNDS_CHECK``, and synchronize
+    the stream after every launch, re-raising an asynchronous CUDA error as a
+    ``RuntimeError`` naming the kernel that caused it. The setting is read at
+    every launch, so it also applies to kernels created earlier; only their
+    compile options are fixed once they are compiled (call ``compile()`` again
+    or create the kernels after enabling debug mode). Initialised from the
+    environment variable ``CUNUMPY_CUDA_DEBUG`` (``1``, ``true``, ``yes`` or
+    ``on``) at import.
+    """
+    global _cuda_debug
+    _cuda_debug = bool(enabled)
+
+
+def get_cuda_debug() -> bool:
+    """Whether the CUDA debug mode is enabled globally, see `set_cuda_debug`."""
+    return _cuda_debug
+
+
+@contextmanager
+def cuda_debug(enabled: bool = True) -> Generator[None, None, None]:
+    """Temporarily enable (or disable) the CUDA debug mode.
+
+    Restores the previous setting on exit, see `set_cuda_debug`.
+    """
+    previous = _cuda_debug
+    set_cuda_debug(enabled)
+    try:
+        yield
+    finally:
+        set_cuda_debug(previous)
+
+
 def to_numpy(array: Any) -> np.ndarray:
     """Convert an array to a NumPy array."""
     if get_array_backend(array) == "cupy":

@@ -3,6 +3,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 from . import xp
 from .cuda_kernel import (
+    DEBUG_OPTIONS,
     CudaArguments,
     CudaKernel,
     CudaKernelVariants,
@@ -20,6 +21,7 @@ from .xp import (
     as_device_array,
     assert_same_backend,
     bind_local_device,
+    cuda_debug,
     cupy_available,
     default_float_dtype,
     device_count,
@@ -27,6 +29,7 @@ from .xp import (
     get_array_backend,
     get_array_module,
     get_backend,
+    get_cuda_debug,
     get_rng,
     is_cpu,
     is_gpu,
@@ -35,6 +38,7 @@ from .xp import (
     pin_memory,
     same_backend,
     set_backend,
+    set_cuda_debug,
     set_device,
     set_device_for_rank,
     stream,
@@ -52,6 +56,7 @@ except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
 
 __all__ = [
+    "DEBUG_OPTIONS",
     "CudaArguments",
     "CudaKernel",
     "CudaKernelVariants",
@@ -67,6 +72,7 @@ __all__ = [
     "assert_same_backend",
     "bind_local_device",
     "ctype_of",
+    "cuda_debug",
     "cupy_available",
     "cupy_backend",
     "default_float_dtype",
@@ -75,6 +81,7 @@ __all__ = [
     "get_array_backend",
     "get_array_module",
     "get_backend",
+    "get_cuda_debug",
     "get_rng",
     "include_hash",
     "is_cpu",
@@ -88,6 +95,7 @@ __all__ = [
     "resolve_includes",
     "same_backend",
     "set_backend",
+    "set_cuda_debug",
     "set_device",
     "set_device_for_rank",
     "stream",

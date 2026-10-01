@@ -337,6 +337,17 @@ C++ function templates are instantiated with `template_args`, and
 (e.g. per dimension and dtype). See the [API reference](docs/source/api.md) for
 details.
 
+Kernels run asynchronously, so a CUDA error (an illegal memory access, say)
+normally surfaces at a later `.get()` or MPI call, far from the kernel that
+caused it. In debug mode, enabled with `xp.set_cuda_debug(True)`, the
+context manager `xp.cuda_debug()`, `CudaKernel(..., debug=True)` or the
+environment variable `CUNUMPY_CUDA_DEBUG=1`, kernels are compiled with
+`-lineinfo` and `-DCUNUMPY_BOUNDS_CHECK` and every launch is synchronized, so
+the error is raised as a `RuntimeError` naming the kernel and its launch shape.
+To find the faulting line and out-of-bounds accesses that do not crash, the
+next step is NVIDIA's memory checker:
+`CUNUMPY_CUDA_DEBUG=1 compute-sanitizer python -m pytest ...`.
+
 ## Test kernel pairs
 
 `cunumpy.testing` helps to test the ports with pytest. `assert_kernels_agree`

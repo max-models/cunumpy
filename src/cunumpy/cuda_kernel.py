@@ -24,6 +24,12 @@ arguments as the host kernel it mirrors:
 The launch shape is given at each call, either as the number of threads
 (``n_threads``, in 1 to 3 dimensions) or as an explicit ``grid``.
 
+In debug mode (``debug=True``, ``xp.set_cuda_debug(True)`` or the environment
+variable ``CUNUMPY_CUDA_DEBUG=1``) kernels are compiled with ``-lineinfo`` and
+``-DCUNUMPY_BOUNDS_CHECK``, and every launch is synchronized so that an
+asynchronous CUDA error is raised, as a ``RuntimeError`` naming the kernel, at
+the launch that caused it.
+
 This module imports CuPy only when a kernel is compiled, so it can be imported
 (and signatures parsed) without CuPy.
 """
@@ -41,6 +47,7 @@ from typing import Any, NamedTuple
 import numpy as np
 
 __all__ = [
+    "DEBUG_OPTIONS",
     "CudaArguments",
     "CudaKernel",
     "CudaKernelVariants",
@@ -55,6 +62,11 @@ __all__ = [
 
 # CUDA limit on the number of threads per block
 _MAX_THREADS_PER_BLOCK = 1024
+
+#: NVRTC options added in debug mode: source line information for
+#: ``compute-sanitizer``/``nsys``, and bounds checks in the array views.
+#: (``-G`` is not among them: NVRTC does not support it.)
+DEBUG_OPTIONS = ("-lineinfo", "-DCUNUMPY_BOUNDS_CHECK")
 
 
 class CudaArguments:
@@ -749,6 +761,14 @@ class CudaKernel:
         Raises ``ValueError`` at construction if the signature cannot be parsed
         (e.g. macros in the parameter list); pass False to launch with the
         arguments as they are, like ``cupy.RawKernel``.
+    debug : bool | None
+        Debug mode: compile with :data:`DEBUG_OPTIONS` (``-lineinfo`` and
+        ``-DCUNUMPY_BOUNDS_CHECK``) and synchronize after every launch, so
+        that an asynchronous CUDA error is raised as a ``RuntimeError`` naming
+        this kernel. None (the default) follows the global setting
+        (:func:`cunumpy.set_cuda_debug`, ``CUNUMPY_CUDA_DEBUG``) at every
+        launch; True or False fix it for this kernel. The compile options are
+        fixed when the kernel is compiled.
 
     Notes
     -----
@@ -781,8 +801,10 @@ class CudaKernel:
         structs: Iterable[CudaStruct] = (),
         template_args: Sequence[Any] | None = None,
         check_signature: bool = True,
+        debug: bool | None = None,
     ) -> None:
         self._block = self._check_block(_as_shape(block_size, "block_size"))
+        self._debug = None if debug is None else bool(debug)
         self._source = source
         self._name = name
         self._include_dirs = tuple(Path(d) for d in include_dirs)
@@ -881,10 +903,28 @@ class CudaKernel:
     def options(self) -> tuple[str, ...]:
         """NVRTC compiler options as given, including ``-I`` include directories.
 
-        The header hash define is not part of them; it is added at compile
-        time, see :meth:`compile_options`.
+        The debug options and the header hash define are not part of them;
+        they are added at compile time, see :meth:`compile_options`.
         """
         return self._options
+
+    @property
+    def debug(self) -> bool | None:
+        """The kernel's debug setting: True, False, or None for the global one."""
+        return self._debug
+
+    def debug_active(self) -> bool:
+        """Whether debug mode applies to this kernel now.
+
+        The kernel's own setting if it was created with ``debug=True`` or
+        ``debug=False``, else the global setting (:func:`cunumpy.get_cuda_debug`),
+        read at the time of the call.
+        """
+        if self._debug is not None:
+            return self._debug
+        from .xp import get_cuda_debug
+
+        return get_cuda_debug()
 
     @property
     def include_dirs(self) -> tuple[Path, ...]:
@@ -911,17 +951,23 @@ class CudaKernel:
         )
 
     def compile_options(self) -> tuple[str, ...]:
-        """The NVRTC options passed to CuPy when the kernel is compiled.
+        """The NVRTC options a compilation now would use.
 
-        These are :attr:`options` plus, if the source includes header files,
+        :attr:`options`, followed by :data:`DEBUG_OPTIONS` (``-lineinfo`` and
+        ``-DCUNUMPY_BOUNDS_CHECK``) if :meth:`debug_active` and they are not
+        already among the options (``-G`` is not added: NVRTC does not support
+        it), and, if the source includes header files,
         ``-DCUNUMPY_INCLUDE_HASH=0x<hash>`` with the hash of the contents of
         :attr:`included_headers` (see :func:`include_hash`). CuPy keys its
         kernel cache on the options, so a changed header means a recompile.
         """
+        options = self._options
+        if self.debug_active():
+            options += tuple(o for o in DEBUG_OPTIONS if o not in options)
         headers = self.included_headers
-        if not headers:
-            return self._options
-        return self._options + (f"-DCUNUMPY_INCLUDE_HASH=0x{include_hash(headers)}",)
+        if headers:
+            options += (f"-DCUNUMPY_INCLUDE_HASH=0x{include_hash(headers)}",)
+        return options
 
     @property
     def structs(self) -> tuple[CudaStruct, ...]:
@@ -945,6 +991,9 @@ class CudaKernel:
 
     def compile(self) -> Any:
         """Compile the kernel now (it is otherwise compiled on the first call).
+
+        The options are :meth:`compile_options`, evaluated now: a kernel
+        compiled before debug mode was enabled keeps its options.
 
         Returns
         -------
@@ -1084,6 +1133,15 @@ class CudaKernel:
             Dynamic shared memory per block, in bytes (``extern __shared__``).
         stream : cupy.cuda.Stream | None
             Stream to launch on; the current stream if None.
+
+        Raises
+        ------
+        RuntimeError
+            In debug mode (see :meth:`debug_active`), an asynchronous CUDA
+            error found when synchronizing the stream after the launch, e.g. an
+            illegal memory access; the CuPy error is chained. Without debug
+            mode, such an error surfaces at a later synchronization (a
+            ``.get()``, an MPI call, ...), not necessarily in this kernel.
         """
         grid_shape, block_shape = self.launch_shape(n_threads, grid=grid, block=block)
         if shared_mem < 0:
@@ -1093,8 +1151,30 @@ class CudaKernel:
             return
 
         kernel = self.compile()
+        debug = self.debug_active()
         with stream if stream is not None else nullcontext():
             kernel(grid_shape, block_shape, values, shared_mem=shared_mem)
+            if debug:
+                self._synchronize_after_launch(stream, grid_shape, block_shape)
+
+    def _synchronize_after_launch(
+        self, stream: Any, grid: tuple[int, ...], block: tuple[int, ...]
+    ) -> None:
+        """Wait for the launch and re-raise a CUDA error naming this kernel."""
+        import cupy as cp
+
+        try:
+            if stream is None:
+                stream = cp.cuda.get_current_stream()
+            stream.synchronize()
+        except (
+            cp.cuda.runtime.CUDARuntimeError,
+            cp.cuda.driver.CUDADriverError,
+        ) as error:
+            raise RuntimeError(
+                f"CUDA error after launching kernel {self.expression!r} with "
+                f"grid {grid} and block {block}: {error}"
+            ) from error
 
 
 class CudaKernelVariants:
