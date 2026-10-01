@@ -17,6 +17,12 @@ from .cuda_kernel import (
 )
 from .dispatch import Kernel, KernelCatalog
 from .kernel import KernelArguments, PyccelKernel, resolve_host_args
+from .transfers import (
+    TransferCounter,
+    TransferEvent,
+    assert_no_transfers,
+    count_transfers,
+)
 from .xp import (
     as_device_array,
     assert_same_backend,
@@ -67,10 +73,14 @@ __all__ = [
     "KernelArguments",
     "KernelCatalog",
     "PyccelKernel",
+    "TransferCounter",
+    "TransferEvent",
     "__version__",
     "as_device_array",
+    "assert_no_transfers",
     "assert_same_backend",
     "bind_local_device",
+    "count_transfers",
     "ctype_of",
     "cuda_debug",
     "cupy_available",

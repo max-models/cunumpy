@@ -172,6 +172,75 @@ assert xp.get_array_backend(normalized) == xp.get_backend()
 Each conversion returns a suitable array; it does not change the active
 backend or mutate the source.
 
+## Count transfers
+
+A transfer inside a time loop is the classic performance bug of a GPU port:
+every step then waits for the device and copies an array. These helpers let a
+test verify that a block of code does not transfer at all.
+
+### `count_transfers()`
+
+Context manager yielding a `TransferCounter` that records every host/device
+transfer made through CuNumpy while the block runs, with the call site of
+each:
+
+```python
+with xp.count_transfers() as counter:
+    propagator(dt)
+
+assert counter.total == 0, counter.report()
+```
+
+Four kinds of events are recorded:
+
+* `to_host`: `to_numpy()` (or `to_cunumpy()`) called with a CuPy array;
+* `to_device`: `to_cupy()` (or `to_cunumpy()`) called with anything that is not
+  a CuPy array already;
+* `kernel_conversion`: a `PyccelKernel` call that copied device arrays to the
+  host (and back), one event per call, naming the kernel and the number of
+  arrays converted;
+* `fallback`: a `Kernel` without CUDA kernel calling its host kernel on the
+  CuPy backend (`missing_cuda="fallback"`), one event per call, naming the
+  kernel. The host copies it makes are counted as one `kernel_conversion`
+  event in addition.
+
+Only real transfers count: `to_numpy()` of a NumPy array or `to_cupy()` of a
+CuPy array records nothing. The counter has the attributes `to_host`,
+`to_device`, `kernel_conversions`, `fallbacks` (counts per kind), `total`,
+`events` (a list of `TransferEvent(kind, description, where)`, where `where`
+is the `file:line` of the caller outside CuNumpy) and
+`kernel_conversion_calls` (the `kernel_conversion` events). `report()` returns
+a multi-line string with the events grouped by kind and call site, with
+counts:
+
+```text
+4 transfer(s) through cunumpy (3 to_host, 1 to_device, 0 kernel_conversion, 0 fallback)
+  to_host (3):
+    /home/me/sim/diagnostics.py:42: to_numpy(shape=(100000,), dtype=float64) (x3)
+  to_device (1):
+    /home/me/sim/setup.py:17: to_cupy(shape=(100000,), dtype=float64)
+```
+
+Blocks can be nested; every active counter sees the transfers made inside it.
+When no counter is active, the instrumentation costs a single check per call.
+Like the backend selection, the active counters are process-wide state and
+not thread-safe.
+
+**Limitation:** only transfers made through CuNumpy are seen. Raw
+`cupy.ndarray.get()`, `cupy.asarray(numpy_array)`, `numpy.asarray(cupy_array)`,
+`float(device_array)`, and implicit conversions inside other libraries are
+not counted. Use `nsys` (or CuPy's profiling hooks) to find those.
+
+### `assert_no_transfers()`
+
+Context manager that raises `AssertionError` with the counter's `report()` if
+the block makes a transfer through CuNumpy. It yields the `TransferCounter`
+too. An exception raised inside the block propagates as it is:
+
+```python
+def test_time_step_stays_on_the_device():
+    with xp.assert_no_transfers():
+        propagator(dt)
 ### `as_device_array(value, dtype=None, ndim=None, *, name=None)`
 
 The "reference or copy once" rule for building CUDA argument objects

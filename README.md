@@ -123,6 +123,21 @@ with xp.use_backend("cupy"):
     result = xp.to_numpy(filtered)  # one transfer for a CPU-only consumer
 ```
 
+To verify that a block, such as a time step, makes no transfer at all, count
+them: `count_transfers()` records every `to_numpy()`, `to_cupy()` and
+`to_cunumpy()` call that actually copies, every `PyccelKernel` call that
+converts device arrays, and every `Kernel` fallback to the host kernel, with
+the call site of each. `assert_no_transfers()` raises with that report if
+anything was counted. Only transfers made through CuNumpy are seen; raw
+`cupy.ndarray.get()` or `cupy.asarray()` calls need a profiler such as `nsys`.
+
+```python
+with xp.count_transfers() as counter:
+    propagator(dt)
+
+assert counter.total == 0, counter.report()
+```
+
 ## Random numbers and dtypes
 
 `get_rng(seed)` returns a random generator for the active backend. NumPy and

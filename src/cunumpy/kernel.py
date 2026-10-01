@@ -29,7 +29,9 @@ from typing import Any
 import array_api_compat
 import numpy as np
 
-from .xp import _cupy_backend, to_cupy, to_numpy
+from .transfers import _ACTIVE as _COUNTERS
+from .transfers import _record
+from .xp import _cupy_backend, _to_cupy, _to_numpy
 
 __all__ = ["KernelArguments", "PyccelKernel", "resolve_host_args"]
 
@@ -149,6 +151,15 @@ def resolve_host_args(
     )
 
 
+# The conversions between device and host arrays, as module attributes so that
+# tests can substitute a fake device array type without a GPU. They bypass the
+# per-array transfer counting: a call that converts is counted once, as a
+# ``kernel_conversion`` event, in :meth:`PyccelKernel.__call__`.
+_is_device_array = array_api_compat.is_cupy_array
+_device_to_host = _to_numpy
+_host_to_device = _to_cupy
+
+
 class PyccelKernel:
     """Call a NumPy callable or Pyccel-compiled kernel with NumPy or CuPy arrays.
 
@@ -259,8 +270,8 @@ class PyccelKernel:
         if key in memo:
             return memo[key]
 
-        if array_api_compat.is_cupy_array(value):
-            value_np = to_numpy(value)
+        if _is_device_array(value):
+            value_np = _device_to_host(value)
             memo[key] = value_np
             converted.append((value, value_np))
             return value_np
@@ -306,7 +317,7 @@ class PyccelKernel:
     def _convert_from_numpy(self, value: Any) -> Any:
         """Move host arrays returned by the kernel back to the device."""
         if self._is_array(value):
-            return to_cupy(value)
+            return _host_to_device(value)
         if isinstance(value, tuple):
             return tuple(self._convert_from_numpy(item) for item in value)
         if isinstance(value, list):
@@ -391,7 +402,7 @@ class PyccelKernel:
         `seen` tracks already-visited containers so that reference cycles
         terminate.
         """
-        if array_api_compat.is_cupy_array(value):
+        if _is_device_array(value):
             return True
 
         if seen is None:
@@ -448,12 +459,19 @@ class PyccelKernel:
             else self._output_host_arrays(args_np, kwargs_np)
         )
 
+        if _COUNTERS and converted:
+            _record(
+                "kernel_conversion",
+                f"PyccelKernel {self.name!r}: {len(converted)} device array(s) "
+                "copied to the host",
+            )
+
         result = self._kernel(*args_np, **kwargs_np)
 
         # Copy in-place kernel updates back to the device arrays.
         for device_array, host_array in converted:
             if writeable is None or id(host_array) in writeable:
-                device_array[...] = to_cupy(host_array)
+                device_array[...] = _host_to_device(host_array)
 
         return self._convert_from_numpy(result)
 
