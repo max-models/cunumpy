@@ -35,6 +35,14 @@ __all__ = ["Kernel", "KernelCatalog"]
 _MISSING_CUDA = ("raise", "fallback")
 
 
+def _source_root(package: str) -> Path:
+    """The directory containing the top-level package of `package`."""
+    top = importlib.import_module(package.partition(".")[0])
+    if top.__file__ is not None:
+        return Path(top.__file__).parent.parent
+    return Path(next(iter(top.__path__))).parent  # namespace package
+
+
 class Kernel:
     """A host kernel and its CUDA counterpart; calls the one matching the backend.
 
@@ -259,6 +267,7 @@ class KernelCatalog(Mapping):
         host_options: (
             Mapping[str, Any] | Callable[[str], Mapping[str, Any]] | None
         ) = None,
+        include_dirs: Sequence[str | Path] | None = None,
         **cuda_options: Any,
     ) -> KernelCatalog:
         """Collect the kernels of a package with one folder per kernel.
@@ -282,11 +291,19 @@ class KernelCatalog(Mapping):
             Keyword arguments for the :class:`~cunumpy.PyccelKernel` wrapping each
             host kernel (see :class:`Kernel`): the same for all kernels, or a
             function of the kernel name, e.g. to declare per-kernel ``outputs``.
+        include_dirs : Sequence[str | Path] | None
+            Include directories of the CUDA kernels, in addition to each
+            kernel's own folder. By default the source root of the top-level
+            package (the directory containing it), so that a kernel in
+            ``my_pkg.kernels`` can ``#include "my_pkg/common.cuh"``.
         **cuda_options
-            Passed on to :meth:`CudaKernel.from_file`, e.g. ``block_size``,
-            ``include_dirs`` or ``structs``.
+            Passed on to :meth:`CudaKernel.from_file`, e.g. ``block_size`` or
+            ``structs``.
         """
         root = Path(importlib.import_module(package).__file__).parent
+        if include_dirs is None:
+            include_dirs = (_source_root(package),)
+        cuda_options["include_dirs"] = tuple(include_dirs)
         kernels = {}
         for folder in sorted(p for p in root.iterdir() if p.is_dir()):
             name = folder.name

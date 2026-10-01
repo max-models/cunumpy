@@ -439,6 +439,7 @@ xp.CudaKernel(
     block_size=128,
     options=(),
     include_dirs=(),
+    source_dir=None,
     structs=(),
     template_args=None,
     check_signature=True,
@@ -455,7 +456,7 @@ GPU.
 
 `from_file` reads the source from a file; the kernel name defaults to the file
 name without `suffix` (`axpy_cuda.cu` -> `axpy`), and the directory of the file
-is added to the include directories.
+is added to the include directories and is the `source_dir`.
 
 ### Parameters
 
@@ -463,6 +464,8 @@ is added to the include directories.
   to 3 integers, e.g. `(16, 16)`; at most 1024 threads in total.
 * `options`: additional NVRTC options, e.g. `("-std=c++17",)`.
 * `include_dirs`: directories for `#include`, passed as `-I<dir>`.
+* `source_dir`: the directory the source was read from, where
+  `#include "..."` files are looked up first (set by `from_file`).
 * `structs`: `CudaStruct` types that the kernel takes as parameters (by
   value), see `CudaStruct` below.
 * `template_args`: template arguments if `name` is a function template, see
@@ -473,8 +476,45 @@ is added to the include directories.
   with the arguments as they are, like `cupy.RawKernel`.
 
 Properties: `name`, `expression` (`name`, or the template instantiation such
-as `"scale<double, 3>"`), `source`, `block_size`, `options`, `structs`,
-`template_args`, `signature`, `is_compiled`.
+as `"scale<double, 3>"`), `source`, `block_size`, `options`, `include_dirs`,
+`source_dir`, `included_headers`, `structs`, `template_args`, `signature`,
+`is_compiled`.
+
+### Included headers and the compile cache
+
+CuPy caches compiled kernels on disk (`~/.cupy/kernel_cache`), keyed on the
+source string and the compiler options only: a file pulled in through
+`#include "..."` is not part of the key, so editing a shared `.cuh` header
+would not recompile the kernels that include it. `CudaKernel` therefore
+resolves the quoted includes of its source when it compiles and adds a define
+with a hash of their contents to the options:
+
+```python
+kernel = xp.CudaKernel.from_file("push/push_cuda.cu", include_dirs=[src_root])
+kernel.included_headers   # (Path('push/helpers.cuh'), Path('.../common.cuh'))
+kernel.options            # ('-Ipush', '-I<src_root>')
+kernel.compile_options()  # options + ('-DCUNUMPY_INCLUDE_HASH=0x3f9a...',)
+```
+
+* `included_headers`: the header files the source includes with
+  `#include "name"`, recursively, each once in order of first inclusion. A
+  name is looked up relative to the including file (`source_dir` for the
+  kernel source, the header's own directory for nested includes), then in
+  `include_dirs` in order, like NVRTC does. System headers in angle brackets
+  and includes that cannot be found are ignored (NVRTC reports the latter).
+  Recomputed at every access, so it follows the files on disk.
+* `compile_options()`: the options passed to CuPy at compile time: `options`
+  plus `-DCUNUMPY_INCLUDE_HASH=0x<hash>` if the source includes any header,
+  where the hash covers the contents of `included_headers` (not their paths).
+  A changed header gives another define, hence another cache entry. Sources
+  without quoted includes never touch the file system.
+
+The two building blocks are available on their own:
+
+* `xp.resolve_includes(source, include_dirs=(), *, base_dir=None)`: the
+  resolved header paths of a source, as a list.
+* `xp.include_hash(paths)`: the first 16 hex digits of the SHA-256 digest of
+  the contents of the files, in order.
 
 ### Calling
 
@@ -784,6 +824,7 @@ catalog = xp.KernelCatalog.from_package(
     cuda_suffix="_cuda.cu",
     missing_cuda="raise",
     host_options=None,
+    include_dirs=None,
     **cuda_options,
 )
 kernel = catalog["push"]
@@ -809,8 +850,14 @@ my_kernels/
 * `host_options`: `PyccelKernel` options for the host kernels (see `Kernel`),
   the same for all kernels or a function of the kernel name, e.g.
   `lambda name: {"outputs": OUTPUTS[name]}`.
-* `cuda_options`: passed on to `CudaKernel.from_file`, e.g. `block_size`,
-  `include_dirs` or `structs`.
+* `include_dirs`: include directories of the CUDA kernels, in addition to
+  each kernel's own folder. By default the source root of the top-level
+  package (the directory containing it), so that a kernel of
+  `my_pkg.kernels` can `#include "my_pkg/common.cuh"`. Headers found this
+  way take part in the compile cache key, see "Included headers and the
+  compile cache" under `CudaKernel`.
+* `cuda_options`: passed on to `CudaKernel.from_file`, e.g. `block_size` or
+  `structs`.
 
 `catalog.without_cuda` lists the kernels still to port.
 `catalog.compile_all()` compiles every CUDA kernel and returns their names;
