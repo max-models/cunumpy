@@ -240,6 +240,7 @@ class Args(xp.KernelArguments):          # one object, host form + device form
 
 S = xp.CudaStruct("S", [("x", "double*"), ("n", "long long"), ("a", "Array2D<double>")])
 S.declaration; S.dtype; S.to_header(path); value = S(x=..., n=..., a=...)
+S.verify_layout()                        # GPU test: compiler layout == S.dtype (also verify_layout("hdr.cuh"))
 S = xp.CudaStruct.from_signature(Cls.__init__, "S", int_type="long long")
 xp.write_cuda_header("args.cuh", [S1, S2])
 

@@ -1090,6 +1090,115 @@ class CudaStruct:
                 f"match its CudaStruct:\n{self.declaration}"
             )
 
+    def layout_source(self, include: str | None = None) -> str:
+        """The CUDA source of the kernel used by :meth:`verify_layout`.
+
+        The kernel ``cunumpy_layout_<name>(unsigned long long* out)`` writes
+        ``sizeof``, ``alignof`` and the offset of every field (in field order)
+        of the struct, as the compiler lays it out.
+
+        Parameters
+        ----------
+        include : str | None
+            Header that defines the struct, as a file name or an ``#include``
+            line; by default the struct is defined by :attr:`declaration`.
+        """
+        if include is None:
+            lines = ['#include "cunumpy/array_view.cuh"'] if self.has_views else []
+            lines.append(self.declaration)
+        else:
+            line = include.strip()
+            lines = [line if line.startswith("#") else f'#include "{line}"']
+        offsets = "\n".join(
+            f"    out[{i + 2}] = (unsigned long long)((const char*)&s.{f.name}"
+            " - (const char*)&s);"
+            for i, f in enumerate(self._fields)
+        )
+        lines.append(
+            f'extern "C" __global__ void cunumpy_layout_{self._name}('
+            "unsigned long long* out) {\n"
+            f"    {self._name} s;\n"
+            f"    out[0] = sizeof({self._name});\n"
+            f"    out[1] = alignof({self._name});\n"
+            f"{offsets}\n"
+            "}\n"
+        )
+        return "\n".join(lines)
+
+    def verify_layout(
+        self,
+        include: str | None = None,
+        *,
+        include_dirs: Sequence[str | Path] = (),
+        options: Sequence[str] = (),
+    ) -> dict[str, int]:
+        """Check the struct layout of the CUDA compiler against :attr:`dtype`.
+
+        Compiles and runs a one-thread kernel (:meth:`layout_source`) that
+        reports the size, alignment and field offsets of the struct, and
+        compares them with the NumPy dtype that values are packed into. A
+        difference means every kernel taking the struct reads some fields at
+        the wrong place, without any error. Run it once per struct in a GPU
+        test, especially with a hand-written or generated header (`include`)
+        and on a new compiler or platform (e.g. ROCm).
+
+        Parameters
+        ----------
+        include : str | None
+            Header that defines the struct (file name or ``#include`` line),
+            found in `include_dirs`; by default :attr:`declaration` is compiled.
+        include_dirs : Sequence[str | Path]
+            Directories searched for `include`.
+        options : Sequence[str]
+            Additional compiler options.
+
+        Returns
+        -------
+        dict[str, int]
+            ``"sizeof"``, ``"alignof"`` and the offset of each field, by name.
+
+        Raises
+        ------
+        ValueError
+            If the compiled layout differs from :attr:`dtype` (the message lists
+            each difference).
+        RuntimeError
+            If CuPy is not available.
+        """
+        from .xp import cupy_available
+
+        if not cupy_available():
+            raise RuntimeError("verify_layout() compiles a CUDA kernel and needs CuPy")
+        import cupy as cp
+
+        kernel = CudaKernel(
+            self.layout_source(include),
+            f"cunumpy_layout_{self._name}",
+            include_dirs=include_dirs,
+            options=options,
+            structs=[self],
+            block_size=1,
+        )
+        out = cp.zeros(len(self._fields) + 2, dtype=cp.uint64)
+        kernel(out, n_threads=1)
+        measured = [int(v) for v in out.get()]
+        layout = {"sizeof": measured[0], "alignof": measured[1]}
+        layout.update({f.name: n for f, n in zip(self._fields, measured[2:])})
+
+        expected = {"sizeof": self._dtype.itemsize, "alignof": self._dtype.alignment}
+        expected.update({f.name: self._dtype.fields[f.name][1] for f in self._fields})
+        differences = [
+            f"{key}: compiler {layout[key]}, dtype {expected[key]}"
+            for key in expected
+            if layout[key] != expected[key]
+        ]
+        if differences:
+            raise ValueError(
+                f"the compiled layout of struct {self._name!r} differs from its "
+                "CudaStruct dtype:\n  " + "\n  ".join(differences)
+            )
+        return layout
+
     def __call__(self, **values: Any) -> CudaStructValue:
         """Pack values into the struct.
 

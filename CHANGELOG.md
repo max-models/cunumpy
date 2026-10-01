@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `xp.testing.assert_kernels_agree` reads `CudaStructArguments` objects and struct values through their struct fields, so their arrays get the same names as the attributes of the host argument object (before, arrays behind properties were named after the private attribute holding the owner, and the comparison failed with "do not have the same array arguments").
+
 ### Removed
 - Support for Python 3.8 and 3.9 (both end-of-life); `cunumpy` now requires Python 3.10 or newer.
 
@@ -27,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `xp.KernelCatalog`: Read-only mapping of `Kernel`s; `KernelCatalog.from_package()` collects them from a package with one folder per kernel (`name/name_kernels.py`, `name/name_cuda.cu`); `without_cuda` lists the kernels still to port.
 - `xp.CudaStructArguments`: Base class for argument objects that are passed to CUDA kernels as one C struct (the class form of `CudaStruct`). A subclass sets `struct_name` and `fields`, stores each field as an attribute and calls `pack()`; the `CudaStruct` is built once per class (`cls.struct`), and `__cuda_args__()` returns the packed struct. The struct is packed again automatically at the next use when a field attribute changed (another array address, shape or strides, or another scalar value), so fields can be properties that follow an owner's resized arrays; copies and unpickled objects are packed again from their own arrays.
 - Debug mode no longer synchronizes after a launch while the stream is being captured into a CUDA graph, which would invalidate the capture.
+- `CudaStruct.verify_layout(include=None, *, include_dirs=(), options=())` and `CudaStruct.layout_source()`: Compile and run a one-thread kernel that reports `sizeof`, `alignof` and the field offsets of the struct as the CUDA compiler lays it out, and raise `ValueError` if they differ from the NumPy `dtype` that values are packed into; with `include` the struct is defined by a header instead of `declaration`.
 - `xp.CudaStruct` and `xp.CudaStructValue`: C structs passed to CUDA kernels by value. A `CudaStruct` is defined once from `(field, C type)` pairs; it provides the C `declaration`, the NumPy `dtype` with the C memory layout, and packs values (device arrays as addresses, scalars checked and cast) into a `CudaStructValue` that is passed as one kernel argument. `CudaKernel(..., structs=[...])` checks struct parameters and that a struct definition in the source matches.
 - `CudaKernel(..., template_args=...)`: Instantiate C++ function templates (e.g. `template_args=(np.float64, 3)` for `name<double, 3>`); the template parameters are substituted into the checked signature.
 - `xp.CudaKernelVariants`: Creates and caches one `CudaKernel` per variant key for generated kernel sources (e.g. per dimension and dtype); `compile_all()` compiles given and existing variants.

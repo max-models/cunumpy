@@ -967,6 +967,15 @@ array views") are supported.
 * `fields`: the parsed fields (`CudaParameter` tuples).
 * `check_source(source)`: raises `ValueError` if `source` defines the struct
   with other fields; a kernel created with `structs=[...]` does this check.
+* `verify_layout(include=None, *, include_dirs=(), options=())` (needs CuPy):
+  compiles and runs a one-thread kernel that reports `sizeof`, `alignof` and
+  every field offset as the CUDA compiler lays the struct out, and raises
+  `ValueError` listing the differences from `dtype`. Returns the measured
+  layout as a dict. With `include` (a header file name or `#include` line,
+  found in `include_dirs`) the struct is defined by that header instead of
+  `declaration`, which checks a hand-written or generated header. Call it once
+  per struct in a GPU test, and on every new platform (e.g. ROCm).
+  `layout_source(include=None)` returns the kernel source.
 * Calling the struct with keyword arguments, one per field, packs the values:
   pointer fields take C-contiguous CuPy arrays of the declared dtype (never
   copied), array view fields take CuPy arrays of the declared dtype and number

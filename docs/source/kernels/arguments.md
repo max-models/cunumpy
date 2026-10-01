@@ -203,6 +203,21 @@ push(args, dt, n_threads=args.n_markers)
   argument object in a `KernelArguments`: `__host_args__()` returns the host
   object, `__cuda_args__()` returns `cuda_args.__cuda_args__()`.
 
+### Check the layout against the compiler
+
+Values are packed with the NumPy dtype of the struct. If the compiler lays the
+struct out differently (a hand-edited header, a `#pragma pack`, another
+compiler such as hiprtc), kernels read fields at the wrong offsets without any
+error. One GPU test per struct catches it:
+
+```python
+def test_marker_args_layout():
+    CudaMarkerArguments.struct.verify_layout()  # the Python declaration
+    CudaMarkerArguments.struct.verify_layout(   # the committed header
+        "marker_args.cuh", include_dirs=["kernels"]
+    )
+```
+
 ### Generate the struct from the host argument class
 
 If the host kernels already use an annotated argument class (Pyccel style), the

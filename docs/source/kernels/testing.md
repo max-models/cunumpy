@@ -98,7 +98,10 @@ Things to know:
 * **Which arguments are compared**: `outputs=(2,)` selects them by index;
   otherwise the host kernel's declared `outputs` are used, and if there are
   none, every array argument. Arrays held by argument objects (one level deep,
-  e.g. a `CudaArguments` object or a list) are compared too.
+  e.g. a `CudaArguments` object or a list) are compared too. A
+  `CudaStructArguments` object is read through its struct fields, so its
+  arrays get the names of the host argument object's attributes
+  (`argument 0.markers`), also when the fields are properties.
 * **Tolerances**: the default `rtol=1e-12` suits deterministic kernels. Kernels
   with atomics or a different summation order need looser tolerances, for
   example `rtol=1e-10, atol=1e-14`.

@@ -47,6 +47,8 @@ import numpy as np
 from .cuda_kernel import (
     CudaKernel,
     CudaParameter,
+    CudaStructArguments,
+    CudaStructValue,
     _parse_parameter,
     _split_top_level,
     _strip_comments,
@@ -119,6 +121,18 @@ def _arrays_in(value: Any, name: str, found: dict[str, Any], depth: int) -> None
         found[name] = value
     elif depth == 0:
         return
+    elif isinstance(value, (CudaStructArguments, CudaStructValue)) and hasattr(
+        value, "struct"
+    ):
+        # by field name, like the attributes of the host argument object; the
+        # fields of a CudaStructArguments may be properties (not in vars())
+        for field in value.struct.fields:
+            item = (
+                value[field.name]
+                if isinstance(value, CudaStructValue)
+                else getattr(value, field.name)
+            )
+            _arrays_in(item, f"{name}.{field.name}", found, depth - 1)
     elif isinstance(value, (tuple, list)):
         for i, item in enumerate(value):
             _arrays_in(item, f"{name}[{i}]", found, depth - 1)
@@ -139,7 +153,11 @@ def _collect_arrays(
     level deep, in a tuple, list or dict argument or in the attributes of an
     argument object (e.g. a ``CudaArguments`` object), are named
     ``"argument <i>[<j>]"`` or ``"argument <i>.<attribute>"``, and arrays in a
-    container attribute of an object ``"argument <i>.<attribute>[<j>]"``.
+    container attribute of an object ``"argument <i>.<attribute>[<j>]"``. A
+    :class:`~cunumpy.CudaStructArguments` object or a struct value is read
+    through its struct fields, ``"argument <i>.<field>"``, so that its arrays
+    get the names of the attributes of the host argument object it mirrors,
+    also when the fields are properties.
     """
     indices = range(len(args)) if outputs is None else outputs
     found: dict[str, Any] = {}

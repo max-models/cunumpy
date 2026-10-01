@@ -1875,3 +1875,58 @@ def test_debug_kernel_in_a_cuda_graph():
     graph.launch(stream)
     stream.synchronize()
     assert cp.all(y == 6.0)
+
+
+# ---------------------------------------------------------------------------
+# struct layout checked against the compiler
+# ---------------------------------------------------------------------------
+
+
+def test_layout_source_reports_size_alignment_and_offsets():
+    struct = CudaStruct(
+        "LayoutArgs", [("markers", "Array2D<double>"), ("valid", "bool*"), ("n", "int")]
+    )
+    source = struct.layout_source()
+    assert source.startswith('#include "cunumpy/array_view.cuh"')
+    assert struct.declaration in source
+    (param,) = parse_cuda_signature(source, "cunumpy_layout_LayoutArgs")
+    assert param.pointer and param.dtype == np.dtype(np.uint64)
+    assert "out[0] = sizeof(LayoutArgs);" in source
+    assert "out[1] = alignof(LayoutArgs);" in source
+    for i, name in enumerate(["markers", "valid", "n"]):
+        assert f"out[{i + 2}] = (unsigned long long)((const char*)&s.{name}" in source
+
+    # a header instead of the declaration: the struct is not defined in the source
+    from_header = struct.layout_source("pkg/layout_args.cuh")
+    assert from_header.startswith('#include "pkg/layout_args.cuh"')
+    assert "struct LayoutArgs {" not in from_header
+    assert struct.layout_source("#include <pkg/a.cuh>").startswith(
+        "#include <pkg/a.cuh>"
+    )
+    # no views: no array_view include
+    assert "array_view" not in PARTICLES.layout_source()
+
+
+def test_verify_layout_needs_cupy(monkeypatch):
+    monkeypatch.setattr(xp.xp, "cupy_available", lambda: False)
+    with pytest.raises(RuntimeError, match="needs CuPy"):
+        PARTICLES.verify_layout()
+
+
+def test_verify_layout_on_gpu(tmp_path):
+    _skip_without_cupy()
+    layout = PARTICLES.verify_layout()
+    assert layout["sizeof"] == PARTICLES.dtype.itemsize
+    assert layout["charge"] == PARTICLES.dtype.fields["charge"][1]
+
+    views = CudaStruct("Views", [("n", "int"), ("a", "Array2D<double>"), ("b", "bool")])
+    views.verify_layout()
+
+    # a header that drifted from the Python definition
+    header = tmp_path / "drifted.cuh"
+    header.write_text(
+        '#include "cunumpy/array_view.cuh"\n'
+        "struct Views { int n; bool b; Array2D<double> a; };\n"  # b moved before a
+    )
+    with pytest.raises(ValueError, match="differs from its CudaStruct dtype"):
+        views.verify_layout("drifted.cuh", include_dirs=[tmp_path])
