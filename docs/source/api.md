@@ -612,6 +612,7 @@ xp.CudaKernel(
     debug=None,
 )
 xp.CudaKernel.from_file(path, name=None, *, suffix="_cuda.cu", **kwargs)
+xp.CudaKernel.all_from_file(path, **kwargs)
 ```
 
 Wraps the `__global__` function `name` in the CUDA C `source` (declared
@@ -624,6 +625,18 @@ GPU.
 `from_file` reads the source from a file; the kernel name defaults to the file
 name without `suffix` (`axpy_cuda.cu` -> `axpy`), and the directory of the file
 is added to the include directories and is the `source_dir`.
+
+`all_from_file` loads every `__global__` function of a file, for files that
+group several small kernels, and returns a `dict` of kernels by name in the
+order of the source. The kernels share the source and options, so CuPy
+compiles the file once. `xp.cuda_kernel_names(source)` lists the `__global__`
+functions of a source string (ignoring comments).
+
+```python
+kernels = xp.CudaKernel.all_from_file("small_kernels.cu", block_size=64)
+kernels["scale"](x, 2.0, x.size, n_threads=x.size)
+kernels["shift"](x, 1.0, x.size, n_threads=x.size)
+```
 
 ### Parameters
 
@@ -803,8 +816,66 @@ matvec.compile_all([(3, np.float64), (3, np.complex128)])   # at setup
 ```
 
 `get(*key)` calls the factory the first time a key is used; `keys()`,
-iteration and `len()` give the variants created so far; `compile_all(keys=())` creates the
-given variants and compiles all of them.
+iteration and `len()` give the variants created so far; `compile_all(keys=(), jobs=1)`
+creates the given variants and compiles all of them, `jobs` at a time in
+threads (see `KernelCatalog.compile_all`).
+
+### Debugging
+
+```python
+xp.set_cuda_debug(enabled)
+xp.get_cuda_debug()
+xp.cuda_debug(enabled=True)   # context manager
+xp.CudaKernel(..., debug=None)
+kernel.debug_active()
+kernel.compile_options()
+xp.DEBUG_OPTIONS  # ("-lineinfo", "-DCUNUMPY_BOUNDS_CHECK")
+```
+
+Kernel launches are asynchronous: a CUDA error such as an illegal memory
+access or a launch failure is reported by the next operation that
+synchronizes (a `.get()`, an MPI call, ...), which may be far from the kernel
+that caused it. In debug mode, a `CudaKernel`
+
+* is compiled with `-lineinfo` (source line information for
+  `compute-sanitizer` and profilers) and `-DCUNUMPY_BOUNDS_CHECK` (bounds
+  checks in cunumpy's array views, and available to your own `#ifdef`s),
+  unless the option is already among its `options`. `-G` (device debug
+  symbols) is not added, because NVRTC does not support it;
+* synchronizes the stream after every launch (the `stream` passed, else the
+  current one), so an error is raised at the launch that caused it, as a
+  `RuntimeError` that names the kernel and its grid and block, with the CuPy
+  error chained.
+
+Debug mode is enabled globally with `xp.set_cuda_debug(True)`, temporarily
+with the context manager `xp.cuda_debug()`, or before starting Python with
+the environment variable `CUNUMPY_CUDA_DEBUG=1` (`true`, `yes` and `on` work
+too); `xp.get_cuda_debug()` returns the current setting. A kernel created with
+`debug=None` (the default) reads the global setting at every launch, so
+enabling it also affects kernels created earlier; `debug=True` or
+`debug=False` fix the mode for one kernel. Only the compile options are fixed
+at compile time: a kernel compiled before debug mode was enabled keeps its
+options, so call `compile()` after enabling, or create the kernels after
+enabling. `kernel.debug_active()` tells whether debug mode applies to a
+kernel now, and `kernel.compile_options()` returns the options a compilation
+now would use.
+
+```python
+with xp.cuda_debug():
+    kernel = xp.CudaKernel(SOURCE, "kernel")
+    kernel(x, y, n, n_threads=n)  # RuntimeError: CUDA error after launching kernel 'kernel' ...
+```
+
+The `RuntimeError` says which kernel failed, not where. The next step is
+NVIDIA's memory checker, which reports the faulting source line (thanks to
+`-lineinfo`) and also finds out-of-bounds accesses that do not crash:
+
+```bash
+CUNUMPY_CUDA_DEBUG=1 compute-sanitizer python -m pytest tests/unit/test_my_kernel.py
+```
+
+Note that after an illegal memory access the CUDA context is unusable; the
+process (or the pytest run) has to be restarted.
 
 ### Debugging
 
@@ -1062,8 +1133,9 @@ A read-only mapping from names to `Kernel` objects. `from_package` scans the
 subfolders of `package`: for every folder `<name>` containing the module
 `<name><host_suffix>.py`, the function `<name>` of that module is the host
 kernel, and `<name><cuda_suffix>` in the same folder, if present, is the CUDA
-kernel (`__global__` function `<name>`). Typically called in the package's
-`__init__.py`:
+kernel (`__global__` function `<name>`). Other `__global__` functions in that
+file are ignored by the catalog; they can be loaded with
+`CudaKernel.all_from_file`. Typically called in the package's `__init__.py`:
 
 ```text
 my_kernels/
@@ -1087,10 +1159,20 @@ my_kernels/
 * `cuda_options`: passed on to `CudaKernel.from_file`, e.g. `block_size` or
   `structs`.
 
-`catalog.without_cuda` lists the kernels still to port.
-`catalog.compile_all()` compiles every CUDA kernel and returns their names;
-call it at setup so that the first time step does not pay for compilation
-(after the first run, CuPy loads the kernels from its disk cache).
+`catalog.without_cuda` lists the kernels still to port, `catalog.with_cuda`
+the ported ones. `catalog.summary()` (also `str(catalog)`) is one line on the
+porting status, e.g. for a `--status` command:
+`"CUDA kernels: 3 of 60 (missing: a, b, c)"`; at most `max_missing=10` names
+are listed before `...`.
+
+`catalog.compile_all(jobs=1)` compiles every CUDA kernel and returns their
+names; call it at setup so that the first time step does not pay for
+compilation (after the first run, CuPy loads the kernels from its disk cache).
+With `jobs > 1` the kernels are compiled in that many threads (NVRTC releases
+the GIL; all threads use the current device), `jobs=None` uses the number of
+CPUs. All kernels are compiled even if one fails; the first error is raised
+afterwards.
+
 `catalog.parity_cases()` returns the `(name, kernel)` pairs of the kernels
 that have a CUDA kernel, for a parametrised parity test (see "Testing
 utilities"). `KernelCatalog(kernels)` and `catalog.register(kernel, name=None)`

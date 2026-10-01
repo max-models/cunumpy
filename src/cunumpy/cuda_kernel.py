@@ -38,8 +38,10 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 import re
-from collections.abc import Callable, Hashable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -55,6 +57,7 @@ __all__ = [
     "CudaStruct",
     "CudaStructValue",
     "ctype_of",
+    "cuda_kernel_names",
     "include_hash",
     "parse_cuda_signature",
     "resolve_includes",
@@ -291,6 +294,66 @@ def include_hash(paths: Iterable[str | Path]) -> str:
         digest.update(len(content).to_bytes(8, "little"))
         digest.update(content)
     return digest.hexdigest()[:16]
+
+
+_GLOBAL_FUNCTION = re.compile(r"__global__\s+void\s+([A-Za-z_]\w*)\s*\(")
+
+
+def cuda_kernel_names(source: str) -> list[str]:
+    """The names of the ``__global__`` functions defined in `source`, in order.
+
+    Comments are ignored. Templates are included; a function declared more
+    than once (e.g. a forward declaration) is listed once.
+
+    Parameters
+    ----------
+    source : str
+        CUDA C source code.
+
+    Returns
+    -------
+    list[str]
+        The kernel names, in the order of their first appearance.
+    """
+    return list(dict.fromkeys(_GLOBAL_FUNCTION.findall(_strip_comments(source))))
+
+
+def _compile_in_threads(
+    compilers: Mapping[Hashable, Callable[[], Any]], jobs: int | None
+) -> list[Hashable]:
+    """Run the `compilers` (name -> compile function), `jobs` at a time.
+
+    With ``jobs=1`` they run one after the other in the calling thread; with
+    ``jobs=None`` as many threads as CPUs are used. All compilers are run even
+    if one fails; the first exception (in the order of `compilers`) is raised
+    afterwards.
+
+    Returns
+    -------
+    list
+        The names whose compiler succeeded, in the order of `compilers`.
+    """
+    if jobs is None:
+        jobs = os.cpu_count() or 1
+    if jobs < 1:
+        raise ValueError(f"jobs must be positive or None, got {jobs}")
+    if jobs == 1 or len(compilers) <= 1:
+        for compile in compilers.values():
+            compile()
+        return list(compilers)
+
+    with ThreadPoolExecutor(max_workers=min(jobs, len(compilers))) as pool:
+        futures = {name: pool.submit(compile) for name, compile in compilers.items()}
+    compiled, error = [], None
+    for name, future in futures.items():
+        exc = future.exception()
+        if exc is None:
+            compiled.append(name)
+        elif error is None:
+            error = exc
+    if error is not None:
+        raise error
+    return compiled
 
 
 def _parse_parameter(
@@ -862,6 +925,44 @@ class CudaKernel:
         kwargs.setdefault("source_dir", path.parent)
         return cls(path.read_text(), name, include_dirs=include_dirs, **kwargs)
 
+    @classmethod
+    def all_from_file(cls, path: str | Path, **kwargs: Any) -> dict[str, CudaKernel]:
+        """Load every ``__global__`` function of a file as a kernel.
+
+        For files that group several small kernels. The kernels share the
+        source (and the compile options), so CuPy compiles the file once and
+        the kernels are functions of the same compiled module.
+
+        Parameters
+        ----------
+        path : str | Path
+            Path of the CUDA source file.
+        **kwargs
+            Passed on to :class:`CudaKernel` for every kernel. The directory of
+            the file is always added to ``include_dirs``.
+
+        Returns
+        -------
+        dict[str, CudaKernel]
+            One kernel per ``__global__`` function, by name, in the order of
+            the source (see :func:`cuda_kernel_names`).
+
+        Raises
+        ------
+        ValueError
+            If the file defines no ``__global__`` function.
+        """
+        path = Path(path)
+        source = path.read_text()
+        names = cuda_kernel_names(source)
+        if not names:
+            raise ValueError(f"no __global__ function found in {path}")
+        include_dirs = (path.parent, *kwargs.pop("include_dirs", ()))
+        return {
+            name: cls(source, name, include_dirs=include_dirs, **kwargs)
+            for name in names
+        }
+
     @staticmethod
     def _check_block(block: tuple[int, ...]) -> tuple[int, ...]:
         if any(n <= 0 for n in block):
@@ -1228,15 +1329,22 @@ class CudaKernelVariants:
         """The keys of the variants created so far."""
         return list(self._kernels)
 
-    def compile_all(self, keys: Iterable[Sequence[Hashable]] = ()) -> None:
+    def compile_all(
+        self, keys: Iterable[Sequence[Hashable]] = (), *, jobs: int | None = 1
+    ) -> None:
         """Compile the given variants (created if needed) and all existing ones.
 
         Parameters
         ----------
         keys : Iterable[Sequence]
             Keys of variants to create and compile now, e.g. ``[(3, np.float64)]``.
+        jobs : int | None
+            Number of variants compiled at a time, in threads (NVRTC releases
+            the GIL); None for the number of CPUs. See
+            :meth:`KernelCatalog.compile_all <cunumpy.KernelCatalog.compile_all>`.
         """
         for key in keys:
             self.get(*key)
-        for kernel in self._kernels.values():
-            kernel.compile()
+        _compile_in_threads(
+            {key: kernel.compile for key, kernel in self._kernels.items()}, jobs
+        )

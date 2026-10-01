@@ -7,6 +7,7 @@ the NumPy-side tests run everywhere; the CuPy-side tests need a GPU.
 import importlib
 import sys
 import textwrap
+import threading
 from types import SimpleNamespace
 
 import numpy as np
@@ -267,6 +268,85 @@ def test_compile(kernel_package_factory):
 
     assert catalog.compile_all() == ["scale"]
     assert catalog["scale"].cuda_kernel.is_compiled
+
+
+# ---------------------------------------------------------------------------
+# summary and parallel compilation
+# ---------------------------------------------------------------------------
+
+
+def _catalog(with_cuda, without_cuda):
+    """A catalog of dummy kernels with the given names."""
+    catalog = KernelCatalog()
+    for name in with_cuda:
+        catalog.register(Kernel(scale, CudaKernel(SCALE_CUDA, "scale"), name=name))
+    for name in without_cuda:
+        catalog.register(Kernel(scale, name=name))
+    return catalog
+
+
+def test_summary(kernel_package):
+    assert kernel_package.summary() == "CUDA kernels: 1 of 2 (missing: shift)"
+    assert str(kernel_package) == kernel_package.summary()
+    assert repr(kernel_package) == "KernelCatalog(2 kernels, 1 without CUDA)"
+    assert kernel_package.with_cuda == ["scale"]
+    assert kernel_package.without_cuda == ["shift"]
+
+    assert _catalog(["a", "b"], []).summary() == "CUDA kernels: 2 of 2"
+    assert KernelCatalog().summary() == "CUDA kernels: 0 of 0"
+
+    missing = [f"k{i:02d}" for i in range(12)]
+    catalog = _catalog(["a"], missing)
+    assert catalog.with_cuda == ["a"] and catalog.without_cuda == missing
+    assert catalog.summary() == (
+        "CUDA kernels: 1 of 13 (missing: " + ", ".join(missing[:10]) + ", ...)"
+    )
+    assert catalog.summary(max_missing=12).endswith("k11)")
+    assert catalog.summary(max_missing=1) == "CUDA kernels: 1 of 13 (missing: k00, ...)"
+
+
+@pytest.fixture
+def recording_catalog():
+    """Three CUDA kernels whose `compile` records the calling thread."""
+    catalog = _catalog(["a", "b", "c"], ["d"])
+    threads = {}
+
+    def fake_compile(name):
+        def compile():
+            threads[name] = threading.current_thread()
+            if name == "b":
+                raise ValueError(f"cannot compile {name}")
+            return "compiled"
+
+        return compile
+
+    for name in catalog.with_cuda:
+        catalog[name].cuda_kernel.compile = fake_compile(name)
+    return catalog, threads
+
+
+@pytest.mark.parametrize("jobs", [2, None])
+def test_compile_all_in_threads(recording_catalog, jobs):
+    catalog, threads = recording_catalog
+    with pytest.raises(ValueError, match="cannot compile b"):
+        catalog.compile_all(jobs=jobs)
+    # all kernels are compiled although one failed, in worker threads
+    assert set(threads) == {"a", "b", "c"}
+    assert all(t is not threading.main_thread() for t in threads.values())
+
+
+def test_compile_all_serial(recording_catalog):
+    catalog, threads = recording_catalog
+    with pytest.raises(ValueError, match="cannot compile b"):
+        catalog.compile_all()
+    assert set(threads) == {"a", "b"}  # stops at the first error, like before
+    assert all(t is threading.main_thread() for t in threads.values())
+
+    catalog["b"].cuda_kernel.compile = lambda: "compiled"
+    assert catalog.compile_all(jobs=1) == ["a", "b", "c"]
+    assert catalog.compile_all(jobs=3) == ["a", "b", "c"]
+    with pytest.raises(ValueError, match="jobs must be positive"):
+        catalog.compile_all(jobs=0)
 
 
 def test_catalog_include_dirs(kernel_package, kernel_package_factory, tmp_path):

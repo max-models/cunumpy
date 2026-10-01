@@ -19,6 +19,7 @@ from cunumpy import (
     CudaStructValue,
     as_device_array,
     ctype_of,
+    cuda_kernel_names,
     include_hash,
     parse_cuda_signature,
     resolve_includes,
@@ -270,6 +271,63 @@ def test_from_file(tmp_path):
     with pytest.raises(ValueError, match="does not end with"):
         CudaKernel.from_file(other)
     assert CudaKernel.from_file(other, "axpy").name == "axpy"
+
+
+TWO_KERNELS = r"""
+// A comment mentioning __global__ void not_a_kernel(int n) is ignored,
+/* and so is a block comment:
+   extern "C" __global__ void also_not(double* x) {}
+*/
+extern "C" __global__ void scale(double* x, double a, int n) {
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i < n) x[i] *= a;
+}
+
+extern "C" __global__
+void shift(double* x, double a, int n)
+{
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i < n) x[i] += a;
+}
+"""
+
+
+def test_cuda_kernel_names():
+    assert cuda_kernel_names(TWO_KERNELS) == ["scale", "shift"]
+    assert cuda_kernel_names(AXPY) == ["axpy"]
+    assert cuda_kernel_names(ALL_TYPES) == ["other", "all_types"]
+    assert cuda_kernel_names("__device__ double f(double x) { return x; }") == []
+    # templates and forward declarations
+    source = "template <typename T> __global__ void gen(T* x);\n" + TWO_KERNELS
+    assert cuda_kernel_names(source + source) == ["gen", "scale", "shift"]
+
+
+def test_all_from_file(tmp_path):
+    path = tmp_path / "pair_cuda.cu"
+    path.write_text(TWO_KERNELS)
+    kernels = CudaKernel.all_from_file(path, block_size=64)
+    assert list(kernels) == ["scale", "shift"]
+    for name, kernel in kernels.items():
+        assert kernel.name == name and kernel.block_size == 64
+        assert kernel.source == TWO_KERNELS and f"-I{tmp_path}" in kernel.options
+        assert [p.name for p in kernel.signature] == ["x", "a", "n"]
+
+    (tmp_path / "empty.cu").write_text("__device__ int f() { return 1; }")
+    with pytest.raises(ValueError, match="no __global__ function"):
+        CudaKernel.all_from_file(tmp_path / "empty.cu")
+
+
+def test_all_from_file_on_gpu(tmp_path):
+    _skip_without_cupy()
+    import cupy as cp
+
+    path = tmp_path / "pair_cuda.cu"
+    path.write_text(TWO_KERNELS)
+    kernels = CudaKernel.all_from_file(path)
+    x = cp.ones(10)
+    kernels["scale"](x, 3.0, 10, n_threads=10)
+    kernels["shift"](x, 1.0, 10, n_threads=10)
+    assert cp.all(x == 4.0)
 
 
 def test_launch_argument_validation():
@@ -621,6 +679,19 @@ def test_variants():
         CudaKernelVariants(lambda n: n).get(1)
 
 
+def test_variants_compile_all_in_threads():
+    compiled = []
+
+    def factory(ndim):
+        kernel = CudaKernel(_generated_source(ndim, "double"), "fill")
+        kernel.compile = lambda: compiled.append(ndim)
+        return kernel
+
+    variants = CudaKernelVariants(factory)
+    variants.compile_all([(1,), (2,), (3,)], jobs=2)
+    assert sorted(compiled) == [1, 2, 3]
+
+
 def test_variants_on_gpu():
     _skip_without_cupy()
     import cupy as cp
@@ -630,7 +701,7 @@ def test_variants_on_gpu():
             _generated_source(ndim, ctype_of(dtype)), "fill", block_size=1
         )
     )
-    variants.compile_all([(2, np.float64), (1, np.int32)])
+    variants.compile_all([(2, np.float64), (1, np.int32)], jobs=2)
     assert all(variants.get(*key).is_compiled for key in variants)
 
     out = cp.zeros(1)

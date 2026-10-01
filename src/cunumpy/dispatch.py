@@ -26,7 +26,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from .cuda_kernel import CudaKernel
+from .cuda_kernel import CudaKernel, _compile_in_threads
 from .kernel import PyccelKernel, resolve_host_args
 from .transfers import _ACTIVE as _COUNTERS
 from .transfers import _record
@@ -283,7 +283,10 @@ class KernelCatalog(Mapping):
         For every subfolder ``<name>`` of the package that contains the module
         ``<name><host_suffix>.py``, the function ``<name>`` of that module is the
         host kernel, and ``<name><cuda_suffix>`` in the same folder, if present,
-        is the CUDA kernel (with a ``__global__`` function ``<name>``).
+        is the CUDA kernel (with a ``__global__`` function ``<name>``). Other
+        ``__global__`` functions in that file are ignored by the catalog; load
+        them with :meth:`CudaKernel.all_from_file
+        <cunumpy.CudaKernel.all_from_file>`.
 
         Parameters
         ----------
@@ -360,6 +363,38 @@ class KernelCatalog(Mapping):
             f"KernelCatalog({len(self)} kernels, {len(self.without_cuda)} without CUDA)"
         )
 
+    def __str__(self) -> str:
+        return self.summary()
+
+    def summary(self, max_missing: int = 10) -> str:
+        """One line on the porting status, e.g. for a ``--status`` command.
+
+        Parameters
+        ----------
+        max_missing : int
+            How many of the kernels without CUDA kernel to name; the rest is
+            shortened to ``...``.
+
+        Returns
+        -------
+        str
+            ``"CUDA kernels: 3 of 60 (missing: a, b, c)"``; without the
+            parenthesis if every kernel has a CUDA kernel.
+        """
+        text = f"CUDA kernels: {len(self.with_cuda)} of {len(self)}"
+        missing = self.without_cuda
+        if missing:
+            names = missing[:max_missing]
+            if len(missing) > max_missing:
+                names.append("...")
+            text += f" (missing: {', '.join(names)})"
+        return text
+
+    @property
+    def with_cuda(self) -> list[str]:
+        """Names of the kernels with a CUDA kernel."""
+        return [name for name, kernel in self._kernels.items() if kernel.has_cuda]
+
     @property
     def without_cuda(self) -> list[str]:
         """Names of the kernels without a CUDA kernel, i.e. still to port."""
@@ -379,11 +414,20 @@ class KernelCatalog(Mapping):
             (name, kernel) for name, kernel in self._kernels.items() if kernel.has_cuda
         ]
 
-    def compile_all(self) -> list[str]:
+    def compile_all(self, jobs: int | None = 1) -> list[str]:
         """Compile all CUDA kernels now, e.g. at setup instead of in the first step.
 
         Compilation is cached on disk by CuPy, so after the first run this mostly
         loads the compiled kernels.
+
+        Parameters
+        ----------
+        jobs : int | None
+            Number of kernels compiled at a time. With ``jobs > 1`` the kernels
+            are compiled in threads (NVRTC compilation releases the GIL, and
+            all threads use the current device); None uses the number of CPUs.
+            All kernels are compiled even if one fails; the first error is
+            raised afterwards.
 
         Returns
         -------
@@ -395,4 +439,11 @@ class KernelCatalog(Mapping):
         RuntimeError
             If CuPy or a GPU is not available (and there are CUDA kernels).
         """
-        return [name for name, kernel in self._kernels.items() if kernel.compile()]
+        return _compile_in_threads(
+            {
+                name: kernel.compile
+                for name, kernel in self._kernels.items()
+                if kernel.has_cuda
+            },
+            jobs,
+        )
