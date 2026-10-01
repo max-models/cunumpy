@@ -130,8 +130,9 @@ of the installed CuPy version. The common differences:
   device array on CuPy. Keep it as an array, or call `float()` and accept the
   synchronization.
 * SciPy functions accept only NumPy arrays; CuPy has its own `cupyx.scipy`.
-  Convert with `to_numpy()` at that boundary, or branch on
-  `xp.get_array_backend(a)`.
+  Use `xp.scipy`, which is the one for the active backend (see
+  [Solvers and fluid updates](solvers.md)); for functions `cupyx.scipy` lacks,
+  convert with `to_numpy()` at that boundary.
 * Plotting, HDF5 and most I/O libraries need host arrays: `to_numpy()` first.
 
 When a function genuinely needs a different implementation per backend, branch

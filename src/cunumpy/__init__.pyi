@@ -22,8 +22,11 @@ from .cuda_kernel import parse_cuda_signature as parse_cuda_signature
 from .cuda_kernel import write_cuda_header as write_cuda_header
 from .dispatch import Kernel as Kernel
 from .dispatch import KernelCatalog as KernelCatalog
+from .fusion import fuse as fuse
 from .kernel import PyccelKernel as PyccelKernel
 from .mirror import DeviceMirror as DeviceMirror
+from .petsc import petsc_vec as petsc_vec
+from .scipy_backend import scipy as scipy
 from .transfers import TransferCounter as TransferCounter
 from .transfers import TransferEvent as TransferEvent
 

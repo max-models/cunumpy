@@ -20,8 +20,11 @@ from .cuda_kernel import (
     write_cuda_header,
 )
 from .dispatch import Kernel, KernelCatalog
+from .fusion import fuse
 from .kernel import KernelArguments, PyccelKernel, resolve_host_args
 from .mirror import DeviceMirror
+from .petsc import petsc_vec
+from .scipy_backend import scipy
 from .transfers import (
     TransferCounter,
     TransferEvent,
@@ -103,6 +106,7 @@ __all__ = [
     "default_float_dtype",
     "device_count",
     "free_memory",
+    "fuse",
     "get_array_backend",
     "get_array_module",
     "get_backend",
@@ -117,11 +121,13 @@ __all__ = [
     "numpy_backend",
     "nvtx_range",
     "parse_cuda_signature",
+    "petsc_vec",
     "pin_memory",
     "require_cuda_aware_mpi",
     "resolve_host_args",
     "resolve_includes",
     "same_backend",
+    "scipy",
     "set_backend",
     "set_cuda_debug",
     "set_device",

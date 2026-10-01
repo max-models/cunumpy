@@ -49,6 +49,7 @@ guides/portable-code
 guides/data-movement
 guides/gpu-devices
 guides/mpi
+guides/solvers
 guides/profiling
 array-api-compat
 ```

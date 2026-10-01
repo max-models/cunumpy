@@ -68,6 +68,10 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
 | many kernels in a package, ported incrementally | `xp.KernelCatalog.from_package(__name__, missing_cuda="fallback")` |
 | group arrays/scalars into one kernel argument | `xp.CudaArguments` (device only), `xp.KernelArguments` (host object + device tuple), `xp.CudaStruct` (C struct), `xp.CudaStructArguments` (C struct as a class) |
 | CUDA struct from a Pyccel argument class | `xp.CudaStruct.from_signature(Cls.__init__, "Name")`, `xp.write_cuda_header(...)` |
+| SciPy (sparse, sparse.linalg, fft, special, ndimage, ...) on either backend | `xp.scipy.<subpackage>.<name>` (SciPy or `cupyx.scipy`); `xp.scipy.special.available(name)` |
+| chain of elementwise operations as one GPU kernel | `@xp.fuse` (`cupy.fuse` for CuPy arrays, plain call otherwise) |
+| PETSc solve on device arrays without copies | `xp.petsc_vec(array)` (CUDA/HIP petsc4py for CuPy arrays); `xp.synchronize()` around PETSc calls |
+| reduction inside a CUDA kernel (energy, max velocity) | `<cunumpy/reduce.cuh>`: `cunumpy_block_sum_to(out, v)`, `cunumpy_block_min/max`, `cunumpy_warp_sum` |
 | kernel writes into a host buffer owned by another library | `xp.DeviceMirror(host_array)` + `<cunumpy/atomic.cuh>` |
 | N-D indexing in CUDA, non-contiguous arrays | `Array1D<T>`..`Array3D<T>` params from `<cunumpy/array_view.cuh>` |
 | one MPI rank per GPU | `bind_local_device()` → `from mpi4py import MPI` → `require_cuda_aware_mpi()` → `synchronize_for_mpi(...)` before each call |

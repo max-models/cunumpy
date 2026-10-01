@@ -93,7 +93,9 @@ def cuda_include_dir() -> str:
     can ``#include "cunumpy/array_view.cuh"`` (strided ``Array1D<T>``,
     ``Array2D<T>``, ``Array3D<T>`` views passed by value) and
     ``#include "cunumpy/index.cuh"`` (thread-index and grid-stride macros such
-    as ``CUNUMPY_THREAD_1D(i, n)``). Pass it as ``-I`` to other compilers.
+    as ``CUNUMPY_THREAD_1D(i, n)``), ``#include "cunumpy/atomic.cuh"`` (atomic
+    adds) and ``#include "cunumpy/reduce.cuh"`` (warp and block reductions).
+    Pass it as ``-I`` to other compilers.
     """
     return str(_CUDA_INCLUDE_DIR)
 
@@ -1488,7 +1490,8 @@ class CudaKernel:
         found at compile time (see :meth:`compile_options`):
         ``#include "cunumpy/array_view.cuh"`` gives the ``Array1D<T>`` to
         ``Array3D<T>`` views, ``#include "cunumpy/index.cuh"`` the thread-index
-        macros, ``#include "cunumpy/atomic.cuh"`` atomic adds.
+        macros, ``#include "cunumpy/atomic.cuh"`` atomic adds,
+        ``#include "cunumpy/reduce.cuh"`` warp and block reductions.
     source_dir : str | Path | None
         Directory the source was read from (set by :meth:`from_file`), where
         ``#include "..."`` files are looked up first.

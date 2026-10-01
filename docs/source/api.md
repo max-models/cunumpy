@@ -434,7 +434,7 @@ does not necessarily indicate a leak.
 ### `cuda_include_dir()`
 
 Returns the directory (as `str`) of the CUDA headers shipped with CuNumpy,
-`cunumpy/array_view.cuh`, `cunumpy/atomic.cuh` and `cunumpy/index.cuh`. `CudaKernel` adds it to its NVRTC options as
+`cunumpy/array_view.cuh`, `cunumpy/atomic.cuh`, `cunumpy/index.cuh` and `cunumpy/reduce.cuh`. `CudaKernel` adds it to its NVRTC options as
 `-I<dir>` automatically (and only once), so kernel sources can write
 `#include <cunumpy/atomic.cuh>` without configuration. Use it to pass the
 same headers to other compilers.
@@ -1506,6 +1506,110 @@ The indexed helpers (also for `float`) address C-contiguous arrays of shape
 `(n0, n1)` and `(n0, n1, n2)`. They wrap `atomicAdd`, a hardware instruction
 for `double` from compute capability 6.0 (sm_60) on; older devices use a
 compare-and-swap loop.
+
+### `cunumpy/reduce.cuh`
+
+Warp- and block-level reductions for hand-written kernels: in-kernel
+diagnostics (energy, momentum, total charge, the maximum velocity for a CFL
+check) and combining values in a block before one atomic write.
+
+```c
+#include <cunumpy/reduce.cuh>
+
+T cunumpy_warp_sum(T v);   T cunumpy_warp_min(T v);   T cunumpy_warp_max(T v);
+T cunumpy_block_sum(T v);  T cunumpy_block_min(T v);  T cunumpy_block_max(T v);
+void cunumpy_block_sum_to(T* out, T v);  // *out += block sum, one atomic per block
+int cunumpy_block_thread();   // linear thread index in a 1D-3D block
+int cunumpy_block_threads();  // threads per block
+```
+
+`T` is `int`, `unsigned`, `long long`, `unsigned long long`, `float` or
+`double` (`block_sum_to`: `double`, `float`, `int`, `unsigned long long`). Every
+thread gets the result. Rules: every thread of the block calls block
+functions and all 32 lanes call warp functions (no early `return`; threads
+without a value pass the identity, e.g. `0.0` for a sum); the block size is a
+multiple of 32. The block functions use 32 values of static shared memory per
+type and may be called several times in a kernel.
+
+```c
+extern "C" __global__ void kinetic_energy(const double* v, long long n,
+                                          double mass, double* energy) {
+    long long i = blockIdx.x * (long long)blockDim.x + threadIdx.x;
+    double e = i < n ? 0.5 * mass * v[i] * v[i] : 0.0;
+    cunumpy_block_sum_to(energy, e);  // zero *energy before the launch
+}
+```
+
+## `scipy`
+
+```python
+A = xp.scipy.sparse.csr_matrix((data, (rows, cols)), shape=(n, n))
+x, info = xp.scipy.sparse.linalg.cg(A, b)
+rho_k = xp.scipy.fft.rfftn(rho)
+```
+
+SciPy for the active backend: `scipy` on NumPy, `cupyx.scipy` on CuPy. The
+forwarded subpackages are those `cupyx.scipy` has (`SUBMODULES`): `fft`,
+`fftpack`, `interpolate`, `linalg`, `ndimage`, `signal`, `sparse`,
+`sparse.csgraph`, `sparse.linalg`, `spatial`, `special`, `stats`. Names are
+looked up at every access, so a backend switch takes effect immediately
+(Python caches the imports). Nothing is imported until a name is used; SciPy
+is not a dependency of cunumpy.
+
+* A name missing on the active backend (`cupyx.scipy` covers part of SciPy)
+  raises `AttributeError` naming the backend. Keyword arguments can differ
+  too (SciPy's `cg(..., rtol=)` is `tol=` in CuPy).
+* `xp.scipy.special.available("erfcx")` checks a name without raising.
+* `xp.scipy.sparse.linalg.resolve()` returns the module itself.
+* A missing SciPy (NumPy backend) or CuPy raises `ImportError` with the module
+  it needs.
+
+Sparse matrices assembled on the host move to the device once, with the
+constructor of the device type: `xp.scipy.sparse.csr_matrix(host_matrix)` on
+the CuPy backend copies a SciPy matrix; `matrix.get()` copies back.
+
+## `fuse(function=None, *, kernel_name=None)`
+
+```python
+@xp.fuse
+def pressure(rho, T, gamma):
+    return (gamma - 1.0) * rho * T
+```
+
+Compiles an elementwise function into one kernel with `cupy.fuse` when it is
+called with a CuPy array (positional or keyword), with the CuPy backend active
+while it is traced, so `xp.exp` etc. resolve to CuPy ufuncs; other calls run
+the function as it is. The fused kernel is created on first use and reused.
+`kernel_name` names it in profilers (default: the function name). The function
+must be elementwise in the sense of `cupy.fuse`: arithmetic, comparisons,
+ufuncs, `xp.where`, and supported reductions as the last operation; no Python
+control flow on array values or indexing. Test the CuPy path: a function
+`cupy.fuse` cannot trace raises at its first call with CuPy arrays.
+
+## `petsc_vec(array, comm=None)`
+
+```python
+b_vec = xp.petsc_vec(b)        # b: NumPy or CuPy array, shared, never copied
+x_vec = xp.petsc_vec(x)
+xp.synchronize()
+ksp.solve(b_vec, x_vec)        # PETSc writes into x
+xp.synchronize()
+```
+
+A `petsc4py.PETSc.Vec` that shares the memory of a C-contiguous array of
+`PETSc.ScalarType`, through DLPack: a `seq`/`mpi` vector for a NumPy array, a
+`seqcuda`/`mpicuda` (or HIP) vector for a CuPy array. The vector keeps a
+reference to the array. With several processes, `array` is this process's
+part of the vector (`comm`, default `COMM_WORLD`).
+
+* Another dtype raises `TypeError` and a non-contiguous array `ValueError`
+  (both would need a copy).
+* A CuPy array with a petsc4py built without CUDA/HIP raises `RuntimeError`
+  instead of PETSc working on a host copy.
+* Synchronize between CuPy and PETSc work on the same memory (they may use
+  different streams).
+* For the solve to stay on the GPU, the matrix must be a GPU type too
+  (`aijcusparse`, or `-mat_type aijcusparse -vec_type cuda`).
 
 ## Version
 

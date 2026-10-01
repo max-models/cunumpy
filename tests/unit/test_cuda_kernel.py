@@ -1930,3 +1930,71 @@ def test_verify_layout_on_gpu(tmp_path):
     )
     with pytest.raises(ValueError, match="differs from its CudaStruct dtype"):
         views.verify_layout("drifted.cuh", include_dirs=[tmp_path])
+
+
+# ---------------------------------------------------------------------------
+# cunumpy/reduce.cuh
+# ---------------------------------------------------------------------------
+
+REDUCE_SOURCE = r"""
+#include "cunumpy/reduce.cuh"
+extern "C" __global__
+void reductions(const double* x, long long n, double* sum, unsigned long long* count,
+                double* block_min, double* block_max, double* warp_sum) {
+    long long i = blockIdx.x * (long long)blockDim.x + threadIdx.x;
+    double v = i < n ? x[i] : 0.0;  // no early return: every thread takes part
+    cunumpy_block_sum_to(sum, v);
+    cunumpy_block_sum_to(count, i < n ? 1ull : 0ull);
+    double lo = cunumpy_block_min(i < n ? v : 1e300);
+    double hi = cunumpy_block_max(i < n ? v : -1e300);
+    if (threadIdx.x == 0) { block_min[blockIdx.x] = lo; block_max[blockIdx.x] = hi; }
+    double w = cunumpy_warp_sum(v);
+    if (threadIdx.x % 32 == 0) warp_sum[i / 32] = w;
+}
+"""
+
+
+def test_reduce_header_is_shipped():
+    header = Path(cuda_include_dir()) / "cunumpy" / "reduce.cuh"
+    text = header.read_text()
+    assert "#ifndef CUNUMPY_REDUCE_CUH" in text and "#endif" in text
+    for name in (
+        "cunumpy_warp_sum",
+        "cunumpy_warp_min",
+        "cunumpy_warp_max",
+        "cunumpy_block_sum",
+        "cunumpy_block_min",
+        "cunumpy_block_max",
+        "cunumpy_block_sum_to",
+    ):
+        assert f"{name}(" in text, name
+    # the kernel's include resolves to the shipped header, which includes atomic.cuh
+    headers = resolve_includes(REDUCE_SOURCE, [cuda_include_dir()])
+    assert [p.name for p in headers] == ["reduce.cuh", "atomic.cuh"]
+    CudaKernel(REDUCE_SOURCE, "reductions")  # the signature parses
+
+
+@pytest.mark.parametrize("block_size", [32, 128, 1024])
+def test_reductions_on_gpu(block_size):
+    _skip_without_cupy()
+    import cupy as cp
+
+    n = 5000  # not a multiple of the block size: the last block is partial
+    x = cp.asarray(np.random.default_rng(1).normal(size=n))
+    n_blocks = -(-n // block_size)
+    total, count = cp.zeros(1), cp.zeros(1, dtype=cp.uint64)
+    lo, hi = cp.zeros(n_blocks), cp.zeros(n_blocks)
+    warp = cp.zeros(n_blocks * block_size // 32)
+    kernel = CudaKernel(REDUCE_SOURCE, "reductions", block_size=block_size)
+    kernel(x, n, total, count, lo, hi, warp, n_threads=n)
+
+    host = cp.asnumpy(x)
+    assert abs(float(total[0]) - host.sum()) < 1e-10 * n
+    assert int(count[0]) == n
+    padded = np.concatenate([host, np.full(n_blocks * block_size - n, np.nan)])
+    blocks = padded.reshape(n_blocks, block_size)
+    np.testing.assert_array_equal(cp.asnumpy(lo), np.nanmin(blocks, axis=1))
+    np.testing.assert_array_equal(cp.asnumpy(hi), np.nanmax(blocks, axis=1))
+    np.testing.assert_allclose(
+        cp.asnumpy(warp), np.nan_to_num(padded).reshape(-1, 32).sum(axis=1), rtol=1e-12
+    )

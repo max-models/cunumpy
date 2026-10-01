@@ -111,5 +111,7 @@ host kernel writes into it directly, and `to_host()` does nothing.
   contents; then call `to_device()` first if the host side changed.
 * Atomics on one hot cell serialize. If most particles hit few cells, consider
   sorting particles by cell or accumulating per block in shared memory first.
+  For a single value (a total charge, an energy), `cunumpy_block_sum_to` from
+  `cunumpy/reduce.cuh` makes one atomic add per block instead of one per thread.
 * Floating-point atomics make the summation order non-deterministic. Results
   differ between runs in the last bits; compare with a tolerance in tests.
