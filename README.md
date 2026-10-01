@@ -392,6 +392,32 @@ To find the faulting line and out-of-bounds accesses that do not crash, the
 next step is NVIDIA's memory checker:
 `CUNUMPY_CUDA_DEBUG=1 compute-sanitizer python -m pytest ...`.
 
+## Test kernel pairs
+
+`cunumpy.testing` helps to test the ports with pytest. `assert_kernels_agree`
+builds the arguments on both backends, runs the host and the CUDA kernel and
+compares the arrays they wrote; with `catalog.parity_cases()`, one
+parametrised test covers every ported kernel of a catalog. `BACKENDS` and
+`requires_cupy` parametrize tests over the backends, skipping CuPy without a
+GPU, and `device_function_kernel` wraps a `__device__` helper in an elementwise
+kernel so it can be checked against its host version without writing a test
+kernel:
+
+```python
+import pytest
+from cunumpy.testing import assert_kernels_agree
+
+
+def make_args(backend, seed):
+    x = xp.to_cunumpy(np.random.default_rng(seed).random(1000))
+    return (x, 2.0, x.size)
+
+
+@pytest.mark.parametrize("name, kernel", catalog.parity_cases())
+def test_parity(name, kernel):
+    assert_kernels_agree(kernel, make_args, n_threads=1000)
+```
+
 ## Pyodide
 
 CuNumpy supports the NumPy backend in Pyodide. It does not provide CuPy/CUDA

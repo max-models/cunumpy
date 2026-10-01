@@ -172,6 +172,12 @@ def test_catalog_on_cupy(kernel_package):
     assert cp.all(x == 5.0)
 
 
+def test_catalog_parity_cases(kernel_package):
+    cases = kernel_package.parity_cases()
+    assert cases == [("scale", kernel_package["scale"])]
+    assert KernelCatalog().parity_cases() == []
+
+
 def test_catalog_register():
     catalog = KernelCatalog()
     kernel = catalog.register(Kernel(scale))
