@@ -11,10 +11,12 @@ from .cuda_kernel import (
     CudaStruct,
     CudaStructValue,
     ctype_of,
+    cuda_include_dir,
     cuda_kernel_names,
     include_hash,
     parse_cuda_signature,
     resolve_includes,
+    write_cuda_header,
 )
 from .dispatch import Kernel, KernelCatalog
 from .kernel import KernelArguments, PyccelKernel, resolve_host_args
@@ -31,7 +33,6 @@ from .xp import (
     assert_same_backend,
     bind_local_device,
     cuda_debug,
-    cuda_include_dir,
     cupy_available,
     default_float_dtype,
     device_count,
@@ -131,6 +132,7 @@ __all__ = [
     "to_cupy",
     "to_numpy",
     "use_backend",
+    "write_cuda_header",
     "xp",
 ]
 

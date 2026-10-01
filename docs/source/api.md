@@ -651,7 +651,9 @@ kernels["shift"](x, 1.0, x.size, n_threads=x.size)
 * `block_size`: threads per block, an integer for 1D launches or a tuple of 1
   to 3 integers, e.g. `(16, 16)`; at most 1024 threads in total.
 * `options`: additional NVRTC options, e.g. `("-std=c++17",)`.
-* `include_dirs`: directories for `#include`, passed as `-I<dir>`.
+* `include_dirs`: directories for `#include`, passed as `-I<dir>`. The headers
+  shipped with cunumpy (see "CUDA headers and array views" below) are always
+  found.
 * `source_dir`: the directory the source was read from, where
   `#include "..."` files are looked up first (set by `from_file`).
 * `structs`: `CudaStruct` types that the kernel takes as parameters (by
@@ -766,6 +768,10 @@ The arguments are prepared by `kernel.prepare_args(*args)`:
     as `a[:, 0:3]`, which the kernel would read as a flat buffer (build the
     arrays with `as_device_array()` or `cupy.ascontiguousarray()`);
   * struct parameters take values of that `CudaStruct`;
+  * array view parameters (`Array2D<double>`, see "CUDA headers and array
+    views" below) take CuPy arrays of the declared dtype and number of
+    dimensions, contiguous or not, and are packed into (pointer, shape,
+    strides in elements);
   * Python scalars are cast to the declared type: `int` into integer (with a
     range check, `OverflowError`), floating-point and complex parameters,
     `float` into floating-point and complex parameters, `bool` into boolean
@@ -790,7 +796,49 @@ C types are mapped to NumPy dtypes as on Linux (LP64): `int` is `int32`,
 type of a dtype (`xp.ctype_of(np.float64) == "double"`), e.g. to generate
 source. `xp.parse_cuda_signature(source, name, *, structs=(),
 template_args=None)` returns the parsed parameters (`CudaParameter` tuples of
-`name`, `ctype`, `dtype`, `pointer`, `struct`).
+`name`, `ctype`, `dtype`, `pointer`, `struct`, `view_ndim`).
+
+### CUDA headers and array views
+
+```python
+SCALE_COLUMN = r"""
+#include <cunumpy/array_view.cuh>
+#include <cunumpy/index.cuh>
+extern "C" __global__
+void scale_column(Array2D<double> a, long long column, double factor) {
+    CUNUMPY_THREAD_1D(i, a.shape[0]);  // long long i; returns if i >= shape[0]
+    a(i, column) *= factor;
+}
+"""
+scale_column = xp.CudaKernel(SCALE_COLUMN, "scale_column")
+view = markers[::2, 1:5]                     # non-contiguous is fine
+scale_column(view, 1, 10.0, n_threads=view.shape[0])
+```
+
+cunumpy ships CUDA headers that every `CudaKernel` finds automatically;
+`xp.cuda_include_dir()` returns their directory (a `str`) for other compilers
+(`-I<dir>`).
+
+`cunumpy/array_view.cuh` defines the strided views `Array1D<T>`, `Array2D<T>`
+and `Array3D<T>`: `T* data`, `long long shape[ndim]`, `long long
+strides[ndim]` (in elements, not bytes), `operator()(i, j, ...)` returning a
+reference to the element, and `size()`. A kernel indexes `a(i, j)` like the
+pyccel kernel it is ported from indexes `a[i, j]`, without hand-passed sizes.
+Compiling with `options=("-DCUNUMPY_BOUNDS_CHECK",)` checks every index against
+the shape (an out-of-bounds index prints a message and traps the kernel).
+
+A kernel parameter or a `CudaStruct` field of type `Array<n>D<T>`, for the
+scalar C types above, takes a CuPy array of that dtype and number of dimensions
+(dtype and ndim mismatches raise `TypeError`), contiguous or not: it is packed
+by value into pointer, shape and strides with the memory layout of the C
+struct (8-byte aligned, `sizeof == 8 * (1 + 2 * ndim)`; the header checks this
+with `static_assert`). `CudaParameter.view_ndim` is the number of dimensions of
+such a parameter.
+
+`cunumpy/index.cuh` defines `CUNUMPY_THREAD_1D(i, n)` (declares `long long i`
+as the global thread index and returns if `i >= n`), `CUNUMPY_THREAD_2D(i, j,
+ni, nj)`, `CUNUMPY_THREAD_3D(i, j, k, ni, nj, nk)` and the grid-stride loop
+`CUNUMPY_GRID_STRIDE_1D(i, n) { ... }`.
 
 ### Templates and generated kernels
 
@@ -907,10 +955,13 @@ describing a set of particles, into one kernel parameter, so adding a field
 changes one definition instead of every kernel signature.
 
 `CudaStruct(name, fields)` takes the fields as `(name, C type)` pairs; scalar
-fields and pointers to the scalar types above (or `void*`) are supported.
+fields, pointers to the scalar types above (or `void*`), and array views
+`Array1D<T>` to `Array3D<T>` of those scalar types (see "CUDA headers and
+array views") are supported.
 
 * `declaration`: the C definition of the struct, to put in the CUDA source
-  or a header.
+  or a header. A struct with array view fields (`has_views`) needs
+  `#include "cunumpy/array_view.cuh"` before it; `to_header()` adds it.
 * `dtype`: the NumPy structured dtype with the memory layout of the C struct
   (C alignment and padding; pointers stored as 64-bit device addresses).
 * `fields`: the parsed fields (`CudaParameter` tuples).
@@ -918,13 +969,70 @@ fields and pointers to the scalar types above (or `void*`) are supported.
   with other fields; a kernel created with `structs=[...]` does this check.
 * Calling the struct with keyword arguments, one per field, packs the values:
   pointer fields take C-contiguous CuPy arrays of the declared dtype (never
-  copied), scalar fields are checked and cast like scalar kernel arguments.
+  copied), array view fields take CuPy arrays of the declared dtype and number
+  of dimensions (contiguous or not), scalar fields are checked and cast like
+  scalar kernel arguments.
 
 The result is a `CudaStructValue`: it keeps references to the arrays it points
 to (the packed struct only holds their addresses, so keep the value alive while
 the kernel may run), gives access to the field values with
 `value["field"]`, holds the packed struct in `value.packed`, and is flattened
 into it when passed to a kernel.
+
+### Structs from Python annotations
+
+```python
+class MarkerArguments:          # the pyccel argument class, e.g. in struphy
+    def __init__(self, markers: "float[:, :]", n_markers: int, valid: "bool[:]"):
+        ...
+
+MarkerArgs = xp.CudaStruct.from_signature(MarkerArguments.__init__, "MarkerArgs")
+print(MarkerArgs.declaration)
+# struct MarkerArgs {
+#     Array2D<double> markers;
+#     long long n_markers;
+#     Array1D<bool> valid;
+# };
+```
+
+`CudaStruct.from_signature(func, name, *, int_type="long long",
+scalar_names=None)` builds the struct from the annotated parameters of `func`
+(one field per parameter, in order; `self` is skipped), so that the Python
+class is the one definition of the arguments on the host and on the device.
+Annotations are written in the pyccel style, as strings or real types:
+`"float"`/`float` -> `double`, `"int"`/`int` -> `int_type` (`"long long"` by
+default, since pyccel integers are 64-bit), `"bool"`/`bool` -> `bool`, NumPy
+scalar types such as `np.float32` -> `float`, and an array `"float[:, :]"` ->
+`Array2D<double>` (1 to 3 dimensions; `Final[...]` and `const` are ignored).
+`scalar_names` adds or changes mappings from annotation scalar names to C
+types, e.g. `{"float": "float"}` for single precision. A parameter without
+annotation, or with an annotation that cannot be mapped, raises `ValueError`.
+
+### Generating headers
+
+```python
+xp.write_cuda_header("pusher_args.cuh", [MarkerArgs, DomainArgs])
+```
+
+`struct.to_header(path=None, *, guard=None, includes=())` returns the struct
+definition as a header: an include guard (`<NAME>_CUH` by default),
+`#include "cunumpy/array_view.cuh"` if the struct has array view fields, the
+`includes` (file names or `#include` lines), and the definition. With `path`
+the header is also written. `xp.write_cuda_header(path, structs, guard=None,
+*, includes=())` writes several structs to one header (the guard defaults to
+the file name, `pusher_args.cuh` -> `PUSHER_ARGS_CUH`) and returns the source.
+
+The pattern: write the header once (at setup, or in a script), commit it next
+to the kernels that `#include` it, and keep it in sync with a test:
+
+```python
+def test_pusher_args_header_is_up_to_date():
+    generated = xp.write_cuda_header(tmp_path / "pusher_args.cuh", [MarkerArgs, DomainArgs])
+    assert Path("kernels/pusher_args.cuh").read_text() == generated
+```
+
+Kernels created with `structs=[MarkerArgs, ...]` also check a definition in
+their own source against the Python definition (`check_source`).
 
 ## `CudaArguments`
 
