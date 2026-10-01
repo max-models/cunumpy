@@ -840,9 +840,28 @@ def test_bounds_check_traps_on_gpu():
     kernel(a, 1, 2.0, n_threads=4)
     cp.cuda.Device().synchronize()
     assert a.get()[:, 1].tolist() == [2.0] * 4
-    with pytest.raises(Exception):
-        kernel(a, 5, 2.0, n_threads=4)  # column out of bounds
-        cp.cuda.Device().synchronize()
+
+    # the trap leaves the CUDA context unusable for the rest of the process,
+    # so the out-of-bounds launch runs in a fresh interpreter
+    output = "".join(_run_python(BOUNDS_TRAP))
+    assert "no error" not in output, output
+    assert "trapped" in output, output
+
+
+BOUNDS_TRAP = f"""
+import cupy as cp
+from cunumpy import CudaKernel
+
+kernel = CudaKernel({SCALE_COLUMN!r}, "scale_column", options=("-DCUNUMPY_BOUNDS_CHECK",))
+a = cp.ones((4, 3))
+try:
+    kernel(a, 5, 2.0, n_threads=4)  # column out of bounds
+    cp.cuda.Device().synchronize()
+except Exception as error:
+    print("trapped:", type(error).__name__, flush=True)
+else:
+    print("no error", flush=True)
+"""
 
 
 # ---------------------------------------------------------------------------
