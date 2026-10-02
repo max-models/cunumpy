@@ -17,6 +17,12 @@ import array_api_compat.numpy as np
 from .transfers import _ACTIVE as _COUNTERS
 from .transfers import _describe, _record
 
+if os.environ.get("CUNUMPY_FAKE_CUPY", "").strip().lower() in ("1", "true", "yes"):
+    # tests without a GPU: a strict host stand-in for CuPy, see cunumpy._fake_cupy
+    from ._fake_cupy import install as _install_fake_cupy
+
+    _install_fake_cupy()
+
 BackendType = Literal["numpy", "cupy"]
 
 _logger = logging.getLogger(__name__)
