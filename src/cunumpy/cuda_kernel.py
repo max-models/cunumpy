@@ -2023,7 +2023,7 @@ def _is_capturing(stream: Any) -> bool:
         return bool(is_capturing())
     except (
         Exception
-    ):  # noqa: BLE001 -- e.g. the legacy null stream, which cannot capture
+    ):
         return False
 
 

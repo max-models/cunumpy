@@ -948,7 +948,7 @@ def test_from_signature_errors():
     def too_many(x: "float[:, :, :, :]"):
         pass
 
-    def unparsable(x: "float[:](order=F)"):
+    def unparsable(x: "float[:](order=F)"):  # noqa: F821  (deliberately unparsable)
         pass
 
     with pytest.raises(
@@ -1289,9 +1289,8 @@ def test_cuda_debug_context_restores(debug_off):
         assert xp.get_cuda_debug() is True
     assert xp.get_cuda_debug() is False
 
-    with pytest.raises(ValueError):
-        with xp.cuda_debug():
-            raise ValueError
+    with pytest.raises(ValueError), xp.cuda_debug():
+        raise ValueError
     assert xp.get_cuda_debug() is False  # restored after an exception too
 
 

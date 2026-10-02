@@ -64,11 +64,10 @@ def test_nvtx_range_repr():
 
 
 def test_timed_region_on_numpy():
-    with xp.use_backend("numpy"):
-        with xp.timed_region("sleep") as timing:
-            assert timing.name == "sleep"
-            assert timing.elapsed is None
-            time.sleep(0.02)
+    with xp.use_backend("numpy"), xp.timed_region("sleep") as timing:
+        assert timing.name == "sleep"
+        assert timing.elapsed is None
+        time.sleep(0.02)
 
     assert isinstance(timing, xp.Timing)
     assert timing.elapsed >= 0.02
@@ -77,18 +76,16 @@ def test_timed_region_on_numpy():
 
 
 def test_timed_region_without_sync_on_numpy():
-    with xp.use_backend("numpy"):
-        with xp.timed_region("no sync", sync=False) as timing:
-            pass
+    with xp.use_backend("numpy"), xp.timed_region("no sync", sync=False) as timing:
+        pass
     assert timing.elapsed >= 0.0
     assert timing.synced is False
 
 
 def test_timed_region_records_time_on_exception():
-    with xp.use_backend("numpy"):
-        with pytest.raises(RuntimeError, match="boom"):
-            with xp.timed_region("failing") as timing:
-                raise RuntimeError("boom")
+    with xp.use_backend("numpy"), pytest.raises(RuntimeError, match="boom"):
+        with xp.timed_region("failing") as timing:
+            raise RuntimeError("boom")
     assert timing.elapsed is not None
     assert timing.elapsed >= 0.0
 
@@ -126,9 +123,8 @@ def test_nvtx_range_nested_and_reentrant(fake_nvtx):
 
 
 def test_nvtx_range_pops_on_exception(fake_nvtx):
-    with pytest.raises(ValueError):
-        with xp.nvtx_range("failing"):
-            raise ValueError
+    with pytest.raises(ValueError), xp.nvtx_range("failing"):
+        raise ValueError
     assert fake_nvtx == [("push", "failing", -1), ("pop",)]
 
 
