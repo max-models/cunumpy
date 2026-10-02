@@ -646,8 +646,7 @@ def _view_checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
         _check_device_array(param, index, value)
         if value.ndim != ndim:
             raise TypeError(
-                f"{_describe(param, index)} must be a {ndim}D array, got "
-                f"{value.ndim}D"
+                f"{_describe(param, index)} must be a {ndim}D array, got {value.ndim}D"
             )
         itemsize = value.dtype.itemsize
         strides = [s // itemsize for s in value.strides]
@@ -2021,9 +2020,7 @@ def _is_capturing(stream: Any) -> bool:
         return False
     try:
         return bool(is_capturing())
-    except (
-        Exception
-    ):
+    except Exception:  # noqa: BLE001 -- e.g. the legacy null stream, which cannot capture
         return False
 
 

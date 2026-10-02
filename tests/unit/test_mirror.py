@@ -130,7 +130,8 @@ def test_cuda_include_dir_contains_atomic_header():
     assert include_dir.endswith(os.path.join("cuda", "include"))
     header = os.path.join(include_dir, "cunumpy", "atomic.cuh")
     assert os.path.isfile(header)
-    source = open(header).read()
+    with open(header) as f:
+        source = f.read()
     assert "cunumpy_atomic_add(double* p, double v)" in source
     assert "cunumpy_atomic_add(float* p, float v)" in source
     assert "cunumpy_atomic_add_2d(" in source

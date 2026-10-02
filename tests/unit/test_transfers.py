@@ -310,9 +310,9 @@ def test_kernel_fallback_is_counted(monkeypatch):
     x = np.zeros(2)
 
     with xp.count_transfers() as counter:
+        line = _current_line() + 2
         with pytest.warns(RuntimeWarning, match="copies its arrays"):
             kernel(x, 2)
-            line = _current_line() - 1
         kernel(x, 2)
 
     assert np.all(x == 2.0)
@@ -389,9 +389,12 @@ def test_real_kernel_fallback_is_counted():
 
     kernel = Kernel(scale, missing_cuda="fallback")
     x = cp.ones(3)
-    with xp.count_transfers() as counter, xp.use_backend("cupy"):
-        with pytest.warns(RuntimeWarning):
-            kernel(x, 2.0, 3)
+    with (
+        xp.count_transfers() as counter,
+        xp.use_backend("cupy"),
+        pytest.warns(RuntimeWarning),
+    ):
+        kernel(x, 2.0, 3)
 
     assert cp.all(x == 2.0)
     assert counter.fallbacks == 1

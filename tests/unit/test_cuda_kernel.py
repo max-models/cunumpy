@@ -467,7 +467,9 @@ PARTICLES = CudaStruct(
     ],
 )
 
-PUSH_SOURCE = PARTICLES.declaration + r"""
+PUSH_SOURCE = (
+    PARTICLES.declaration
+    + r"""
 extern "C" __global__
 void push(Particles p, double dt, double* out, unsigned long long* size) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
@@ -478,6 +480,7 @@ void push(Particles p, double dt, double* out, unsigned long long* size) {
     if (i < p.n && p.alive[i]) p.x[i] += dt * p.charge;
 }
 """
+)
 
 
 def test_struct_layout_and_declaration():
@@ -545,13 +548,13 @@ def test_struct_values():
 
 
 def test_struct_pointer_fields_must_be_contiguous():
-    values = dict(
-        n=3,
-        charge=2.0,
-        alive=FakeDeviceArray(np.bool_),
-        ids=FakeDeviceArray(np.int64),
-        weight=0.5,
-    )
+    values = {
+        "n": 3,
+        "charge": 2.0,
+        "alive": FakeDeviceArray(np.bool_),
+        "ids": FakeDeviceArray(np.int64),
+        "weight": 0.5,
+    }
     view = FakeDeviceArray(np.float64, flags=SimpleNamespace(c_contiguous=False))
     with pytest.raises(
         TypeError, match=r"argument 0 \(double\* x\) must be C-contiguous"
@@ -1221,7 +1224,11 @@ def _run_python(code, env=None):
         [str(Path(xp.__file__).parents[1]), environment.get("PYTHONPATH", "")]
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, env=environment
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=environment,
+        check=False,
     )
     return result.stdout, result.stderr
 

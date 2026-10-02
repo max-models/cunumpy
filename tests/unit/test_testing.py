@@ -74,7 +74,7 @@ def test_backends_and_marker():
     assert requires_cupy.args == (not xp.cupy_available(),)
     assert requires_cupy.kwargs["reason"] == "CuPy/GPU not available"
     with pytest.raises(AttributeError):
-        cunumpy.testing.no_such_thing
+        _ = cunumpy.testing.no_such_thing
 
 
 @pytest.mark.parametrize("backend_name", BACKENDS)

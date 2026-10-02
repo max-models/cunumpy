@@ -83,9 +83,12 @@ def test_timed_region_without_sync_on_numpy():
 
 
 def test_timed_region_records_time_on_exception():
-    with xp.use_backend("numpy"), pytest.raises(RuntimeError, match="boom"):
-        with xp.timed_region("failing") as timing:
-            raise RuntimeError("boom")
+    with (
+        xp.use_backend("numpy"),
+        pytest.raises(RuntimeError, match="boom"),
+        xp.timed_region("failing") as timing,
+    ):
+        raise RuntimeError("boom")
     assert timing.elapsed is not None
     assert timing.elapsed >= 0.0
 
