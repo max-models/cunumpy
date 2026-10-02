@@ -123,6 +123,17 @@ with xp.assert_no_transfers(): ...    # AssertionError with report if anything c
 Only transfers through cunumpy are counted (not raw `cupy.asarray`, `.get()`,
 `float(device_scalar)`, or `DeviceMirror.to_host()/to_device()`).
 
+MPI, accumulation and versions:
+
+```python
+xp.mpi_is_cuda_aware(comm)            # collective, once at startup; remembered
+with xp.mpi_buffer(a) as buf: comm.Send(buf, ...)            # host array, CUDA-aware device
+with xp.mpi_buffer(a, send=False, recv=True) as buf: ...     # array, or pinned staging copy
+xp.set_mpi_cuda_aware(True | False | None), xp.get_mpi_cuda_aware()
+xp.segment_sum(values, keys, n_segments)   # out[k] = sum(values[keys == k]); keys < 0 dropped
+xp.require_version("0.4.0")                # ImportError if cunumpy is older
+```
+
 Random numbers and dtypes:
 
 ```python
@@ -307,6 +318,24 @@ assert_kernels_agree(kernel, make_args, *, n_threads=None, grid=None, block=None
 
 k = device_function_kernel(header_source, "int f(const double* t, int p, double x)")
 k(t, p_array, x_array, out, n, n_threads=n)    # scalars become per-thread arrays
+k = device_function_kernel(src, "double g(const DomainArgs& d, double x)", structs=[DomainArgs])
+
+# <name>/<name>_test_args.py: make_args(backend, seed) + N_THREADS (or GRID), RTOL, ...
+from cunumpy.testing import parity_cases, check_parity
+@pytest.mark.parametrize("kernel", parity_cases(catalog))   # skip-marked if no test args
+def test_parity(kernel): check_parity(kernel)
+
+# without a GPU: CUNUMPY_FAKE_CUPY=1 ARRAY_BACKEND=cupy pytest   (fake CuPy: strict host
+# stand-in, no kernel launches; fake_cupy_active(); requires_cupy skips)
+
+# argument classes with a pyccel host class: one object on both backends
+class MarkerArguments(xp.PyccelStructArguments):
+    struct_name = "MarkerArgs"; fields = (("markers", "Array2D<double>"), ("Np", "long long"))
+    host_class = pusher_args_kernels.MarkerArguments    # pyccel class; cannot inherit
+    host_fields = ("markers", "Np")                      # its constructor args, in order
+MarkerArgs = xp.CudaStruct.from_pyccel_class("pusher_args_kernels.py", "MarkerArguments", "MarkerArgs")
+kernel.n_threads_from = lambda args: args[0].n_markers   # launch size from an argument
+kernel.check_finite = True                               # NaN/inf after each launch (debug)
 ```
 
 ## Canonical patterns

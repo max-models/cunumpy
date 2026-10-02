@@ -180,8 +180,9 @@ def test_kernel_signatures():
 ```
 
 It compares the parameter names of each host function (for a compiled host
-kernel, its Python source) with the parsed `__global__` signature, and lists
-every kernel that differs, e.g.
+kernel, its Python source, or the `__pyccel__/<module>.pyi` stub that pyccel
+writes next to a compiled extension module) with the parsed `__global__`
+signature, and lists every kernel that differs, e.g.
 `kernel 'push': the host kernel takes (x, v, dt, n), the CUDA kernel (x, v, n, dt)`.
 
 ## Porting status and setup
@@ -206,6 +207,23 @@ if xp.cupy_backend:
 All kernels are compiled even if one fails; the first error is raised
 afterwards. On later runs CuPy loads the binaries from its disk cache, so this
 is fast.
+
+`from_package()` also warns about kernel names that pyccel's Fortran backend
+cannot compile: the wrapper module `bind_c_<name>_kernels` must fit Fortran's
+63-character limit, so a kernel name has at most 48 characters
+(`check_name_length=False` silences it, e.g. for the C backend).
+
+## Launch size from the arguments
+
+When the number of threads is a property of an argument (the marker count of
+a particle argument object), set it once instead of at every call site:
+
+```python
+catalog["push"].cuda_kernel.n_threads_from = lambda args: args[0].n_markers
+push(args_markers, dt)  # no n_threads needed, on either backend
+```
+
+An explicit `n_threads` or `grid` still wins.
 
 ## Recommended project layout
 

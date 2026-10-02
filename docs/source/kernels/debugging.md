@@ -82,6 +82,21 @@ that differs (see [Testing kernels](testing.md)). For `__device__` helpers,
 `device_function_kernel()` exposes a single function to Python so it can be
 compared value by value with its host version.
 
+## NaN hunting: `check_finite`
+
+A kernel that reads a wrong index usually produces a NaN or inf that surfaces
+many steps later. With `check_finite`, every launch is synchronized and the
+floating-point arrays among its arguments (including the array fields of
+struct argument objects) are scanned afterwards:
+
+```python
+catalog["push"].cuda_kernel.check_finite = True
+# RuntimeError: kernel 'push' left a NaN or inf in argument 0.markers (dtype float64, shape (1000, 8))
+```
+
+It costs a synchronization and a pass over the arrays per launch, so switch it
+on for the kernel under suspicion, not in production.
+
 ## Common causes
 
 | Symptom | Likely cause |

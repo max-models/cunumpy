@@ -1,4 +1,5 @@
 # cunumpy/__init__.py
+import re as _re
 from importlib.metadata import PackageNotFoundError, version
 
 from . import xp
@@ -11,6 +12,7 @@ from .cuda_kernel import (
     CudaStruct,
     CudaStructArguments,
     CudaStructValue,
+    PyccelStructArguments,
     ctype_of,
     cuda_include_dir,
     cuda_kernel_names,
@@ -47,21 +49,25 @@ from .xp import (
     get_array_module,
     get_backend,
     get_cuda_debug,
+    get_mpi_cuda_aware,
     get_rng,
     is_cpu,
     is_gpu,
     local_rank,
     max_shared_memory_per_block,
     memory_info,
+    mpi_buffer,
     mpi_is_cuda_aware,
     nvtx_range,
     pin_memory,
     require_cuda_aware_mpi,
     same_backend,
+    segment_sum,
     set_backend,
     set_cuda_debug,
     set_device,
     set_device_for_rank,
+    set_mpi_cuda_aware,
     stream,
     synchronize,
     synchronize_for_mpi,
@@ -76,6 +82,34 @@ try:
     __version__ = version("cunumpy")
 except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
+
+
+def _version_key(text: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in _re.findall(r"\d+", text.split("+")[0])[:3])
+
+
+def require_version(minimum: str) -> None:
+    """Raise ``ImportError`` if this cunumpy is older than `minimum`.
+
+    For projects that depend on a feature of a given release, as a clearer
+    error than an ``AttributeError`` later::
+
+        import cunumpy as xp
+
+        xp.require_version("0.4.0")
+
+    Only the numeric part of the versions is compared (``0.4.0`` and
+    ``0.4.0.dev1`` compare equal). Nothing is checked when the installed
+    version is unknown (cunumpy not installed as a package).
+    """
+    if __version__.startswith("0.0.0+unknown"):
+        return
+    if _version_key(__version__) < _version_key(minimum):
+        raise ImportError(
+            f"cunumpy {minimum} or newer is required, but {__version__} is "
+            "installed: pip install --upgrade cunumpy"
+        )
+
 
 __all__ = [
     "DEBUG_OPTIONS",
@@ -92,6 +126,7 @@ __all__ = [
     "KernelArguments",
     "KernelCatalog",
     "PyccelKernel",
+    "PyccelStructArguments",
     "RandomStreams",
     "Timing",
     "TransferCounter",
@@ -116,6 +151,7 @@ __all__ = [
     "get_array_module",
     "get_backend",
     "get_cuda_debug",
+    "get_mpi_cuda_aware",
     "get_rng",
     "include_hash",
     "is_cpu",
@@ -123,6 +159,7 @@ __all__ = [
     "local_rank",
     "max_shared_memory_per_block",
     "memory_info",
+    "mpi_buffer",
     "mpi_is_cuda_aware",
     "numpy_backend",
     "nvtx_range",
@@ -131,14 +168,17 @@ __all__ = [
     "pin_memory",
     "random_streams",
     "require_cuda_aware_mpi",
+    "require_version",
     "resolve_host_args",
     "resolve_includes",
     "same_backend",
     "scipy",
+    "segment_sum",
     "set_backend",
     "set_cuda_debug",
     "set_device",
     "set_device_for_rank",
+    "set_mpi_cuda_aware",
     "stream",
     "synchronize",
     "synchronize_for_mpi",

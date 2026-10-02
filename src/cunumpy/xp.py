@@ -286,6 +286,116 @@ def synchronize_for_mpi(*arrays: Any) -> None:
     cp.cuda.get_current_stream().synchronize()
 
 
+# the result of the last mpi_is_cuda_aware() probe (or of set_mpi_cuda_aware()),
+# used by mpi_buffer(); None until one of them was called
+_MPI_CUDA_AWARE: bool | None = None
+
+
+def set_mpi_cuda_aware(value: bool | None) -> None:
+    """Tell `mpi_buffer()` whether MPI can take device buffers.
+
+    `mpi_is_cuda_aware()` records its result itself; call this instead when
+    the answer is known otherwise (e.g. from the cluster documentation, or to
+    force host staging for a test). ``None`` forgets the setting.
+    """
+    global _MPI_CUDA_AWARE
+    _MPI_CUDA_AWARE = None if value is None else bool(value)
+
+
+def get_mpi_cuda_aware() -> bool | None:
+    """The recorded answer of `mpi_is_cuda_aware()`/`set_mpi_cuda_aware()`, or None."""
+    return _MPI_CUDA_AWARE
+
+
+def _pinned_or_host_empty(shape: tuple[int, ...], dtype: Any) -> np.ndarray:
+    """A host buffer for staging, pinned when CuPy can allocate pinned memory."""
+    try:
+        import cupy as cp
+
+        nbytes = int(np.prod(shape, dtype=np.int64)) * np.dtype(dtype).itemsize
+        mem = cp.cuda.alloc_pinned_memory(max(nbytes, 1))
+        return np.frombuffer(mem, dtype, int(np.prod(shape, dtype=np.int64))).reshape(
+            shape
+        )
+    except Exception:  # noqa: BLE001 - no CuPy, no pinned memory, the fake CuPy, ...
+        return np.empty(shape, dtype=dtype)
+
+
+@contextmanager
+def mpi_buffer(
+    array: Any,
+    *,
+    send: bool = True,
+    recv: bool = False,
+    cuda_aware: bool | None = None,
+) -> Generator[Any, None, None]:
+    """The buffer to hand to MPI for `array`: the array itself, or a host copy.
+
+    One MPI call site for both backends and both kinds of MPI builds::
+
+        with xp.mpi_buffer(markers_out) as sendbuf, xp.mpi_buffer(
+            markers_in, send=False, recv=True
+        ) as recvbuf:
+            comm.Sendrecv(sendbuf, dest, recvbuf=recvbuf, source=source)
+
+    * A host array (NumPy backend, or a NumPy array on the CuPy backend) is
+      yielded unchanged.
+    * A device array with CUDA-aware MPI is yielded unchanged after
+      `synchronize_for_mpi()`, so MPI reads what the kernels wrote.
+    * A device array without CUDA-aware MPI is staged through a host buffer
+      (pinned memory when available): with `send`, the array is copied to the
+      host first (counted as a ``to_host`` transfer by `count_transfers()`);
+      with `recv`, the host buffer is copied back into the array when the
+      block ends (a ``to_device`` transfer). The device array itself is never
+      given to MPI.
+
+    Parameters
+    ----------
+    array
+        The buffer of the MPI call: a NumPy or CuPy array.
+    send : bool
+        Whether MPI reads the buffer (copy device to host before the block).
+    recv : bool
+        Whether MPI writes the buffer (copy host to device after the block).
+    cuda_aware : bool | None
+        Whether MPI can take device buffers. None uses the answer recorded by
+        `mpi_is_cuda_aware()` or `set_mpi_cuda_aware()`.
+
+    Raises
+    ------
+    RuntimeError
+        For a device array when `cuda_aware` is None and nothing was recorded:
+        call `mpi_is_cuda_aware(comm)` (collective) once at startup, or
+        `set_mpi_cuda_aware()`.
+    """
+    if not array_api_compat.is_cupy_array(array):
+        yield array
+        return
+    if cuda_aware is None:
+        cuda_aware = _MPI_CUDA_AWARE
+    if cuda_aware is None:
+        raise RuntimeError(
+            "mpi_buffer(): it is not known whether MPI can take device buffers; "
+            "call xp.mpi_is_cuda_aware(comm) once at startup (every rank), or "
+            "xp.set_mpi_cuda_aware(True/False), or pass cuda_aware="
+        )
+    if cuda_aware:
+        synchronize_for_mpi(array)
+        yield array
+        return
+    host = _pinned_or_host_empty(tuple(array.shape), array.dtype)
+    if send:
+        if _COUNTERS:
+            _record("to_host", f"mpi_buffer({_describe(array)}) staging for send")
+        synchronize_for_mpi(array)
+        host[...] = array.get()
+    yield host
+    if recv:
+        if _COUNTERS:
+            _record("to_device", f"mpi_buffer({_describe(array)}) staging for recv")
+        array.set(host)
+
+
 def _mpi_module() -> Any:
     """Import and return ``mpi4py.MPI``, with a clear error if it is missing."""
     try:
@@ -382,7 +492,9 @@ def mpi_is_cuda_aware(comm: Any = None, *, method: str = "probe") -> bool:
         _logger.debug("CUDA-aware MPI probe failed on rank %d: %r", rank, e)
         ok = False
 
-    return bool(comm.allreduce(ok, op=MPI.LAND))
+    result = bool(comm.allreduce(ok, op=MPI.LAND))
+    set_mpi_cuda_aware(result)
+    return result
 
 
 def require_cuda_aware_mpi(comm: Any = None) -> None:
@@ -869,6 +981,61 @@ def as_device_array(
             f"(shape {result.shape})"
         )
     return result
+
+
+def segment_sum(values: Any, keys: Any, n_segments: int) -> Any:
+    """Sum `values` per key: ``out[k] = sum(values[i] for keys[i] == k)``.
+
+    The reduction step of a sort-then-reduce accumulation (particles binned to
+    cells, contributions summed per cell), on either backend, with
+    ``bincount`` under the hood. For a 2D `values` the columns are summed
+    separately (one bincount per column).
+
+    Parameters
+    ----------
+    values : array
+        Shape ``(n,)`` or ``(n, m)``, on the backend of `keys`.
+    keys : array
+        Integer segment of every value, shape ``(n,)``; a negative key drops
+        the value (e.g. a particle outside the grid).
+    n_segments : int
+        Number of segments; keys must be smaller than it.
+
+    Returns
+    -------
+    array
+        Shape ``(n_segments,)`` or ``(n_segments, m)``, dtype of `values` for
+        floating-point and complex values, ``float64`` otherwise.
+    """
+    xpm = get_array_module(keys)
+    keys = xpm.asarray(keys)
+    values = xpm.asarray(values)
+    if keys.ndim != 1 or values.shape[:1] != keys.shape:
+        raise ValueError(
+            f"keys must be 1D with one entry per value, got keys {keys.shape} and "
+            f"values {values.shape}"
+        )
+    if values.ndim not in (1, 2):
+        raise ValueError(f"values must be 1D or 2D, got shape {values.shape}")
+    if bool((keys >= n_segments).any()):
+        raise ValueError(f"keys must be smaller than n_segments={n_segments}")
+    valid = keys >= 0
+    if not bool(valid.all()):
+        keys = keys[valid]
+        values = values[valid]
+    out_dtype = values.dtype if values.dtype.kind in "fc" else np.dtype(np.float64)
+    if values.ndim == 1:
+        if values.dtype.kind == "c":
+            real = xpm.bincount(keys, weights=values.real, minlength=n_segments)
+            imag = xpm.bincount(keys, weights=values.imag, minlength=n_segments)
+            return (real + 1j * imag).astype(out_dtype, copy=False)
+        return xpm.bincount(keys, weights=values, minlength=n_segments).astype(
+            out_dtype, copy=False
+        )
+    out = xpm.empty((n_segments, values.shape[1]), dtype=out_dtype)
+    for j in range(values.shape[1]):
+        out[:, j] = segment_sum(values[:, j], keys, n_segments)
+    return out
 
 
 def to_cunumpy(array: Any) -> Any:

@@ -99,6 +99,24 @@ rho.to_host()          # rho_host now holds the charge density, on both backends
 The same lines run on the NumPy backend, where `rho.device is rho_host`, the
 host kernel writes into it directly, and `to_host()` does nothing.
 
+## Sort-then-reduce: `segment_sum`
+
+The alternative to atomics: bin the particles (sort or compute a cell key per
+particle), compute each particle's contribution into an array, and sum per
+cell. The last step is `xp.segment_sum(values, keys, n_segments)`, on either
+backend:
+
+```python
+cell = ix + nx * (iy + ny * iz)                 # (n_particles,), -1 for outside
+weights = compute_weights(markers)              # (n_particles, 8), one per corner
+rho_cells = xp.segment_sum(weights, cell, nx * ny * nz)   # (n_cells, 8)
+```
+
+Negative keys drop the value; a 2D `values` is summed column by column. Measure
+both strategies on a real case before choosing: atomics are simpler and often
+fast enough, sort-then-reduce is deterministic (the summation order does not
+depend on thread scheduling).
+
 ## Guidelines
 
 * Create the mirror once and keep it with the owner of the buffer. Allocation

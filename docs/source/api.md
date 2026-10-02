@@ -27,6 +27,14 @@ NumPy and CuPy are not interchangeable for every function or object. A
 function that needs to follow an input array's location should use
 `get_array_module(array)` instead of assuming the global backend matches it.
 
+## Version
+
+### `require_version(minimum)`
+
+Raises `ImportError` if the installed cunumpy is older than `minimum`
+(`xp.require_version("0.4.0")`). Only the numeric parts are compared; nothing
+is checked when the version is unknown (not installed as a package).
+
 ## Backend selection
 
 ### `set_backend(backend)`
@@ -171,6 +179,15 @@ assert xp.get_array_backend(normalized) == xp.get_backend()
 
 Each conversion returns a suitable array; it does not change the active
 backend or mutate the source.
+
+### `segment_sum(values, keys, n_segments)`
+
+`out[k] = sum(values[i] for keys[i] == k)` on the backend of `keys`, with
+`bincount` under the hood: the reduction step of a sort-then-reduce
+accumulation. `values` has shape `(n,)` or `(n, m)` (columns summed
+separately); a negative key drops the value; keys must be smaller than
+`n_segments`. The result keeps a floating-point or complex dtype and is
+`float64` otherwise.
 
 ## Count transfers
 
@@ -444,6 +461,22 @@ comm.Sendrecv(send_buffer, dest, recvbuf=recv_buffer, source=source)
 
 No synchronization is needed after MPI returns: kernels launched afterwards see
 the received data.
+
+### `mpi_buffer(array, *, send=True, recv=False, cuda_aware=None)`
+
+Context manager yielding the buffer to pass to MPI for `array`: a host array
+unchanged; a device array unchanged (after `synchronize_for_mpi`) when MPI is
+CUDA-aware; otherwise a pinned host staging buffer, filled from the device
+before the block (`send`) and copied back after it (`recv`), both counted by
+`count_transfers()`. `cuda_aware=None` uses the answer recorded by
+`mpi_is_cuda_aware()` or `set_mpi_cuda_aware()`; without one, a device array
+raises `RuntimeError`.
+
+### `set_mpi_cuda_aware(value)`, `get_mpi_cuda_aware()`
+
+Record (or read) whether MPI can take device buffers, for `mpi_buffer()`.
+`mpi_is_cuda_aware()` records its own result; set it by hand when the answer
+is known otherwise, or `None` to forget it.
 
 ### `memory_info()`
 
@@ -1061,6 +1094,18 @@ scalar types such as `np.float32` -> `float`, and an array `"float[:, :]"` ->
 types, e.g. `{"float": "float"}` for single precision. A parameter without
 annotation, or with an annotation that cannot be mapped, raises `ValueError`.
 
+### Structs from a pyccel source file
+
+`CudaStruct.from_pyccel_class(source, class_name, name=None, *, int_type="long long",
+scalar_names=None, exclude=(), attribute_names=True)` builds a struct from the
+annotated `__init__` of a class in a `.py` file (or a source string), parsed
+with `ast` and never imported, for classes whose module is compiled by pyccel.
+Fields are named after the attributes the parameters are stored in
+(`self.<attribute> = <parameter>`; `attribute_names=False` keeps the parameter
+names), parameters in `exclude` are skipped, and the mappings are those of
+`from_signature`. Raises `ValueError` if the class or its `__init__` is missing
+or an annotation cannot be mapped.
+
 ### Generating headers
 
 ```python
@@ -1129,6 +1174,25 @@ built once per subclass when the class is defined and is the class attribute
 * A subclass that sets neither `struct_name` nor `fields` is an intermediate
   base class (its instances cannot be packed); setting only one raises
   `TypeError`. Subclasses of a complete class inherit its struct.
+
+## `PyccelStructArguments`
+
+`CudaStructArguments` with a host form (the `KernelArguments` protocol). Class
+attributes, besides `struct_name` and `fields`:
+
+* `host_class`: the class of the host argument object, e.g. the
+  pyccel-compiled class (which cannot inherit from anything).
+* `host_fields`: the attributes passed to `host_class(...)`, positionally and
+  in this order; by default the struct fields.
+* `host_copies`: whether `__host_args__()` may build the host object from host
+  copies of device arrays (default `False`: it raises on the CuPy backend).
+  Copies are counted by `count_transfers()`; results are not copied back.
+
+`__host_args__()` builds `host_class(*host_fields)` once, and again when one of
+the attributes was replaced (array identity or address, scalar value).
+`__cuda_args__()` is the packed struct. `has_device_arrays()` tells whether the
+array fields are device arrays; objects holding host arrays are copied and
+pickled without packing, and the host object is never pickled.
 
 ## `CudaArguments`
 
@@ -1286,6 +1350,18 @@ the host kernel has no Python signature (a compiled function).
 
 Properties: `name`, `host_kernel`, `cuda_kernel`, `has_cuda`, `missing_cuda`,
 `cuda_path`, `dispatch`.
+
+### Test arguments and compiled host kernels
+
+* `Kernel(..., test_args="pkg.push.push_test_args")`,
+  `Kernel.test_args_module` and `Kernel.test_args` (the module, imported on
+  first access): the test-arguments module of the kernel, set by
+  `KernelCatalog.from_package()`; see `check_parity` below.
+* `Kernel.host_parameters()` falls back to the `__pyccel__/<module>.pyi` stub
+  for a pyccel-compiled host function, so `check_signature()` works for
+  compiled kernels.
+* `Kernel.__call__` needs no `n_threads` when the CUDA kernel has
+  `n_threads_from`.
 
 ## `KernelCatalog`
 
@@ -1563,6 +1639,25 @@ parameters and return types are those `CudaKernel` supports; a struct or
 pointer return type, an unsupported parameter type, or a parameter named like
 `out_param` or `n_threads_param` raises `ValueError` (rename the generated
 parameter in that case).
+
+### `parity_cases(catalog)`, `check_parity(kernel, **overrides)`
+
+`parity_cases(catalog)` returns one `pytest.param(kernel, id=name)` per kernel
+of `catalog.parity_cases()`; a kernel without a test-arguments module is
+marked `skip` with a reason naming the missing `<name>_test_args.py`.
+`check_parity(kernel)` runs `assert_kernels_agree` with the module's
+`make_args` and the settings of `TEST_ARGS_SETTINGS` (`N_THREADS`, `GRID`,
+`BLOCK`, `RTOL`, `ATOL`, `N_CALLS`, `OUTPUTS`, `SEED`), overridden by keyword
+arguments. Raises `ValueError` without a module and `TypeError` without a
+callable `make_args`.
+
+### `install_fake_cupy()`, `fake_cupy_active()`
+
+Install the fake CuPy of `cunumpy._fake_cupy` (a strict host stand-in for CuPy
+for machines without a GPU; also installed by `CUNUMPY_FAKE_CUPY=1` when
+cunumpy is imported), and tell whether it is active. `requires_cupy` and
+`assert_kernels_agree` skip while it is. `install_fake_cupy()` raises if the
+real CuPy was imported already or cunumpy already checked for CuPy.
 
 ### `emulate_cuda_kernel(kernel, *args, n_threads=None, grid=None, block=None, compiler=None, options=())`
 

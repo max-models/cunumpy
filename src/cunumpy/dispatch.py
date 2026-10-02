@@ -21,11 +21,14 @@ folder per kernel::
 
 from __future__ import annotations
 
+import ast
 import importlib
 import inspect
+import sys
 import warnings
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import array_api_compat
@@ -60,6 +63,41 @@ def _on_device(arg: Any) -> bool:
     return callable(getattr(kind, "__cuda_args__", None)) and not callable(
         getattr(kind, "__host_args__", None)
     )
+
+
+#: Longest name a Fortran compiler accepts. pyccel names the wrapper module of a
+#: host kernel module ``bind_c_<module>``, so a kernel module name longer than
+#: 63 - len("bind_c_") characters cannot be compiled with the Fortran backend.
+FORTRAN_NAME_LIMIT = 63
+
+
+def _pyccel_stub_parameters(function: Any) -> list[str] | None:
+    """Parameter names of a pyccel-compiled function, from its ``.pyi`` stub.
+
+    pyccel writes ``__pyccel__/<module>.pyi`` next to the compiled extension
+    module; the compiled function itself has no Python signature. Returns
+    None if the stub or the function is not found.
+    """
+    module = getattr(function, "__self__", None)  # extension functions: the module
+    if not isinstance(module, ModuleType):
+        name = getattr(function, "__module__", None)
+        module = sys.modules.get(name) if isinstance(name, str) else None
+    file = getattr(module, "__file__", None)
+    func_name = getattr(function, "__name__", None)
+    if not file or not func_name:
+        return None
+    path = Path(file)
+    stub = path.parent / "__pyccel__" / (path.name.split(".")[0] + ".pyi")
+    if not stub.is_file():
+        return None
+    try:
+        tree = ast.parse(stub.read_text(), filename=str(stub))
+    except SyntaxError:
+        return None
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == func_name:
+            return [a.arg for a in node.args.posonlyargs + node.args.args]
+    return None
 
 
 def _source_root(package: str) -> Path:
@@ -127,6 +165,7 @@ class Kernel:
         cuda_path: str | Path | None = None,
         host_options: Mapping[str, Any] | None = None,
         dispatch: str = "backend",
+        test_args: str | None = None,
     ) -> None:
         if dispatch not in _DISPATCH:
             raise ValueError(f"dispatch must be one of {_DISPATCH}, got {dispatch!r}")
@@ -152,6 +191,8 @@ class Kernel:
         self._name = name if name is not None else host_kernel.name
         self._missing_cuda = missing_cuda
         self._cuda_path = None if cuda_path is None else Path(cuda_path)
+        self._test_args_module = test_args
+        self._test_args: ModuleType | None = None
         self._warned = False
 
     def __repr__(self) -> str:
@@ -198,12 +239,30 @@ class Kernel:
         """How calls choose a kernel: ``"backend"`` or ``"arrays"``."""
         return self._dispatch
 
+    @property
+    def test_args_module(self) -> str | None:
+        """Dotted name of the module with the test arguments of this kernel, or None.
+
+        Set by :meth:`KernelCatalog.from_package` for a kernel folder that
+        contains ``<name>_test_args.py``; see :func:`cunumpy.testing.check_parity`.
+        """
+        return self._test_args_module
+
+    @property
+    def test_args(self) -> ModuleType | None:
+        """The test-arguments module, imported on first access, or None."""
+        if self._test_args is None and self._test_args_module is not None:
+            self._test_args = importlib.import_module(self._test_args_module)
+        return self._test_args
+
     def host_parameters(self) -> list[str] | None:
         """The parameter names of the host kernel, or None if they are unknown.
 
         Read from the Python function (for a :class:`~cunumpy.pyccel.CompiledHostKernel`,
-        its uncompiled Python version); compiled functions without a Python
-        signature give None.
+        its uncompiled Python version), or, for a pyccel-compiled function
+        without a Python signature, from the ``__pyccel__/<module>.pyi`` stub
+        pyccel writes next to the extension module. None if neither is
+        available.
         """
         function = self._host_kernel.kernel
         if isinstance(function, CompiledHostKernel):
@@ -211,7 +270,7 @@ class Kernel:
         try:
             signature = inspect.signature(function)
         except (TypeError, ValueError):
-            return None
+            return _pyccel_stub_parameters(function)
         positional = (
             inspect.Parameter.POSITIONAL_ONLY,
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
@@ -330,10 +389,10 @@ class Kernel:
                 )
             args, _ = resolve_host_args(args)
             return kernel(*args)
-        if n_threads is None and grid is None:
+        if n_threads is None and grid is None and kernel.n_threads_from is None:
             raise ValueError(
                 f"{self._name}: n_threads is required to launch the CUDA kernel "
-                "(or pass grid)"
+                "(or pass grid, or set cuda_kernel.n_threads_from)"
             )
         return kernel(
             *args,
@@ -369,6 +428,8 @@ class KernelCatalog(Mapping):
         *,
         host_suffix: str = "_kernels",
         cuda_suffix: str = "_cuda.cu",
+        test_args_suffix: str | None = "_test_args",
+        check_name_length: bool = True,
         missing_cuda: str = "raise",
         host_options: (
             Mapping[str, Any] | Callable[[str], Mapping[str, Any]] | None
@@ -401,6 +462,16 @@ class KernelCatalog(Mapping):
             Module name suffix of the host kernels.
         cuda_suffix : str
             File name suffix of the CUDA kernels.
+        test_args_suffix : str | None
+            Module name suffix of the test arguments: ``<name><test_args_suffix>.py``
+            in the kernel's folder, if present, is recorded as
+            :attr:`Kernel.test_args_module` (imported only when a test asks for
+            it, see :func:`cunumpy.testing.check_parity`). None disables this.
+        check_name_length : bool
+            Warn about a kernel whose module name is too long for the Fortran
+            backend of pyccel: the wrapper module ``bind_c_<name><host_suffix>``
+            must fit :data:`FORTRAN_NAME_LIMIT` (63) characters, so with the
+            default suffix a kernel name has at most 48 characters.
         missing_cuda : {"raise", "fallback"}
             Passed on to every :class:`Kernel`.
         host_options : Mapping | Callable[[str], Mapping] | None
@@ -441,6 +512,23 @@ class KernelCatalog(Mapping):
             name = folder.name
             if not (folder / f"{name}{host_suffix}.py").is_file():
                 continue
+            wrapper = f"bind_c_{name}{host_suffix}"
+            if check_name_length and len(wrapper) > FORTRAN_NAME_LIMIT:
+                warnings.warn(
+                    f"kernel {name!r}: the module name {name}{host_suffix} gives the "
+                    f"pyccel Fortran wrapper module {wrapper!r} ({len(wrapper)} "
+                    f"characters), longer than Fortran's limit of "
+                    f"{FORTRAN_NAME_LIMIT}; shorten the kernel name to at most "
+                    f"{FORTRAN_NAME_LIMIT - len('bind_c_') - len(host_suffix)} "
+                    "characters or compile with the C backend",
+                    stacklevel=2,
+                )
+            test_args = None
+            if (
+                test_args_suffix is not None
+                and (folder / f"{name}{test_args_suffix}.py").is_file()
+            ):
+                test_args = f"{package}.{name}.{name}{test_args_suffix}"
             module = importlib.import_module(f"{package}.{name}.{name}{host_suffix}")
             host: Callable[..., Any] = getattr(module, name)
             if compile_host is not None:
@@ -466,6 +554,7 @@ class KernelCatalog(Mapping):
                     host_options(name) if callable(host_options) else host_options
                 ),
                 dispatch=dispatch,
+                test_args=test_args,
             )
         return cls(kernels)
 
