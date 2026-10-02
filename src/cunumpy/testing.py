@@ -5,9 +5,12 @@ every kernel: build the arguments on both backends, run the host kernel and the
 CUDA kernel, and compare what they wrote. This module provides that test
 (:func:`assert_kernels_agree`), the pytest markers to parametrize tests over
 the backends (:data:`BACKENDS`, :data:`requires_cupy`, the :func:`backend`
-fixture), and :func:`device_function_kernel`, which wraps a ``__device__``
+fixture), :func:`device_function_kernel`, which wraps a ``__device__``
 function in an elementwise ``__global__`` kernel so that device helpers can be
-tested from Python without a hand-written test kernel.
+tested from Python without a hand-written test kernel, and
+:func:`emulate_cuda_kernel` (from :mod:`cunumpy.emulation`), which runs a CUDA
+kernel on the CPU, one thread after another, so that its arithmetic can be
+checked against the host kernel in CI without a GPU.
 
 The module imports pytest only when one of its pytest objects is used, so it
 can be imported (e.g. for :func:`device_function_kernel`) without pytest, and
@@ -54,6 +57,7 @@ from .cuda_kernel import (
     _strip_comments,
 )
 from .dispatch import Kernel
+from .emulation import emulate_cuda_kernel, emulation_compiler
 from .xp import cupy_available, get_backend, to_numpy, use_backend
 
 # the pytest objects are created on first access, see __getattr__
@@ -62,6 +66,8 @@ __all__ = [
     "assert_kernels_agree",
     "backend",  # noqa: F822
     "device_function_kernel",
+    "emulate_cuda_kernel",
+    "emulation_compiler",
     "requires_cupy",  # noqa: F822
 ]
 

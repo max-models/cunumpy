@@ -421,6 +421,45 @@ def memory_info() -> tuple[int, int] | None:
     return cp.cuda.runtime.memGetInfo()
 
 
+#: Dynamic shared memory per block that every CUDA device provides without an
+#: opt-in (48 KiB); also the answer of :func:`max_shared_memory_per_block`
+#: without a GPU.
+DEFAULT_SHARED_MEMORY_PER_BLOCK = 48 * 1024
+
+
+def max_shared_memory_per_block(
+    device: int | None = None, *, opt_in: bool = False
+) -> int:
+    """Bytes of shared memory a block of a CUDA kernel may use on `device`.
+
+    Use it to decide whether a per-block buffer (e.g. a copy of a small grid
+    for a deposit) fits, instead of a hard-coded limit.
+
+    Parameters
+    ----------
+    device : int | None
+        CUDA device id; the current device by default.
+    opt_in : bool
+        The larger limit a kernel can opt in to on newer GPUs (e.g. 99 or 227
+        KiB). Using more than the default 48 KiB needs the kernel attribute
+        ``max_dynamic_shared_size_bytes`` set on the compiled ``cupy.RawKernel``
+        (``kernel.compile()``).
+
+    Returns
+    -------
+    int
+        The limit in bytes; :data:`DEFAULT_SHARED_MEMORY_PER_BLOCK` if CuPy is
+        not available (so that code choosing a GPU strategy runs everywhere).
+    """
+    if not cupy_available():
+        return DEFAULT_SHARED_MEMORY_PER_BLOCK
+    import cupy as cp
+
+    dev = cp.cuda.Device() if device is None else cp.cuda.Device(device)
+    key = "MaxSharedMemoryPerBlockOptin" if opt_in else "MaxSharedMemoryPerBlock"
+    return int(dev.attributes.get(key, DEFAULT_SHARED_MEMORY_PER_BLOCK))
+
+
 def free_memory() -> None:
     """Release all free blocks held by CuPy's memory pools (no-op on NumPy).
 

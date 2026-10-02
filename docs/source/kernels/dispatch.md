@@ -123,6 +123,67 @@ A catalog is a read-only mapping: `catalog["push"]`, `"push" in catalog`,
 `len(catalog)`, iteration over names. `KernelCatalog()` plus
 `catalog.register(kernel)` builds one by hand.
 
+## Compiled Pyccel host kernels
+
+By default the host kernel is the Python function itself, which is fine for
+NumPy-vectorized code but slow for the loops of a Pyccel kernel. With
+`compile_host`, each host kernel is compiled on its first call and cached on
+disk (`cunumpy.pyccel.compile_cached`), and `host_fallback` gives the version
+to use when compilation is not possible (no Pyccel, no compiler):
+
+```python
+import cunumpy as xp
+from cunumpy.pyccel import compile_cached
+
+from my_sim.kernels.numpy_versions import NUMPY_VERSIONS  # {"push": push_numpy, ...}
+
+catalog = xp.KernelCatalog.from_package(
+    __name__,
+    host_suffix="_pyccel",          # push/push_pyccel.py next to push/push_cuda.cu
+    compile_host=compile_cached,
+    host_fallback=NUMPY_VERSIONS,
+)
+```
+
+The build is keyed on the source and the Pyccel version, so the first run
+after an edit or an upgrade compiles again; later runs and other MPI ranks load
+the cached build. A host kernel is a `cunumpy.pyccel.CompiledHostKernel`:
+`catalog["push"].host_kernel.kernel.compiled` reports whether the compiled
+version is available.
+
+## Choosing the kernel by where the arrays are
+
+`Kernel` picks the CUDA kernel on the CuPy backend. Real codes also hand host
+arrays to kernels while CuPy is active: a diagnostic on a copy, a buffer staged
+for MPI, a path that has no GPU version yet. With `dispatch="arrays"` such calls
+run the host kernel:
+
+```python
+catalog = xp.KernelCatalog.from_package(__name__, dispatch="arrays")
+
+catalog["gather"](positions, field, result, n_threads=n)  # CUDA if positions are CuPy
+catalog["gather"](host_positions, host_field, host_result)  # host kernel, also on CuPy
+```
+
+The CUDA kernel runs if any top-level argument is on the GPU: a CuPy array, or
+a device-only argument object (`CudaArguments`, a struct value). A
+`KernelArguments` object has both forms and does not decide on its own.
+
+## Same parameters on both sides
+
+The call site is the same for both kernels only if they take the same
+parameters in the same order. Check it once, in a test:
+
+```python
+def test_kernel_signatures():
+    catalog.check_signatures()
+```
+
+It compares the parameter names of each host function (for a compiled host
+kernel, its Python source) with the parsed `__global__` signature, and lists
+every kernel that differs, e.g.
+`kernel 'push': the host kernel takes (x, v, dt, n), the CUDA kernel (x, v, n, dt)`.
+
 ## Porting status and setup
 
 ```python
@@ -155,6 +216,11 @@ is fast.
   `device_function_kernel` ([Testing kernels](testing.md)).
 * Generated struct headers (`write_cuda_header`) committed next to the kernels,
   with a test that they are up to date.
-* One parametrised parity test over `catalog.parity_cases()`.
+* One parametrised parity test over `catalog.parity_cases()`, and
+  `catalog.check_signatures()` in a test.
+* Declare the `.cu` and `.cuh` files as package data (e.g.
+  `[tool.setuptools.package-data] my_sim = ["kernels/*/*_cuda.cu",
+  "kernels/*.cuh"]`); otherwise wheels contain the host kernels but no CUDA
+  sources, and every kernel looks unported after `pip install`.
 * `missing_cuda="fallback"` while porting, `"raise"` once the time loop is fully
   ported.

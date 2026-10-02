@@ -285,6 +285,33 @@ samples = rng.uniform(size=100)
 The generator APIs are similar, but seeds do not guarantee identical random
 sequences across NumPy and CuPy.
 
+### `random_streams`
+
+```python
+xp.random_streams.seed(42, rank=comm.Get_rank(), bit_generator="PCG64")
+v = xp.random_streams.normal(0.0, v_th, (n, 3))
+rng = xp.random_streams.generator()           # numpy or cupy Generator
+own = xp.random_streams.make_generator(seed)  # a component's own generator
+```
+
+One seeded random generator per process and backend, for reproducible MPI
+runs: after `seed(value, rank)` every draw of the process comes from the stream
+`(value, rank)` (a NumPy `SeedSequence` with the rank as spawn key), so the same
+seed and number of ranks give the same results and the ranks' streams are
+independent. `seed(None)` (or no seed) seeds from the operating system.
+`bit_generator` selects the NumPy bit generator (`MT19937`, `PCG64`,
+`PCG64DXSM`, `Philox`, `SFC64`); the CuPy generator uses CuPy's default.
+`seed` also seeds NumPy's global state (and CuPy's on the CuPy backend) for code
+that calls `np.random.*` directly.
+
+`generator(backend=None)` returns the process generator of a backend (the
+active one by default), created on first use. `make_generator(seed=None,
+backend=None)` returns a separate generator for a component with a seed of its
+own, and the process generator otherwise. `random`, `standard_normal`,
+`normal` and `uniform` draw from the process generator (or `rng=`); `normal`
+and `uniform` fall back to `standard_normal` and `random` for CuPy generators
+without those methods. `xp.RandomStreams()` makes an independent instance.
+
 ### `default_float_dtype()`
 
 Returns the active backend module's `float64` dtype object. Pass it to array
@@ -430,6 +457,15 @@ Releases currently free blocks in CuPy's device and pinned-host memory pools.
 It is a no-op on NumPy. It does not release blocks still referenced by live
 arrays. CuPy normally caches freed allocations for reuse, so cached memory
 does not necessarily indicate a leak.
+
+### `max_shared_memory_per_block(device=None, *, opt_in=False)`
+
+The bytes of shared memory a block may use on the current (or given) device,
+from the device attributes, e.g. to decide whether a per-block copy of a grid
+fits. `opt_in=True` gives the larger limit of newer GPUs, which a kernel uses
+only after setting `max_dynamic_shared_size_bytes` on its compiled
+`cupy.RawKernel`. Without CuPy it returns `DEFAULT_SHARED_MEMORY_PER_BLOCK`
+(48 KiB, which every CUDA device provides).
 
 ### `cuda_include_dir()`
 
@@ -783,7 +819,9 @@ The arguments are prepared by `kernel.prepare_args(*args)`:
     and integer parameters; anything else raises `TypeError`;
   * NumPy scalars are passed as they are if their dtype matches, cast if the
     cast is safe (e.g. `np.float32` into `double`), and raise `TypeError`
-    otherwise (e.g. `np.float64` into `float`).
+    otherwise (e.g. `np.float64` into `float`). NumPy integer scalars are
+    checked by value, like Python ints: `np.int64(5)` fits an `int`
+    parameter, `np.int64(2**31)` raises `OverflowError`.
 
 This matters because `cupy.RawKernel` reads each argument with the size
 declared in the signature and does not check types: an integer passed to a
@@ -824,8 +862,9 @@ cunumpy ships CUDA headers that every `CudaKernel` finds automatically;
 `xp.cuda_include_dir()` returns their directory (a `str`) for other compilers
 (`-I<dir>`).
 
-`cunumpy/array_view.cuh` defines the strided views `Array1D<T>`, `Array2D<T>`
-and `Array3D<T>`: `T* data`, `long long shape[ndim]`, `long long
+`cunumpy/array_view.cuh` defines the strided views `Array1D<T>` to
+`Array4D<T>` (4D e.g. for a 3D grid of vector components `(nx, ny, nz,
+ncomp)`): `T* data`, `long long shape[ndim]`, `long long
 strides[ndim]` (in elements, not bytes), `operator()(i, j, ...)` returning a
 reference to the element, and `size()`. A kernel indexes `a(i, j)` like the
 pyccel kernel it is ported from indexes `a[i, j]`, without hand-passed sizes.
@@ -961,7 +1000,7 @@ changes one definition instead of every kernel signature.
 
 `CudaStruct(name, fields)` takes the fields as `(name, C type)` pairs; scalar
 fields, pointers to the scalar types above (or `void*`), and array views
-`Array1D<T>` to `Array3D<T>` of those scalar types (see "CUDA headers and
+`Array1D<T>` to `Array4D<T>` of those scalar types (see "CUDA headers and
 array views") are supported.
 
 * `declaration`: the C definition of the struct, to put in the CUDA source
@@ -1194,6 +1233,7 @@ xp.Kernel(
     missing_cuda="raise",
     cuda_path=None,
     host_options=None,
+    dispatch="backend",
 )
 ```
 
@@ -1226,8 +1266,26 @@ arrays inside application objects, and `outputs` limits the copies back to the
 device. Passing `host_options` together with a `PyccelKernel` raises
 `ValueError`; configure that `PyccelKernel` directly.
 
+`dispatch` decides which kernel a call runs. `"backend"` (default): the CUDA
+kernel on the CuPy backend, the host kernel on the NumPy backend.
+`"arrays"`: the CUDA kernel if any top-level argument lives on the GPU (a CuPy
+array, or a device-only argument object: one with `__cuda_args__()` but no
+`__host_args__()`, such as a `CudaArguments` or a struct value), else the host
+kernel, whatever the backend. Use `"arrays"` in codes that hand host arrays to
+kernels while CuPy is active (diagnostics, MPI staging, CPU fallbacks): those
+calls then run the host kernel instead of failing in the CUDA argument checks.
+`missing_cuda` applies to device arguments without a CUDA kernel.
+
+`kernel.check_signature()` checks that the host and CUDA kernels take the same
+parameters in the same order (the names of the Python host function, or of the
+uncompiled Python version of a `CompiledHostKernel`, against the parsed
+`__global__` signature) and raises `ValueError` showing both lists otherwise.
+It does nothing without a CUDA kernel, with `check_signature=False`, or when
+the host kernel has no Python signature (a compiled function).
+`kernel.host_parameters()` returns the host names, or None.
+
 Properties: `name`, `host_kernel`, `cuda_kernel`, `has_cuda`, `missing_cuda`,
-`cuda_path`.
+`cuda_path`, `dispatch`.
 
 ## `KernelCatalog`
 
@@ -1240,6 +1298,9 @@ catalog = xp.KernelCatalog.from_package(
     missing_cuda="raise",
     host_options=None,
     include_dirs=None,
+    dispatch="backend",
+    compile_host=None,
+    host_fallback=None,
     **cuda_options,
 )
 kernel = catalog["push"]
@@ -1272,8 +1333,34 @@ my_kernels/
   `my_pkg.kernels` can `#include "my_pkg/common.cuh"`. Headers found this
   way take part in the compile cache key, see "Included headers and the
   compile cache" under `CudaKernel`.
+* `dispatch`: passed on to every `Kernel` (`"backend"` or `"arrays"`).
+* `compile_host`: compiles the host kernel modules, e.g.
+  `cunumpy.pyccel.compile_cached`. Each host kernel is then a
+  `CompiledHostKernel` (see `cunumpy.pyccel` below), compiled on its first
+  call and cached on disk. Without it, the plain Python functions are called.
+* `host_fallback`: for kernels whose compilation fails, a callable with the
+  same arguments (e.g. a vectorized NumPy version), given as a mapping from
+  names or a function of the name. Without one, a failed compilation runs the
+  uncompiled Python function, with a warning.
 * `cuda_options`: passed on to `CudaKernel.from_file`, e.g. `block_size` or
   `structs`.
+
+A Pyccel package with the layout `<name>/<name>_pyccel.py` and
+`<name>/<name>_cuda.cu`, compiled host kernels and dispatch by argument:
+
+```python
+catalog = xp.KernelCatalog.from_package(
+    __name__,
+    host_suffix="_pyccel",
+    dispatch="arrays",
+    compile_host=cunumpy.pyccel.compile_cached,
+    host_fallback=NUMPY_VERSIONS,  # {"gather": gather_numpy, ...}
+)
+```
+
+`catalog.check_signatures()` runs `check_signature()` on every kernel and
+raises one `ValueError` listing every kernel whose host and CUDA parameters
+differ; call it in a unit test of a ported package.
 
 `catalog.without_cuda` lists the kernels still to port, `catalog.with_cuda`
 the ported ones. `catalog.summary()` (also `str(catalog)`) is one line on the
@@ -1294,6 +1381,31 @@ that have a CUDA kernel, for a parametrised parity test (see "Testing
 utilities"). `KernelCatalog(kernels)` and `catalog.register(kernel, name=None)`
 build a catalog by hand.
 
+## `cunumpy.pyccel`
+
+```python
+from cunumpy.pyccel import compile_cached, CompiledHostKernel
+
+compiled = compile_cached(my_kernels_module, language="c")
+kernel = CompiledHostKernel(my_kernels_module, "push", compile_cached, fallback=push_numpy)
+```
+
+`compile_cached(module, *, language="c")` returns the Pyccel-compiled form of
+a module, built on first use and cached under `CUNUMPY_KERNEL_CACHE` (default
+`~/.cache/cunumpy/kernels`). The cache key covers the module source, the
+language, the Pyccel and Python versions and the platform, so an edit or an
+upgrade rebuilds. A finished build is moved into the cache with one atomic
+rename, so concurrent processes (MPI ranks starting together) never load a
+partial build; if the cache is not writable the build goes to the temporary
+directory. Pyccel is imported only here, and remains optional.
+
+`CompiledHostKernel(module, name, compiler=compile_cached, fallback=None)` is a
+host kernel compiled on its first call. If compilation fails, it calls
+`fallback`, or else the uncompiled Python function with a `RuntimeWarning`.
+`kernel.compiled` builds and reports whether that worked (so that callers can
+choose another path), `kernel.error` is the exception of a failed build,
+`kernel.python` the uncompiled function and `kernel.build()` compiles now.
+
 ## Testing utilities
 
 ```python
@@ -1301,6 +1413,7 @@ from cunumpy.testing import (
     BACKENDS,
     assert_kernels_agree,
     device_function_kernel,
+    emulate_cuda_kernel,
     requires_cupy,
 )
 ```
@@ -1450,6 +1563,39 @@ parameters and return types are those `CudaKernel` supports; a struct or
 pointer return type, an unsupported parameter type, or a parameter named like
 `out_param` or `n_threads_param` raises `ValueError` (rename the generated
 parameter in that case).
+
+### `emulate_cuda_kernel(kernel, *args, n_threads=None, grid=None, block=None, compiler=None, options=())`
+
+```python
+x, y = rng.random(1000), np.zeros(1000)
+emulate_cuda_kernel(axpy, 2.0, x, y, 1000, n_threads=1000)
+np.testing.assert_allclose(y, 2.0 * x, rtol=1e-15)
+```
+
+Runs a `CudaKernel` on the CPU, serially, as if it were launched with `args`,
+so that CI without a GPU can compare a kernel with its host version. The
+kernel source is compiled as C++ (C++17, `CXX` or `c++`; see
+`emulation_compiler()`) with the CUDA built-ins replaced: `threadIdx`,
+`blockIdx`, `blockDim`, `gridDim`, atomics (`atomicAdd`, `atomicMin`, ...,
+plain operations), `__ldg`, `rsqrt`, `__trap` (aborts). The shipped headers
+and the kernel's include directories and `-D` options apply. Then the kernel is
+called once per thread, for every block and thread index of the launch shape.
+
+Arguments follow the signature, with NumPy arrays in place of CuPy arrays:
+pointer and view parameters (`Array1D<T>` to `Array4D<T>`) take arrays of the
+declared dtype (and ndim), passed as contiguous copies, so any strides work,
+and written back into the given arrays; scalars are checked and cast like in a
+launch. Like NVRTC by default, the compiler may fuse `a * b + c` into an FMA,
+so compare with NumPy using a tolerance of a few ulp, or pass
+`options=("-ffp-contract=off",)` for NumPy's rounding.
+
+Not emulated: concurrency (races and atomic ordering never show), block
+shared memory, `__syncthreads`, warp intrinsics, struct parameters and complex
+scalars. A kernel using shared memory, `__syncthreads`, `__syncwarp`, warp
+shuffles or votes raises `NotImplementedError` (serial threads would give
+wrong results); a kernel that does not compile, or crashes (an out-of-bounds
+index with `-DCUNUMPY_BOUNDS_CHECK`, `__trap()`), raises `RuntimeError` with
+the compiler or program output.
 
 ## `DeviceMirror`
 

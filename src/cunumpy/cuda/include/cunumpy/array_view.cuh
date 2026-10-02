@@ -1,6 +1,6 @@
 // Strided array views for CUDA kernels, passed by value from Python.
 //
-// Array1D<T>, Array2D<T> and Array3D<T> describe a (possibly non-contiguous)
+// Array1D<T> to Array4D<T> describe a (possibly non-contiguous)
 // device array the way NumPy/CuPy do: a data pointer, a shape and strides.
 // Strides are in ELEMENTS, not bytes, so that `a(i, j)` is
 // `data[i * strides[0] + j * strides[1]]`. Elements are accessed with
@@ -9,7 +9,7 @@
 //
 // The views are created on the Python side by cunumpy (a kernel parameter or a
 // CudaStruct field of type `Array2D<double>` takes a CuPy array). They are
-// passed by value, so the memory layout must be exactly, for ndim = 1, 2, 3:
+// passed by value, so the memory layout must be exactly, for ndim = 1 to 4:
 //
 //     T* data;                  // 8 bytes
 //     long long shape[ndim];    // ndim * 8 bytes
@@ -95,10 +95,33 @@ struct Array3D {
     }
 };
 
+// A 4D view, e.g. a 3D grid of vector components (nx, ny, nz, ncomp).
+template <typename T>
+struct Array4D {
+    T* data;
+    long long shape[4];
+    long long strides[4];
+
+    __device__ __forceinline__ T& operator()(long long i, long long j,
+                                             long long k, long long l) const {
+        CUNUMPY_CHECK_INDEX(i, 0, shape[0]);
+        CUNUMPY_CHECK_INDEX(j, 1, shape[1]);
+        CUNUMPY_CHECK_INDEX(k, 2, shape[2]);
+        CUNUMPY_CHECK_INDEX(l, 3, shape[3]);
+        return data[i * strides[0] + j * strides[1] + k * strides[2] + l * strides[3]];
+    }
+
+    // Number of elements.
+    __device__ __forceinline__ long long size() const {
+        return shape[0] * shape[1] * shape[2] * shape[3];
+    }
+};
+
 // The layout the Python side packs: pointer, shape, strides, 8-byte aligned.
 static_assert(sizeof(Array1D<double>) == 24, "unexpected Array1D layout");
 static_assert(sizeof(Array2D<double>) == 40, "unexpected Array2D layout");
 static_assert(sizeof(Array3D<double>) == 56, "unexpected Array3D layout");
+static_assert(sizeof(Array4D<double>) == 72, "unexpected Array4D layout");
 static_assert(sizeof(Array1D<char>) == 24, "unexpected Array1D layout");
 static_assert(alignof(Array2D<float>) == 8, "unexpected Array2D alignment");
 

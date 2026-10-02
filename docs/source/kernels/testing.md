@@ -127,6 +127,46 @@ def test_parity(name, kernel):
 ported kernel is tested as soon as its `.cu` file exists (it needs an entry in
 `MAKE_ARGS`, which fails loudly with a `KeyError` if forgotten).
 
+## Test CUDA kernels without a GPU: `emulate_cuda_kernel`
+
+On a CPU-only CI runner the parity tests are skipped, so nothing checks the
+CUDA kernels' index and weight arithmetic. `emulate_cuda_kernel` runs a kernel
+on the CPU instead: the source is compiled as C++ with the CUDA built-ins
+replaced, and the kernel is called once per thread, one thread after another.
+Compare it with the host kernel:
+
+```python
+import numpy as np
+import pytest
+
+from cunumpy.testing import emulate_cuda_kernel, emulation_compiler
+
+from my_sim.kernels import catalog
+
+pytestmark = pytest.mark.skipif(emulation_compiler() is None, reason="no C++ compiler")
+
+
+def test_gather_cuda_arithmetic():
+    rng = np.random.default_rng(0)
+    positions, field = rng.random((500, 2)), rng.normal(size=(17, 9, 2))
+    expected, result = np.zeros((500, 2)), np.zeros((500, 2))
+    catalog["gather"].host_kernel(positions, field, expected, 0.0, 0.0, 0.06, 0.11, 17, 9)
+    emulate_cuda_kernel(
+        catalog["gather"].cuda_kernel,
+        positions, field, result, 0.0, 0.0, 0.06, 0.11, 17, 9,
+        n_threads=500,
+    )
+    np.testing.assert_allclose(result, expected, rtol=1e-12, atol=1e-14)
+```
+
+Arrays are passed as NumPy arrays (any strides) and written back; scalars are
+checked like in a launch. It catches wrong indices, clamping, periodic wrapping
+and weights, i.e. most porting bugs of gather, scatter and push kernels. It
+does not emulate concurrency, shared memory, `__syncthreads` or warp
+intrinsics; kernels using the latter are refused with `NotImplementedError`, so
+those still need a GPU run. The compiler may fuse multiply-adds as NVRTC does,
+so compare with a tolerance of a few ulp.
+
 ## Test `__device__` helpers: `device_function_kernel`
 
 Helpers such as B-spline evaluation or coordinate maps are `__device__`
@@ -200,7 +240,9 @@ offsets.
 ## CI setup
 
 * Run the suite on a normal CPU runner: everything on NumPy runs, GPU cases
-  are reported as skipped.
+  are reported as skipped, and `emulate_cuda_kernel` tests check the CUDA
+  kernels' arithmetic (the runner needs a C++ compiler, which Linux images
+  have).
 * Run the same suite on a GPU runner, optionally with `CUNUMPY_CUDA_DEBUG=1` so
   kernels are bounds-checked and errors are attributed to the right launch.
 * Every so often, run the GPU suite under `compute-sanitizer` (see [Debugging

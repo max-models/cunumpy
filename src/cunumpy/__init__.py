@@ -24,6 +24,7 @@ from .fusion import fuse
 from .kernel import KernelArguments, PyccelKernel, resolve_host_args
 from .mirror import DeviceMirror
 from .petsc import petsc_vec
+from .random_streams import RandomStreams, random_streams
 from .scipy_backend import scipy
 from .transfers import (
     TransferCounter,
@@ -32,6 +33,7 @@ from .transfers import (
     count_transfers,
 )
 from .xp import (
+    DEFAULT_SHARED_MEMORY_PER_BLOCK,
     Timing,
     as_device_array,
     assert_same_backend,
@@ -49,6 +51,7 @@ from .xp import (
     is_cpu,
     is_gpu,
     local_rank,
+    max_shared_memory_per_block,
     memory_info,
     mpi_is_cuda_aware,
     nvtx_range,
@@ -76,6 +79,7 @@ except PackageNotFoundError:
 
 __all__ = [
     "DEBUG_OPTIONS",
+    "DEFAULT_SHARED_MEMORY_PER_BLOCK",
     "CudaArguments",
     "CudaKernel",
     "CudaKernelVariants",
@@ -88,6 +92,7 @@ __all__ = [
     "KernelArguments",
     "KernelCatalog",
     "PyccelKernel",
+    "RandomStreams",
     "Timing",
     "TransferCounter",
     "TransferEvent",
@@ -116,6 +121,7 @@ __all__ = [
     "is_cpu",
     "is_gpu",
     "local_rank",
+    "max_shared_memory_per_block",
     "memory_info",
     "mpi_is_cuda_aware",
     "numpy_backend",
@@ -123,6 +129,7 @@ __all__ = [
     "parse_cuda_signature",
     "petsc_vec",
     "pin_memory",
+    "random_streams",
     "require_cuda_aware_mpi",
     "resolve_host_args",
     "resolve_includes",

@@ -121,7 +121,7 @@ push(value, 0.1, n_threads=x.size)
 ```
 
 Fields may be scalars, pointers to scalar types (or `void*`), and array views
-`Array1D<T>` to `Array3D<T>`. Packing checks every field like a kernel
+`Array1D<T>` to `Array4D<T>`. Packing checks every field like a kernel
 argument: pointers need C-contiguous CuPy arrays of the declared dtype, scalars
 are range-checked and cast. Adding a field means editing the one Python
 definition; kernels that use the struct pick it up.

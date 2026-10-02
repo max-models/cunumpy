@@ -70,10 +70,24 @@ launch, then use `compute-sanitizer` ([Debugging CUDA
 kernels](kernels/debugging.md)). Restart the process afterwards; the CUDA
 context is unusable.
 
-**A change in a `.cuh` header is ignored.** Headers included with quotes are
-hashed into the compile options and trigger recompilation; headers included
-with angle brackets are not. Also, a kernel object compiles once per process:
-restart the process after editing.
+**A change in a `.cuh` header is ignored.** Headers included with quotes, and
+cunumpy's own headers in either form, are hashed into the compile options and
+trigger recompilation; other headers included with angle brackets are not.
+Also, a kernel object compiles once per process: restart the process after
+editing.
+
+**After `pip install`, every kernel has no CUDA version.** The `.cu` files are
+not package data, so the wheel contains only the Python files. Declare them,
+e.g. `[tool.setuptools.package-data] my_sim = ["kernels/*/*_cuda.cu",
+"kernels/*.cuh"]`, and check the wheel's contents.
+
+**`TypeError` for a CUDA kernel called with host arrays on the CuPy backend.**
+The code hands host arrays to a kernel while CuPy is active. Create the kernels
+with `dispatch="arrays"` so such calls run the host kernel.
+
+**`ValueError: ... the host kernel takes (...), the CUDA kernel (...)`.** From
+`check_signature()`: the two versions of a kernel take different parameters,
+so one of them reads its arguments in the wrong order. Make the lists equal.
 
 **The first time step is much slower.** Kernels are compiled on first call.
 Compile at setup with `catalog.compile_all()` or `kernel.compile()`; later runs

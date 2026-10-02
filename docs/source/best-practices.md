@@ -37,7 +37,11 @@ A condensed checklist. Each item links to the guide with the reasoning.
   kernels by profile order, switch to `"raise"` when done. ([Porting
   kernels](kernels/overview.md))
 * Keep the CUDA kernel's argument list identical to the host kernel's; put both
-  in one folder.
+  in one folder, and test it with `catalog.check_signatures()`.
+* Compile Pyccel host kernels with `from_package(..., compile_host=compile_cached)`
+  and keep a NumPy version as `host_fallback`.
+* Use `dispatch="arrays"` if host arrays reach kernels while CuPy is active.
+* Ship `.cu`/`.cuh` files as package data.
 * Declare `outputs` on host kernels so the fallback copies back only what was
   written, and never forget an argument that is written.
 * Pass device arrays to `CudaKernel`; build argument objects once with
@@ -58,6 +62,8 @@ A condensed checklist. Each item links to the guide with the reasoning.
   everywhere and use the GPU where there is one. ([Testing
   kernels](kernels/testing.md))
 * One `assert_kernels_agree` test over `catalog.parity_cases()`.
+* `emulate_cuda_kernel` tests, so CPU-only CI checks the CUDA arithmetic.
+* Seed `xp.random_streams` with `(seed, rank)` and draw only from it.
 * Debug crashes with `CUNUMPY_CUDA_DEBUG=1`, then `compute-sanitizer`.
   ([Debugging](kernels/debugging.md))
 * Time with `timed_region()`, profile with `nvtx_range()` and `nsys`.

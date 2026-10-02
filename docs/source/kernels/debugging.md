@@ -26,7 +26,7 @@ In debug mode a `CudaKernel`:
 
 * is compiled with `-lineinfo` (source lines for `compute-sanitizer` and
   profilers) and `-DCUNUMPY_BOUNDS_CHECK`, which turns on bounds checks in
-  `Array1D`/`Array2D`/`Array3D` views (an out-of-bounds index prints the index
+  `Array1D` to `Array4D` views (an out-of-bounds index prints the index
   and shape, then traps);
 * synchronizes after every launch, so a failure raises at the launch that
   caused it, as a `RuntimeError` naming the kernel and its grid and block, with

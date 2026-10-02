@@ -66,6 +66,12 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
 | launch a hand-written CUDA C kernel | `xp.CudaKernel(source, "name")` / `CudaKernel.from_file(path)` |
 | host kernel + CUDA port, chosen by backend | `xp.Kernel(host_fn, cuda_kernel_or_None)` |
 | many kernels in a package, ported incrementally | `xp.KernelCatalog.from_package(__name__, missing_cuda="fallback")` |
+| Pyccel host kernels compiled and cached, NumPy fallback | `from_package(..., host_suffix="_pyccel", compile_host=cunumpy.pyccel.compile_cached, host_fallback={...})` |
+| host arrays reach kernels while CuPy is active | `Kernel(..., dispatch="arrays")` / `from_package(..., dispatch="arrays")`: CUDA only for device arguments |
+| check host and CUDA kernels take the same parameters | `catalog.check_signatures()` (in a unit test) |
+| test a CUDA kernel's arithmetic without a GPU | `cunumpy.testing.emulate_cuda_kernel(kernel, *numpy_args, n_threads=n)` (C++ compiler; no shared memory/warp ops) |
+| shared-memory budget of a block | `xp.max_shared_memory_per_block()` (48 KiB without a GPU) |
+| reproducible random numbers per MPI rank | `xp.random_streams.seed(seed, rank=rank)`, then `xp.random_streams.normal(...)` / `.generator()` |
 | group arrays/scalars into one kernel argument | `xp.CudaArguments` (device only), `xp.KernelArguments` (host object + device tuple), `xp.CudaStruct` (C struct), `xp.CudaStructArguments` (C struct as a class) |
 | CUDA struct from a Pyccel argument class | `xp.CudaStruct.from_signature(Cls.__init__, "Name")`, `xp.write_cuda_header(...)` |
 | SciPy (sparse, sparse.linalg, fft, special, ndimage, ...) on either backend | `xp.scipy.<subpackage>.<name>` (SciPy or `cupyx.scipy`); `xp.scipy.special.available(name)` |
@@ -73,7 +79,7 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
 | PETSc solve on device arrays without copies | `xp.petsc_vec(array)` (CUDA/HIP petsc4py for CuPy arrays); `xp.synchronize()` around PETSc calls |
 | reduction inside a CUDA kernel (energy, max velocity) | `<cunumpy/reduce.cuh>`: `cunumpy_block_sum_to(out, v)`, `cunumpy_block_min/max`, `cunumpy_warp_sum` |
 | kernel writes into a host buffer owned by another library | `xp.DeviceMirror(host_array)` + `<cunumpy/atomic.cuh>` |
-| N-D indexing in CUDA, non-contiguous arrays | `Array1D<T>`..`Array3D<T>` params from `<cunumpy/array_view.cuh>` |
+| N-D indexing in CUDA, non-contiguous arrays | `Array1D<T>`..`Array4D<T>` params from `<cunumpy/array_view.cuh>` |
 | one MPI rank per GPU | `bind_local_device()` → `from mpi4py import MPI` → `require_cuda_aware_mpi()` → `synchronize_for_mpi(...)` before each call |
 | timing GPU code | `with xp.timed_region("name") as t:` → `t.elapsed` |
 | profiler markers | `xp.nvtx_range("name")` (context manager or decorator) |
@@ -194,7 +200,8 @@ xp.cuda_include_dir()
   `double`=float64, `complex<double>`=complex128, `bool`=bool; `int64_t`,
   `size_t` etc. supported.
 * Scalars: Python `int`/`float`/`bool` are cast with range checks
-  (`OverflowError`); NumPy scalars must match or cast safely.
+  (`OverflowError`); NumPy integers are checked by value too (`np.int64(5)`
+  fits `int`); other NumPy scalars must match or cast safely.
 * Pointer params: C-contiguous CuPy arrays, exact dtype (`void*` any).
   `ArrayND<T>` params: CuPy arrays of dtype T and ndim N, any strides.
 * Compiled lazily with NVRTC on first call; cached on disk by CuPy; quoted
@@ -205,7 +212,7 @@ Shipped CUDA headers (always on the include path):
 
 ```c
 #include <cunumpy/index.cuh>       // CUNUMPY_THREAD_1D(i, n) /_2D/_3D, CUNUMPY_GRID_STRIDE_1D(i, n) {...}
-#include <cunumpy/array_view.cuh>  // Array1D<T>..Array3D<T>: data, shape[], strides[] (elements), a(i, j), size()
+#include <cunumpy/array_view.cuh>  // Array1D<T>..Array4D<T>: data, shape[], strides[] (elements), a(i, j), size()
 #include <cunumpy/atomic.cuh>      // cunumpy_atomic_add(double*|float*, v), _2d(data, n1, i, j, v), _3d(...)
 ```
 
