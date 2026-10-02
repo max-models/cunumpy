@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
-from numpy import *
+from numpy import *  # noqa: F403  (re-export numpy for completions)
 
 from . import xp as xp
 from .cuda_kernel import CudaArguments as CudaArguments
