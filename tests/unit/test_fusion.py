@@ -66,6 +66,25 @@ def test_device_arrays_use_cupy_fuse_once(monkeypatch):
         p(np.ones(1), 0.0)  # host arrays: the function itself
 
 
+def test_python_scalars_take_the_dtype_of_the_arrays(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        fusion,
+        "_cupy_fuse",
+        lambda function, kernel_name: lambda *a, **k: seen.append((a, k)),
+    )
+    monkeypatch.setattr(fusion, "_is_device_array", lambda a: hasattr(a, "dtype"))
+
+    p = xp.fuse(pressure)
+    p(np.ones(2), 0.5, 5.0 / 3.0)
+    p(np.ones(2, dtype=np.float32), 0.5, gamma=2)
+    p(np.ones(2, dtype=np.int64), True, 3)
+    (a64, _), (a32, k32), (aint, _) = seen
+    assert a64[1].dtype == a64[2].dtype == np.float64 and a64[2] == 5.0 / 3.0
+    assert a32[1].dtype == k32["gamma"].dtype == np.float32
+    assert aint[1] is True and aint[2].dtype == np.int64  # bools stay Python
+
+
 def test_fuse_on_gpu():
     if not xp.cupy_available():
         pytest.skip("CuPy not installed or not functional")

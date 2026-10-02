@@ -30,6 +30,7 @@ from collections.abc import Callable
 from typing import Any, TypeVar
 
 import array_api_compat
+import numpy
 
 from .xp import use_backend
 
@@ -45,6 +46,26 @@ def _cupy_fuse(function: Callable[..., Any], kernel_name: str | None) -> Any:
     import cupy
 
     return cupy.fuse(kernel_name=kernel_name)(function)
+
+
+def _typed_scalars(args: tuple, kwargs: dict) -> tuple[tuple, dict]:
+    """Give Python scalars the dtype they would take next to the arrays.
+
+    ``cupy.fuse`` types a Python scalar on its own: ``gamma - 1.0`` with
+    ``gamma=5/3`` runs in float16. Eagerly, NumPy 2 and CuPy promote it with
+    the arrays (float64 arrays: float64), so cast it to that dtype first.
+    """
+    dtypes = [a.dtype for a in (*args, *kwargs.values()) if hasattr(a, "dtype")]
+
+    def typed(a: Any) -> Any:
+        if isinstance(a, (int, float, complex)) and not isinstance(a, bool):
+            return numpy.result_type(*dtypes, a).type(a)
+        return a
+
+    return (
+        tuple(typed(a) for a in args),
+        {k: typed(v) for k, v in kwargs.items()},
+    )
 
 
 def fuse(
@@ -67,7 +88,8 @@ def fuse(
     callable
         A function with the same signature. If any positional or keyword
         argument is a CuPy array, it calls ``cupy.fuse(function)`` (created on
-        first use, with the CuPy backend active); otherwise it calls
+        first use, with the CuPy backend active) with Python scalars cast to
+        the dtype they promote to with the array arguments; otherwise it calls
         `function` itself.
     """
     if function is None:
@@ -81,6 +103,7 @@ def fuse(
         nonlocal fused
         if not any(_is_device_array(a) for a in (*args, *kwargs.values())):
             return function(*args, **kwargs)
+        args, kwargs = _typed_scalars(args, kwargs)
         with use_backend("cupy"):
             if fused is None:
                 fused = _cupy_fuse(function, name)
