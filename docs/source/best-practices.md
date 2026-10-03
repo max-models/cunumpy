@@ -38,8 +38,9 @@ A condensed checklist. Each item links to the guide with the reasoning.
   kernels](kernels/overview.md))
 * Keep the CUDA kernel's argument list identical to the host kernel's; put both
   in one folder, and test it with `catalog.check_signatures()`.
-* Compile Pyccel host kernels with `from_package(..., compile_host=compile_cached)`
-  and keep a NumPy version as `host_fallback`.
+* Compile Pyccel host kernels ahead of time with the `pyccel` command, or at run
+  time with `from_package(..., compile_host=...)`, and keep a NumPy version as
+  `host_fallback`.
 * Use `dispatch="arrays"` if host arrays reach kernels while CuPy is active.
 * Ship `.cu`/`.cuh` files as package data.
 * Declare `outputs` on host kernels so the fallback copies back only what was

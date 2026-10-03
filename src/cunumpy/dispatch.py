@@ -34,8 +34,7 @@ from typing import Any
 import array_api_compat
 
 from .cuda_kernel import CudaKernel, _compile_in_threads
-from .kernel import PyccelKernel, resolve_host_args
-from .pyccel import CompiledHostKernel
+from .kernel import CompiledHostKernel, PyccelKernel, resolve_host_args
 from .transfers import _ACTIVE as _COUNTERS
 from .transfers import _record
 from .xp import get_backend
@@ -258,7 +257,7 @@ class Kernel:
     def host_parameters(self) -> list[str] | None:
         """The parameter names of the host kernel, or None if they are unknown.
 
-        Read from the Python function (for a :class:`~cunumpy.pyccel.CompiledHostKernel`,
+        Read from the Python function (for a :class:`~cunumpy.CompiledHostKernel`,
         its uncompiled Python version), or, for a pyccel-compiled function
         without a Python signature, from the ``__pyccel__/<module>.pyi`` stub
         pyccel writes next to the extension module. None if neither is
@@ -488,9 +487,10 @@ class KernelCatalog(Mapping):
             active backend or by where the arguments live.
         compile_host : Callable | None
             Compiles a host kernel module, e.g.
-            :func:`cunumpy.pyccel.compile_cached`. Each host kernel then is a
-            :class:`~cunumpy.pyccel.CompiledHostKernel`: compiled on its first
-            call (cached on disk by ``compile_cached``), falling back to
+            a function wrapping ``pyccel.epyccel`` (cunumpy does not compile
+            anything itself). Each host kernel then is a
+            :class:`~cunumpy.CompiledHostKernel`: compiled on its first
+            call, falling back to
             `host_fallback`, or to the uncompiled Python function with a
             warning, if compilation fails. By default the Python function is
             called as it is.

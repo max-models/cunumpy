@@ -126,47 +126,35 @@ A catalog is a read-only mapping: `catalog["push"]`, `"push" in catalog`,
 ## Compiled Pyccel host kernels
 
 By default the host kernel is the Python function itself, which is fine for
-NumPy-vectorized code but slow for the loops of a Pyccel kernel. With
-`compile_host`, each host kernel is compiled on its first call and cached on
-disk (`cunumpy.pyccel.compile_cached`), and `host_fallback` gives the version
-to use when compilation is not possible (no Pyccel, no compiler):
+NumPy-vectorized code but slow for the loops of a Pyccel kernel. cunumpy does
+not compile Pyccel code, but `from_package` can call your compile function on
+each host kernel module, on the kernel's first call, and fall back to another
+version when that fails (no Pyccel, no compiler):
 
 ```python
 import cunumpy as xp
-from cunumpy.pyccel import compile_cached
+import pyccel
 
 from my_sim.kernels.numpy_versions import NUMPY_VERSIONS  # {"push": push_numpy, ...}
+
+
+def compile_kernels(module):
+    return pyccel.epyccel(module, language="c")  # add a cache in real code
+
 
 catalog = xp.KernelCatalog.from_package(
     __name__,
     host_suffix="_pyccel",          # push/push_pyccel.py next to push/push_cuda.cu
-    compile_host=compile_cached,
+    compile_host=compile_kernels,
     host_fallback=NUMPY_VERSIONS,
 )
 ```
 
-The build is keyed on the source and the Pyccel version, so the first run
-after an edit or an upgrade compiles again and later runs load the cached
-build. A host kernel is a `cunumpy.pyccel.CompiledHostKernel`:
+Each host kernel is a `cunumpy.CompiledHostKernel`:
 `catalog["push"].host_kernel.kernel.compiled` reports whether the compiled
-version is available.
-
-With MPI, let one rank compile and the others load its build, and compile all
-kernels at setup on every rank: with a communicator the compilation is
-collective, and a kernel first called on only some ranks would leave them
-waiting for the others.
-
-```python
-import functools
-
-catalog = xp.KernelCatalog.from_package(
-    __name__,
-    host_suffix="_pyccel",
-    compile_host=functools.partial(compile_cached, comm=MPI.COMM_WORLD),
-)
-for kernel in catalog.values():  # collectively, at setup
-    kernel.host_kernel.kernel.build()
-```
+version is available. Note that `epyccel` compiles again on every call; a
+code that compiles at run time usually keeps the builds in an on-disk cache
+keyed on the module source, so that only the first run after an edit compiles.
 
 Packages that compile their kernels at install time with the `pyccel` command
 do not need `compile_host`: the compiled modules are imported like the Python

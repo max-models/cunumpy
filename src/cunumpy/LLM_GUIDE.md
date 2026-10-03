@@ -66,7 +66,7 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
 | launch a hand-written CUDA C kernel | `xp.CudaKernel(source, "name")` / `CudaKernel.from_file(path)` |
 | host kernel + CUDA port, chosen by backend | `xp.Kernel(host_fn, cuda_kernel_or_None)` |
 | many kernels in a package, ported incrementally | `xp.KernelCatalog.from_package(__name__, missing_cuda="fallback")` |
-| Pyccel host kernels compiled and cached, NumPy fallback | `from_package(..., host_suffix="_pyccel", compile_host=cunumpy.pyccel.compile_cached, host_fallback={...})` |
+| host kernels compiled at first call (your compile function), NumPy fallback | `from_package(..., host_suffix="_pyccel", compile_host=my_compile, host_fallback={...})` -> `xp.CompiledHostKernel` |
 | host arrays reach kernels while CuPy is active | `Kernel(..., dispatch="arrays")` / `from_package(..., dispatch="arrays")`: CUDA only for device arguments |
 | check host and CUDA kernels take the same parameters | `catalog.check_signatures()` (in a unit test) |
 | test a CUDA kernel's arithmetic without a GPU | `cunumpy.testing.emulate_cuda_kernel(kernel, *numpy_args, n_threads=n)` (C++ compiler; no shared memory/warp ops) |

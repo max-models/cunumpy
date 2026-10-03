@@ -1410,10 +1410,11 @@ my_kernels/
   way take part in the compile cache key, see "Included headers and the
   compile cache" under `CudaKernel`.
 * `dispatch`: passed on to every `Kernel` (`"backend"` or `"arrays"`).
-* `compile_host`: compiles the host kernel modules, e.g.
-  `cunumpy.pyccel.compile_cached`. Each host kernel is then a
-  `CompiledHostKernel` (see `cunumpy.pyccel` below), compiled on its first
-  call and cached on disk. Without it, the plain Python functions are called.
+* `compile_host`: your function that compiles a host kernel module (cunumpy
+  does not compile anything itself), e.g. a wrapper around `pyccel.epyccel`
+  with a cache. Each host kernel is then a `CompiledHostKernel` (below),
+  compiled on its first call. Without it, the plain Python functions are
+  called.
 * `host_fallback`: for kernels whose compilation fails, a callable with the
   same arguments (e.g. a vectorized NumPy version), given as a mapping from
   names or a function of the name. Without one, a failed compilation runs the
@@ -1429,7 +1430,7 @@ catalog = xp.KernelCatalog.from_package(
     __name__,
     host_suffix="_pyccel",
     dispatch="arrays",
-    compile_host=cunumpy.pyccel.compile_cached,
+    compile_host=my_pkg.compile_kernels,  # e.g. pyccel.epyccel with a cache
     host_fallback=NUMPY_VERSIONS,  # {"gather": gather_numpy, ...}
 )
 ```
@@ -1457,39 +1458,23 @@ that have a CUDA kernel, for a parametrised parity test (see "Testing
 utilities"). `KernelCatalog(kernels)` and `catalog.register(kernel, name=None)`
 build a catalog by hand.
 
-## `cunumpy.pyccel`
+## `CompiledHostKernel`
 
 ```python
-from cunumpy.pyccel import compile_cached, CompiledHostKernel
-
-compiled = compile_cached(my_kernels_module, language="c", comm=MPI.COMM_WORLD)
-kernel = CompiledHostKernel(my_kernels_module, "push", compile_cached, fallback=push_numpy)
+kernel = xp.CompiledHostKernel(my_kernels_module, "push", compiler, fallback=push_numpy)
+kernel(*args)
 ```
 
-`compile_cached(module, *, language="c", comm=None, root=0)` returns the
-Pyccel-compiled form of a module, built on first use and cached under
-`CUNUMPY_KERNEL_CACHE` (default `~/.cache/cunumpy/kernels`). It is for kernels
-compiled at run time: `pyccel.epyccel` compiles again on every call (under a new
-random module name), so without a cache every process start pays for the
-build. The cache key covers the module source, the language, the Pyccel and
-Python versions and the platform, so an edit or an upgrade builds again. With
-`comm` (collective), only the `root` rank compiles on a cache miss; the others
-wait, then load the build (on a shared file system; with node-local caches they
-compile their own copy), and a failed build raises on every rank. If the cache
-is not writable, the build goes to the temporary directory. Pyccel is imported
-only here, and remains optional.
-
-Packages that compile their kernels at install time do not need it: the
-`pyccel` command (`pyccel my_kernels.py`) writes the extension next to the
-source, and a plain import loads it. Note that such an extension is not tied to
-the source; run `pyccel` again after editing.
-
-`CompiledHostKernel(module, name, compiler=compile_cached, fallback=None)` is a
-host kernel compiled on its first call. If compilation fails, it calls
-`fallback`, or else the uncompiled Python function with a `RuntimeWarning`.
-`kernel.compiled` builds and reports whether that worked (so that callers can
-choose another path), `kernel.error` is the exception of a failed build,
-`kernel.python` the uncompiled function and `kernel.build()` compiles now.
+A host kernel compiled on its first call, for `KernelCatalog.from_package(...,
+compile_host=...)` or by hand. cunumpy does not compile anything itself:
+`compiler(module)` is your function returning the compiled form of the module
+(with the same function names), e.g. a wrapper around `pyccel.epyccel` with an
+on-disk cache, or one that imports modules compiled ahead of time with the
+`pyccel` command. If compilation fails, the kernel calls `fallback`, or else
+the uncompiled Python function with a `RuntimeWarning`. `kernel.compiled`
+builds and reports whether that worked (so that callers can choose another
+path), `kernel.error` is the exception of a failed build, `kernel.python` the
+uncompiled function and `kernel.build()` compiles now.
 
 ## Testing utilities
 

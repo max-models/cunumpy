@@ -23,7 +23,7 @@ from .cuda_kernel import (
 )
 from .dispatch import Kernel, KernelCatalog
 from .fusion import fuse
-from .kernel import KernelArguments, PyccelKernel, resolve_host_args
+from .kernel import CompiledHostKernel, KernelArguments, PyccelKernel, resolve_host_args
 from .mirror import DeviceMirror
 from .petsc import petsc_vec
 from .random_streams import RandomStreams, random_streams
@@ -114,6 +114,7 @@ def require_version(minimum: str) -> None:
 __all__ = [
     "DEBUG_OPTIONS",
     "DEFAULT_SHARED_MEMORY_PER_BLOCK",
+    "CompiledHostKernel",
     "CudaArguments",
     "CudaKernel",
     "CudaKernelVariants",

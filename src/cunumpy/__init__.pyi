@@ -24,6 +24,7 @@ from .cuda_kernel import write_cuda_header as write_cuda_header
 from .dispatch import Kernel as Kernel
 from .dispatch import KernelCatalog as KernelCatalog
 from .fusion import fuse as fuse
+from .kernel import CompiledHostKernel as CompiledHostKernel
 from .kernel import PyccelKernel as PyccelKernel
 from .mirror import DeviceMirror as DeviceMirror
 from .petsc import petsc_vec as petsc_vec
