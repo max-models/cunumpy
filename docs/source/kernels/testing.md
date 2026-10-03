@@ -1,12 +1,12 @@
 # Testing kernels
 
 A GPU port is only as trustworthy as its comparison with the CPU version.
-`cunumpy.testing` provides pytest helpers for exactly that, designed so that the
+`cunumpy.kernel_testing` provides pytest helpers for exactly that, designed so that the
 same test suite runs on a laptop without a GPU (GPU cases are skipped) and on a
 GPU runner (everything runs).
 
 ```python
-from cunumpy.testing import (
+from cunumpy.kernel_testing import (
     BACKENDS,
     assert_kernels_agree,
     backend,
@@ -15,7 +15,7 @@ from cunumpy.testing import (
 )
 ```
 
-`cunumpy.testing` is not imported by `import cunumpy`, and it imports pytest only
+`cunumpy.kernel_testing` is not imported by `import cunumpy`, and it imports pytest only
 when one of its pytest objects is used.
 
 ## Run a test on both backends
@@ -26,7 +26,7 @@ when one of its pytest objects is used.
 import pytest
 
 import cunumpy as xp
-from cunumpy.testing import BACKENDS
+from cunumpy.kernel_testing import BACKENDS
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -40,7 +40,7 @@ whole test. Import it into `conftest.py` to make it available everywhere:
 
 ```python
 # conftest.py
-from cunumpy.testing import backend  # noqa: F401
+from cunumpy.kernel_testing import backend  # noqa: F401
 ```
 
 ```python
@@ -55,7 +55,7 @@ def test_energy_is_conserved(backend):
 `requires_cupy` is a plain skip marker for GPU-only tests:
 
 ```python
-from cunumpy.testing import requires_cupy
+from cunumpy.kernel_testing import requires_cupy
 
 
 @requires_cupy
@@ -70,7 +70,7 @@ def test_kernel_compiles():
 import numpy as np
 
 import cunumpy as xp
-from cunumpy.testing import assert_kernels_agree
+from cunumpy.kernel_testing import assert_kernels_agree
 
 
 def make_axpy_args(backend, seed):
@@ -150,7 +150,7 @@ def make_args(backend, seed):
 test asks for them), and the parity test of the whole package becomes
 
 ```python
-from cunumpy.testing import check_parity, parity_cases
+from cunumpy.kernel_testing import check_parity, parity_cases
 
 
 @pytest.mark.parametrize("kernel", parity_cases(catalog))
@@ -176,7 +176,7 @@ Compare it with the host kernel:
 import numpy as np
 import pytest
 
-from cunumpy.testing import emulate_cuda_kernel, emulation_compiler
+from cunumpy.kernel_testing import emulate_cuda_kernel, emulation_compiler
 
 from my_sim.kernels import catalog
 
@@ -219,7 +219,7 @@ from pathlib import Path
 import numpy as np
 
 import cunumpy as xp
-from cunumpy.testing import device_function_kernel, requires_cupy
+from cunumpy.kernel_testing import device_function_kernel, requires_cupy
 
 BSPLINES = Path("my_sim/kernels/common/bsplines.cuh").read_text()
 
@@ -273,12 +273,12 @@ them), CuPy functions reject NumPy arrays and lists, mixing the two raises,
 reductions return 0-d arrays, and arrays have `data.ptr`, `device` and
 `__cuda_array_interface__`. Kernels cannot run: `RawKernel` raises
 `NotImplementedError`, `requires_cupy` skips and `assert_kernels_agree`
-skips while the fake is active (`cunumpy.testing.fake_cupy_active()`). It
+skips while the fake is active (`cunumpy.kernel_testing.fake_cupy_active()`). It
 can also be installed from code, before the first backend use:
 
 ```python
 # conftest.py
-from cunumpy.testing import install_fake_cupy
+from cunumpy.kernel_testing import install_fake_cupy
 
 install_fake_cupy()
 ```
@@ -296,7 +296,7 @@ def test_time_step_has_no_transfers():
     with xp.use_backend("cupy"):
         state = make_state()
         step(state, 1e-3)              # warm-up: compilation, allocations
-        with xp.assert_no_transfers():
+        with xp.profiling.assert_no_transfers():
             step(state, 1e-3)
 ```
 

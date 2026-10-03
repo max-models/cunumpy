@@ -1,11 +1,10 @@
-"""Tests for `xp.random_streams`: one seeded generator per process and backend."""
+"""Tests for `xp.rng.random_streams`: one seeded generator per process and backend."""
 
 import numpy as np
 import pytest
 
 import cunumpy as xp
-from cunumpy import RandomStreams, random_streams
-from cunumpy.random_streams import BIT_GENERATORS
+from cunumpy.rng import BIT_GENERATORS, RandomStreams, random_streams
 
 
 @pytest.fixture
@@ -24,7 +23,7 @@ def _draws(streams):
 
 def test_exported():
     assert isinstance(random_streams, RandomStreams)
-    assert "random_streams" in xp.__all__
+    assert "random_streams" in xp.rng.__all__
     assert repr(RandomStreams()) == "RandomStreams(not seeded)"
 
 

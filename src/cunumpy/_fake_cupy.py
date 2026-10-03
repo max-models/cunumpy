@@ -13,10 +13,10 @@ matters for finding host/device bugs:
   like CuPy does; mixing CuPy and NumPy arrays in arithmetic raises;
 * reductions and scalar indexing return 0-d arrays, not Python scalars;
 * arrays have ``data.ptr``, ``device`` and ``__cuda_array_interface__``, so
-  :class:`~cunumpy.CudaStruct` packing and the argument checks of
-  :class:`~cunumpy.CudaKernel` work;
+  :class:`~cunumpy.cuda.CudaStruct` packing and the argument checks of
+  :class:`~cunumpy.cuda.CudaKernel` work;
 * CUDA kernels cannot run: ``RawKernel`` and friends raise
-  ``NotImplementedError`` when called, and :func:`cunumpy.testing.requires_cupy`
+  ``NotImplementedError`` when called, and :func:`cunumpy.kernel_testing.requires_cupy`
   skips tests while the fake is active.
 
 Activate it before CuPy or cunumpy's backend is first used, either with the

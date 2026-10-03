@@ -35,7 +35,7 @@ compare-and-swap loop.
 ## `DeviceMirror`
 
 ```python
-mirror = xp.DeviceMirror(host_array)
+mirror = xp.memory.DeviceMirror(host_array)
 ```
 
 | Member | CuPy backend | NumPy backend |
@@ -79,11 +79,11 @@ def deposit_host(x, w, rho, n_particles, n_cells, dx):
     np.add.at(rho, cells[inside], w[:n_particles][inside] / dx)
 
 
-deposit = xp.Kernel(deposit_host, xp.CudaKernel(DEPOSIT, "deposit"))
+deposit = xp.kernels.Kernel(deposit_host, xp.cuda.CudaKernel(DEPOSIT, "deposit"))
 
 # owned by a host library, e.g. a distributed vector
 rho_host = np.zeros(64)
-rho = xp.DeviceMirror(rho_host)
+rho = xp.memory.DeviceMirror(rho_host)
 
 rng = np.random.default_rng(0)
 x = xp.to_cunumpy(rng.uniform(0.0, 1.0, 10_000))
@@ -103,13 +103,13 @@ host kernel writes into it directly, and `to_host()` does nothing.
 
 The alternative to atomics: bin the particles (sort or compute a cell key per
 particle), compute each particle's contribution into an array, and sum per
-cell. The last step is `xp.segment_sum(values, keys, n_segments)`, on either
+cell. The last step is `xp.algorithms.segment_sum(values, keys, n_segments)`, on either
 backend:
 
 ```python
 cell = ix + nx * (iy + ny * iz)                 # (n_particles,), -1 for outside
 weights = compute_weights(markers)              # (n_particles, 8), one per corner
-rho_cells = xp.segment_sum(weights, cell, nx * ny * nz)   # (n_cells, 8)
+rho_cells = xp.algorithms.segment_sum(weights, cell, nx * ny * nz)   # (n_cells, 8)
 ```
 
 Negative keys drop the value; a 2D `values` is summed column by column. Measure

@@ -147,7 +147,7 @@ def test_set_backend():
 def test_device_count_is_zero_without_cupy():
     if xp.cupy_available():
         pytest.skip("CuPy is installed/functional; device_count() may be > 0")
-    assert xp.device_count() == 0
+    assert xp.cuda.device_count() == 0
 
 
 def test_device_count_matches_cupy_when_available():
@@ -155,39 +155,39 @@ def test_device_count_matches_cupy_when_available():
         pytest.skip("CuPy not installed or not functional")
     import cupy as cp
 
-    assert xp.device_count() == cp.cuda.runtime.getDeviceCount()
+    assert xp.cuda.device_count() == cp.cuda.runtime.getDeviceCount()
 
 
 def test_set_device_for_rank_is_noop_without_gpus():
     if xp.cupy_available():
         pytest.skip("CuPy is installed/functional")
-    assert xp.set_device_for_rank(3) == 0
+    assert xp.cuda.set_device_for_rank(3) == 0
 
 
 def test_set_device_for_rank_wraps_around_devices_per_node():
     if not xp.cupy_available():
         pytest.skip("CuPy not installed or not functional")
-    n = xp.device_count()
-    assert xp.set_device_for_rank(n, devices_per_node=n) == 0
-    assert xp.set_device_for_rank(n + 1, devices_per_node=n) == 1 % n
+    n = xp.cuda.device_count()
+    assert xp.cuda.set_device_for_rank(n, devices_per_node=n) == 0
+    assert xp.cuda.set_device_for_rank(n + 1, devices_per_node=n) == 1 % n
 
 
 def test_memory_info_is_none_on_numpy_backend():
     with xp.use_backend("numpy"):
-        assert xp.memory_info() is None
+        assert xp.cuda.memory_info() is None
 
 
 def test_memory_info_returns_free_and_total_on_cupy():
     if not xp.cupy_available():
         pytest.skip("CuPy not installed or not functional")
     with xp.use_backend("cupy"):
-        free, total = xp.memory_info()
+        free, total = xp.cuda.memory_info()
         assert 0 <= free <= total
 
 
 def test_free_memory_is_noop_on_numpy_backend():
     with xp.use_backend("numpy"):
-        xp.free_memory()  # must not raise
+        xp.cuda.free_memory()  # must not raise
 
 
 def test_free_memory_does_not_increase_cupy_pool_cache():
@@ -200,7 +200,7 @@ def test_free_memory_does_not_increase_cupy_pool_cache():
         del array
         pool = cp.get_default_memory_pool()
         cached_before = pool.free_bytes()
-        xp.free_memory()  # must not raise
+        xp.cuda.free_memory()  # must not raise
         # CuPy can retain split blocks even after free_all_blocks().
         assert pool.free_bytes() <= cached_before
 
@@ -209,19 +209,19 @@ def test_pin_memory_requires_cupy():
     if xp.cupy_available():
         pytest.skip("CuPy is installed/functional")
     with pytest.raises(ImportError):
-        xp.pin_memory(np.ones(3))
+        xp.cuda.pin_memory(np.ones(3))
 
 
 def test_pin_memory_round_trips_values():
     if not xp.cupy_available():
         pytest.skip("CuPy not installed or not functional")
     arr = np.array([1.0, 2.0, 3.0])
-    pinned = xp.pin_memory(arr)
+    pinned = xp.cuda.pin_memory(arr)
     assert np.array_equal(pinned, arr)
 
 
 def test_stream_is_noop_on_numpy_backend():
-    with xp.use_backend("numpy"), xp.stream() as s:
+    with xp.use_backend("numpy"), xp.cuda.stream() as s:
         assert s is None
 
 
@@ -231,7 +231,7 @@ def test_stream_yields_a_cupy_stream_on_cupy_backend():
     import cupy as cp
 
     with xp.use_backend("cupy"):
-        with xp.stream() as s:
+        with xp.cuda.stream() as s:
             assert isinstance(s, cp.cuda.Stream)
             arr = xp.zeros(10)
             assert xp.is_gpu(arr)
@@ -240,7 +240,7 @@ def test_stream_yields_a_cupy_stream_on_cupy_backend():
 
 def test_get_rng_returns_numpy_generator_on_numpy_backend():
     with xp.use_backend("numpy"):
-        rng = xp.get_rng(42)
+        rng = xp.rng.get_rng(42)
         assert isinstance(rng, np.random.Generator)
         assert rng.random(3).shape == (3,)
 
@@ -251,14 +251,14 @@ def test_get_rng_returns_cupy_generator_on_cupy_backend():
     import cupy as cp
 
     with xp.use_backend("cupy"):
-        rng = xp.get_rng(42)
+        rng = xp.rng.get_rng(42)
         assert isinstance(rng, cp.random.Generator)
 
 
 def test_get_rng_is_reproducible_given_a_seed():
     with xp.use_backend("numpy"):
-        a = xp.get_rng(123).random(5)
-        b = xp.get_rng(123).random(5)
+        a = xp.rng.get_rng(123).random(5)
+        b = xp.rng.get_rng(123).random(5)
         assert np.array_equal(a, b)
 
 
@@ -354,7 +354,7 @@ def test_invalid_backend_raises_value_error():
 def test_set_device_is_noop_on_numpy():
     with xp.use_backend("numpy"):
         # Must not raise even though there's no GPU to select on the CPU backend.
-        xp.set_device(0)
+        xp.cuda.set_device(0)
 
 
 def test_set_device_selects_cuda_device():
@@ -364,7 +364,7 @@ def test_set_device_selects_cuda_device():
         pytest.skip("CuPy not installed")
 
     with xp.use_backend("cupy"):
-        xp.set_device(0)
+        xp.cuda.set_device(0)
         assert cp.cuda.Device().id == 0
 
 
@@ -398,8 +398,10 @@ def test_synchronize_warns_on_attribute_error(monkeypatch):
 
 def test_max_shared_memory_per_block_without_a_gpu(monkeypatch):
     monkeypatch.setattr(xp.xp, "cupy_available", lambda: False)
-    assert xp.max_shared_memory_per_block() == xp.DEFAULT_SHARED_MEMORY_PER_BLOCK
-    assert xp.max_shared_memory_per_block(opt_in=True) == 48 * 1024
+    assert (
+        xp.cuda.max_shared_memory_per_block() == xp.cuda.DEFAULT_SHARED_MEMORY_PER_BLOCK
+    )
+    assert xp.cuda.max_shared_memory_per_block(opt_in=True) == 48 * 1024
 
 
 def test_max_shared_memory_per_block_reads_the_device(monkeypatch):
@@ -417,15 +419,16 @@ def test_max_shared_memory_per_block_reads_the_device(monkeypatch):
     cupy.cuda = types.SimpleNamespace(Device=Device)
     monkeypatch.setitem(sys.modules, "cupy", cupy)
     monkeypatch.setattr(xp.xp, "cupy_available", lambda: True)
-    assert xp.max_shared_memory_per_block() == 49152
-    assert xp.max_shared_memory_per_block(1) == 49153
-    assert xp.max_shared_memory_per_block(opt_in=True) == 232448
+    assert xp.cuda.max_shared_memory_per_block() == 49152
+    assert xp.cuda.max_shared_memory_per_block(1) == 49153
+    assert xp.cuda.max_shared_memory_per_block(opt_in=True) == 232448
 
 
 def test_max_shared_memory_per_block_on_gpu():
     if not xp.cupy_available():
         pytest.skip("CuPy not installed or not functional")
-    assert xp.max_shared_memory_per_block() >= 48 * 1024
+    assert xp.cuda.max_shared_memory_per_block() >= 48 * 1024
     assert (
-        xp.max_shared_memory_per_block(opt_in=True) >= xp.max_shared_memory_per_block()
+        xp.cuda.max_shared_memory_per_block(opt_in=True)
+        >= xp.cuda.max_shared_memory_per_block()
     )

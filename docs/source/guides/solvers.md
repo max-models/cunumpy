@@ -3,8 +3,8 @@
 Particle pushes and deposits are only part of a plasma code. Field solves need
 sparse matrices, iterative solvers and FFTs; fluid (MHD) updates are long
 chains of pointwise operations; diagnostics reduce over all cells or
-particles. This page covers the three tools for that: `xp.scipy`, `xp.fuse`
-and `xp.petsc_vec`, plus in-kernel reductions with `cunumpy/reduce.cuh`.
+particles. This page covers the three tools for that: `xp.scipy`, `xp.kernels.fuse`
+and `xp.petsc.petsc_vec`, plus in-kernel reductions with `cunumpy/reduce.cuh`.
 
 ## SciPy on both backends: `xp.scipy`
 
@@ -53,21 +53,21 @@ def periodic_poisson(rho, length):
   (`erf`, `erfc`, Bessel functions `i0`, `i1`, `k0`, ...) are in
   `xp.scipy.special` on both backends.
 
-## Fused elementwise updates: `xp.fuse`
+## Fused elementwise updates: `xp.kernels.fuse`
 
 On the GPU, `(gamma - 1) * (E - 0.5 * rho * u**2)` runs as five kernels, each
-reading and writing a full temporary array. `xp.fuse` turns the whole
+reading and writing a full temporary array. `xp.kernels.fuse` turns the whole
 function into one kernel with `cupy.fuse` when it is called with CuPy arrays,
 and calls it unchanged with NumPy arrays:
 
 ```python
-@xp.fuse
+@xp.kernels.fuse
 def pressure(rho, mom, energy, gamma):
     u = mom / rho
     return (gamma - 1.0) * (energy - 0.5 * rho * u * u)
 
 
-@xp.fuse
+@xp.kernels.fuse
 def maxwellian(v, n, u, v_th):
     return n / (xp.sqrt(2.0 * np.pi) * v_th) * xp.exp(-0.5 * ((v - u) / v_th) ** 2)
 
@@ -78,12 +78,12 @@ p = pressure(rho, mom, energy, 5.0 / 3.0)
 Memory-bound chains like these typically get several times faster. The
 function must be elementwise: arithmetic, comparisons, ufuncs (`xp.exp`,
 `xp.sqrt`, ...), `xp.where`; no `if` on array values, no indexing. Test the
-CuPy path (`cunumpy.testing.BACKENDS`): `cupy.fuse` reports a function it
+CuPy path (`cunumpy.kernel_testing.BACKENDS`): `cupy.fuse` reports a function it
 cannot trace at the first call with CuPy arrays.
 
-## PETSc without copies: `xp.petsc_vec`
+## PETSc without copies: `xp.petsc.petsc_vec`
 
-When the field solve goes through PETSc, `xp.petsc_vec(array)` wraps an
+When the field solve goes through PETSc, `xp.petsc.petsc_vec(array)` wraps an
 array as a PETSc vector that uses the array's memory, a CUDA vector for a
 CuPy array. The deposit writes into `rho`, PETSc reads it and writes `phi`,
 the gather reads `phi`, and no data leaves the GPU:
@@ -93,7 +93,7 @@ from petsc4py import PETSc
 
 rho = xp.zeros(n_local)
 phi = xp.zeros(n_local)
-rho_vec, phi_vec = xp.petsc_vec(rho), xp.petsc_vec(phi)
+rho_vec, phi_vec = xp.petsc.petsc_vec(rho), xp.petsc.petsc_vec(phi)
 
 A = assemble_laplacian()      # a PETSc Mat
 A.setType("aijcusparse")      # keep the matrix on the GPU too

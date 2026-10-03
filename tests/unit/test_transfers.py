@@ -1,4 +1,4 @@
-"""Tests for `cunumpy.count_transfers` and `cunumpy.assert_no_transfers`.
+"""Tests for `cunumpy.profiling.count_transfers` and `cunumpy.profiling.assert_no_transfers`.
 
 Without a GPU there are no real device arrays, so most tests simulate one:
 either by monkeypatching `cunumpy.xp.get_array_backend` (for `to_numpy` and
@@ -13,11 +13,12 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
-from cunumpy import Kernel, PyccelKernel, TransferCounter, TransferEvent
 from cunumpy import dispatch as dispatch_module
 from cunumpy import kernel as kernel_module
 from cunumpy import transfers as transfers_module
 from cunumpy import xp as xp_module
+from cunumpy.kernels import Kernel, PyccelKernel
+from cunumpy.profiling import TransferCounter, TransferEvent
 
 THIS_FILE = str(Path(__file__))
 
@@ -70,7 +71,7 @@ def fake_device(monkeypatch):
 
 
 def test_empty_counter():
-    with xp.count_transfers() as counter:
+    with xp.profiling.count_transfers() as counter:
         pass
 
     assert isinstance(counter, TransferCounter)
@@ -85,7 +86,7 @@ def test_empty_counter():
 
 
 def test_to_numpy_of_numpy_array_is_not_a_transfer():
-    with xp.count_transfers() as counter:
+    with xp.profiling.count_transfers() as counter:
         xp.to_numpy(np.zeros(3))
         xp.to_numpy([1, 2, 3])
         with xp.use_backend("numpy"):
@@ -99,13 +100,13 @@ def test_no_counter_active_records_nothing(fake_device):
     xp.to_numpy(fake_device(np.zeros(3)))
     assert transfers_module._ACTIVE == []
 
-    with xp.count_transfers() as counter:
+    with xp.profiling.count_transfers() as counter:
         pass
     assert counter.total == 0
 
 
 def test_to_numpy_of_device_array_is_counted(fake_device):
-    with xp.count_transfers() as counter:
+    with xp.profiling.count_transfers() as counter:
         host = xp.to_numpy(fake_device(np.arange(3.0)))
 
     assert np.array_equal(host, np.arange(3.0))
@@ -117,7 +118,7 @@ def test_to_numpy_of_device_array_is_counted(fake_device):
 
 
 def test_to_cupy_of_host_array_is_counted(fake_device):
-    with xp.count_transfers() as counter:
+    with xp.profiling.count_transfers() as counter:
         xp.to_cupy(np.zeros((2, 2)))
         xp.to_cupy([1, 2])
 
@@ -127,7 +128,7 @@ def test_to_cupy_of_host_array_is_counted(fake_device):
 
 
 def test_to_cupy_of_device_array_is_not_counted(fake_device):
-    with xp.count_transfers() as counter:
+    with xp.profiling.count_transfers() as counter:
         xp.to_cupy(fake_device(np.zeros(2)))
 
     assert counter.total == 0
@@ -135,7 +136,7 @@ def test_to_cupy_of_device_array_is_not_counted(fake_device):
 
 def test_to_cunumpy_counts_the_direction_it_delegates_to(fake_device, monkeypatch):
     device = fake_device(np.zeros(2))
-    with xp.count_transfers() as counter, xp.use_backend("numpy"):
+    with xp.profiling.count_transfers() as counter, xp.use_backend("numpy"):
         xp.to_cunumpy(device)  # device -> host
         xp.to_cunumpy(np.zeros(2))  # already on the host
 
@@ -143,7 +144,7 @@ def test_to_cunumpy_counts_the_direction_it_delegates_to(fake_device, monkeypatc
 
     monkeypatch.setattr(xp_module.array_backend, "_backend", "cupy")
     monkeypatch.setattr(xp_module, "cupy_available", lambda: True)
-    with xp.count_transfers() as counter:
+    with xp.profiling.count_transfers() as counter:
         xp.to_cunumpy(np.zeros(2))  # host -> device
         xp.to_cunumpy(device)  # already on the device
 
@@ -156,7 +157,7 @@ def test_to_cunumpy_counts_the_direction_it_delegates_to(fake_device, monkeypatc
 
 
 def test_where_points_at_the_caller_outside_cunumpy(fake_device):
-    with xp.count_transfers() as counter:
+    with xp.profiling.count_transfers() as counter:
         xp.to_numpy(fake_device(np.zeros(1)))
         line = _current_line() - 1
 
@@ -167,7 +168,7 @@ def test_where_points_at_the_caller_outside_cunumpy(fake_device):
 
 def test_where_skips_frames_inside_cunumpy(fake_device):
     """`to_cunumpy` calls `to_numpy`; the call site is still the test."""
-    with xp.count_transfers() as counter, xp.use_backend("numpy"):
+    with xp.profiling.count_transfers() as counter, xp.use_backend("numpy"):
         xp.to_cunumpy(fake_device(np.zeros(1)))
 
     (event,) = counter.events
@@ -176,7 +177,7 @@ def test_where_skips_frames_inside_cunumpy(fake_device):
 
 def test_report_groups_events_by_kind_and_call_site(fake_device):
     device = fake_device(np.zeros(4))
-    with xp.count_transfers() as counter:
+    with xp.profiling.count_transfers() as counter:
         for _ in range(3):
             xp.to_numpy(device)
         xp.to_cupy(np.zeros(4))
@@ -209,9 +210,9 @@ def test_report_groups_events_by_kind_and_call_site(fake_device):
 
 def test_nested_counters_each_see_their_own_block(fake_device):
     device = fake_device(np.zeros(1))
-    with xp.count_transfers() as outer:
+    with xp.profiling.count_transfers() as outer:
         xp.to_numpy(device)
-        with xp.count_transfers() as inner:
+        with xp.profiling.count_transfers() as inner:
             xp.to_numpy(device)
         xp.to_numpy(device)
 
@@ -222,21 +223,21 @@ def test_nested_counters_each_see_their_own_block(fake_device):
 
 
 def test_counter_is_removed_when_the_block_raises(fake_device):
-    with pytest.raises(RuntimeError), xp.count_transfers():
+    with pytest.raises(RuntimeError), xp.profiling.count_transfers():
         raise RuntimeError
 
     assert transfers_module._ACTIVE == []
 
 
 def test_assert_no_transfers_passes_without_transfers():
-    with xp.assert_no_transfers() as counter:
+    with xp.profiling.assert_no_transfers() as counter:
         xp.to_numpy(np.zeros(3))
 
     assert counter.total == 0
 
 
 def test_assert_no_transfers_raises_with_report(fake_device):
-    with pytest.raises(AssertionError) as info, xp.assert_no_transfers():
+    with pytest.raises(AssertionError) as info, xp.profiling.assert_no_transfers():
         xp.to_numpy(fake_device(np.zeros(3)))
 
     message = str(info.value)
@@ -247,7 +248,7 @@ def test_assert_no_transfers_raises_with_report(fake_device):
 
 
 def test_assert_no_transfers_lets_exceptions_through(fake_device):
-    with pytest.raises(ValueError, match="inside"), xp.assert_no_transfers():
+    with pytest.raises(ValueError, match="inside"), xp.profiling.assert_no_transfers():
         xp.to_numpy(fake_device(np.zeros(3)))
         raise ValueError("inside")
 
@@ -266,7 +267,7 @@ def test_pyccel_kernel_conversion_is_counted_once_per_call(fake_device):
     y = fake_device(np.ones(3))
     wrapped = PyccelKernel(scale, use_cupy=True)
 
-    with xp.count_transfers() as counter:
+    with xp.profiling.count_transfers() as counter:
         wrapped(x, y, 2.0)
         line = _current_line() - 1
         wrapped(x, x, 3.0)  # one array passed twice: converted once
@@ -289,7 +290,7 @@ def test_pyccel_kernel_conversion_is_counted_once_per_call(fake_device):
 def test_pyccel_kernel_without_device_arrays_is_not_counted(fake_device):
     wrapped = PyccelKernel(lambda x: None, use_cupy=True)
 
-    with xp.count_transfers() as counter:
+    with xp.profiling.count_transfers() as counter:
         wrapped(np.zeros(3))  # conversion path, but nothing to convert
         with xp.use_backend("numpy"):
             PyccelKernel(lambda x: None)(np.zeros(3))
@@ -309,7 +310,7 @@ def test_kernel_fallback_is_counted(monkeypatch):
     kernel = Kernel(shift, missing_cuda="fallback")
     x = np.zeros(2)
 
-    with xp.count_transfers() as counter:
+    with xp.profiling.count_transfers() as counter:
         line = _current_line() + 2
         with pytest.warns(RuntimeWarning, match="copies its arrays"):
             kernel(x, 2)
@@ -331,7 +332,7 @@ def test_kernel_on_numpy_backend_is_not_a_fallback():
         x[:n] += 1.0
 
     kernel = Kernel(shift, missing_cuda="fallback")
-    with xp.count_transfers() as counter, xp.use_backend("numpy"):
+    with xp.profiling.count_transfers() as counter, xp.use_backend("numpy"):
         kernel(np.zeros(2), 2)
 
     assert counter.total == 0
@@ -346,7 +347,7 @@ def test_kernel_on_numpy_backend_is_not_a_fallback():
 def test_real_transfers_are_counted():
     import cupy as cp
 
-    with xp.count_transfers() as counter:
+    with xp.profiling.count_transfers() as counter:
         device = xp.to_cupy(np.arange(3.0))
         xp.to_cupy(device)  # already on the device
         host = xp.to_numpy(device)
@@ -369,7 +370,7 @@ def test_real_pyccel_kernel_conversion_is_counted():
         x[:] *= factor
 
     x = cp.ones(4)
-    with xp.count_transfers() as counter:
+    with xp.profiling.count_transfers() as counter:
         PyccelKernel(scale)(x, 2.0)
 
     assert cp.all(x == 2.0)
@@ -390,7 +391,7 @@ def test_real_kernel_fallback_is_counted():
     kernel = Kernel(scale, missing_cuda="fallback")
     x = cp.ones(3)
     with (
-        xp.count_transfers() as counter,
+        xp.profiling.count_transfers() as counter,
         xp.use_backend("cupy"),
         pytest.warns(RuntimeWarning),
     ):
@@ -404,7 +405,7 @@ def test_real_kernel_fallback_is_counted():
 
 @requires_cupy
 def test_assert_no_transfers_on_device_only_work():
-    with xp.use_backend("cupy"), xp.assert_no_transfers():
+    with xp.use_backend("cupy"), xp.profiling.assert_no_transfers():
         values = xp.arange(10, dtype=xp.float64)
         values = values * 2 + 1
         xp.synchronize()

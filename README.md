@@ -18,6 +18,24 @@ move existing arrays just because the selected backend changes. This guide
 covers backend selection, array movement, mixed CPU/GPU workflows, and the
 helper APIs CuNumpy provides around NumPy and CuPy.
 
+The top level of `cunumpy` is the NumPy (or CuPy) namespace plus backend
+selection and array conversion. The helpers are in submodules, so that they
+never hide a NumPy name:
+
+| Submodule | Contents |
+|---|---|
+| `xp.cuda` | CUDA only: `CudaKernel`, `CudaStruct`, CUDA headers, devices, streams |
+| `xp.kernels` | `Kernel`, `KernelCatalog`, `PyccelKernel`, host implementations, `fuse` |
+| `xp.rng` | `random_streams`, `get_rng`, `philox_*` |
+| `xp.algorithms` | `morton_*`, `sort_by_key`, `segment_sum` |
+| `xp.mpi` | `mpi_buffer`, CUDA-aware MPI |
+| `xp.profiling` | `timed_region`, `nvtx_range`, `count_transfers` |
+| `xp.memory` | `HostStaging`, `DeviceMirror` |
+| `xp.petsc` | `petsc_vec` |
+| `cunumpy.kernel_testing` | pytest helpers for host/CUDA kernel pairs |
+
+Everything except `xp.cuda` works on both backends.
+
 ## Install
 
 ```bash
@@ -132,7 +150,7 @@ anything was counted. Only transfers made through CuNumpy are seen; raw
 `cupy.ndarray.get()` or `cupy.asarray()` calls need a profiler such as `nsys`.
 
 ```python
-with xp.count_transfers() as counter:
+with xp.profiling.count_transfers() as counter:
     propagator(dt)
 
 assert counter.total == 0, counter.report()
@@ -145,7 +163,7 @@ CuPy have similar generator APIs, though exact bit-for-bit sequences are not
 guaranteed to match between libraries:
 
 ```python
-rng = xp.get_rng(seed=42)
+rng = xp.rng.get_rng(seed=42)
 samples = rng.normal(size=1000)
 ```
 
@@ -162,9 +180,9 @@ These helpers are useful for multi-GPU programs and for understanding CuPy's
 memory behavior:
 
 ```python
-print("visible GPUs:", xp.device_count())
-xp.set_device(0)  # selects CUDA device 0 when CuPy is active
-print("memory (free, total):", xp.memory_info())
+print("visible GPUs:", xp.cuda.device_count())
+xp.cuda.set_device(0)  # selects CUDA device 0 when CuPy is active
+print("memory (free, total):", xp.cuda.memory_info())
 ```
 
 `set_device()` is a no-op on NumPy. `device_count()` checks visible CUDA
@@ -193,12 +211,12 @@ For MPI programs with one rank per GPU, the startup sequence is:
 
 ```python
 xp.set_backend("cupy")
-xp.bind_local_device()  # before MPI_Init
+xp.cuda.bind_local_device()  # before MPI_Init
 from mpi4py import MPI  # MPI_Init
 
-xp.require_cuda_aware_mpi()  # once, on all ranks
+xp.mpi.require_cuda_aware_mpi()  # once, on all ranks
 
-xp.synchronize_for_mpi(send, recv)
+xp.mpi.synchronize_for_mpi(send, recv)
 MPI.COMM_WORLD.Sendrecv(send, dest, recvbuf=recv, source=source)
 ```
 
@@ -214,7 +232,7 @@ on NumPy. GPU work is asynchronous, so synchronize before reading results on
 the host:
 
 ```python
-with xp.stream():
+with xp.cuda.stream():
     device = xp.to_cupy(host)
     transformed = xp.fft.fft(device)
 
@@ -229,12 +247,12 @@ device before reading the clock (on NumPy it is a plain timer), and
 no-ops or plain timers on NumPy, and `nvtx_range` also works as a decorator:
 
 ```python
-with xp.timed_region("fft") as timing:
+with xp.profiling.timed_region("fft") as timing:
     transformed = xp.fft.fft(device)
 print(timing.elapsed, timing.synced)
 
 
-@xp.nvtx_range("step")
+@xp.profiling.nvtx_range("step")
 def step(dt):
     ...
 ```
@@ -256,7 +274,7 @@ def scale_in_place(values, factor):
     return values
 
 
-scale = xp.PyccelKernel(scale_in_place, outputs=(0,))
+scale = xp.kernels.PyccelKernel(scale_in_place, outputs=(0,))
 
 with xp.use_backend("cupy"):
     values = xp.arange(5, dtype=xp.float64)
@@ -304,7 +322,7 @@ def axpy(a, x, y, n):  # host version, e.g. compiled with Pyccel
         y[i] += a * x[i]
 
 
-kernel = xp.Kernel(axpy, xp.CudaKernel(AXPY, "axpy"))
+kernel = xp.kernels.Kernel(axpy, xp.cuda.CudaKernel(AXPY, "axpy"))
 
 with xp.use_backend("cupy"):
     x = xp.arange(1000, dtype=xp.float64)
@@ -327,8 +345,8 @@ the matching memory layout) and packs values into it, which the kernel takes
 as one parameter:
 
 ```python
-Vec = xp.CudaStruct("Vec", [("data", "double*"), ("n", "int")])
-scale = xp.CudaKernel(
+Vec = xp.cuda.CudaStruct("Vec", [("data", "double*"), ("n", "int")])
+scale = xp.cuda.CudaKernel(
     Vec.declaration
     + r"""
     extern "C" __global__ void scale(Vec v, double a) {
@@ -357,7 +375,7 @@ on the CUDA path, so the call site is the same on both backends and each form
 can be built lazily on first access (a CPU run never builds device arguments):
 
 ```python
-class ParticleArguments(xp.KernelArguments):
+class ParticleArguments(xp.kernels.KernelArguments):
     def __init__(self, markers):
         self.markers = markers
         self._host = None
@@ -387,9 +405,9 @@ class MarkerArguments:
     def __init__(self, markers: "float[:, :]", n_markers: int, valid: "bool[:]"):
         ...
 
-MarkerArgs = xp.CudaStruct.from_signature(MarkerArguments.__init__, "MarkerArgs")
+MarkerArgs = xp.cuda.CudaStruct.from_signature(MarkerArguments.__init__, "MarkerArgs")
 MarkerArgs.to_header("marker_args.cuh")  # Array2D<double> markers; long long n_markers; ...
-push = xp.CudaKernel(
+push = xp.cuda.CudaKernel(
     r"""
     #include "marker_args.cuh"
     #include <cunumpy/index.cuh>
@@ -414,8 +432,8 @@ details.
 
 Kernels run asynchronously, so a CUDA error (an illegal memory access, say)
 normally surfaces at a later `.get()` or MPI call, far from the kernel that
-caused it. In debug mode, enabled with `xp.set_cuda_debug(True)`, the
-context manager `xp.cuda_debug()`, `CudaKernel(..., debug=True)` or the
+caused it. In debug mode, enabled with `xp.cuda.set_cuda_debug(True)`, the
+context manager `xp.cuda.cuda_debug()`, `CudaKernel(..., debug=True)` or the
 environment variable `CUNUMPY_CUDA_DEBUG=1`, kernels are compiled with
 `-lineinfo` and `-DCUNUMPY_BOUNDS_CHECK` and every launch is synchronized, so
 the error is raised as a `RuntimeError` naming the kernel and its launch shape.
@@ -425,7 +443,7 @@ next step is NVIDIA's memory checker:
 
 ## Test kernel pairs
 
-`cunumpy.testing` helps to test the ports with pytest. `assert_kernels_agree`
+`cunumpy.kernel_testing` helps to test the ports with pytest. `assert_kernels_agree`
 builds the arguments on both backends, runs the host and the CUDA kernel and
 compares the arrays they wrote; with `catalog.parity_cases()`, one
 parametrised test covers every ported kernel of a catalog. `BACKENDS` and
@@ -436,7 +454,7 @@ kernel:
 
 ```python
 import pytest
-from cunumpy.testing import assert_kernels_agree
+from cunumpy.kernel_testing import assert_kernels_agree
 
 
 def make_args(backend, seed):
@@ -460,7 +478,7 @@ the one transfer per accumulation is explicit. The shipped header
 writes:
 
 ```python
-mirror = xp.DeviceMirror(vector._data)
+mirror = xp.memory.DeviceMirror(vector._data)
 mirror.zero()
 accumulate(markers, mirror.device, n_threads=n_markers)
 mirror.to_host()  # vector._data holds the result on both backends

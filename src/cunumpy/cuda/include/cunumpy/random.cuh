@@ -29,7 +29,7 @@
 // math functions are not the host's.
 //
 // Everything is plain integer arithmetic (no CUDA vector types or intrinsics),
-// so the header also compiles as C++ (see cunumpy.testing.emulate_cuda_kernel).
+// so the header also compiles as C++ (see cunumpy.kernel_testing.emulate_cuda_kernel).
 
 #ifndef CUNUMPY_RANDOM_CUH
 #define CUNUMPY_RANDOM_CUH

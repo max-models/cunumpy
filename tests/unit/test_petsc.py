@@ -1,4 +1,4 @@
-"""Tests for `xp.petsc_vec`: PETSc vectors sharing the memory of an array."""
+"""Tests for `xp.petsc.petsc_vec`: PETSc vectors sharing the memory of an array."""
 
 import sys
 import types
@@ -21,7 +21,7 @@ def _petsc():
 def test_host_vector_shares_memory():
     PETSc = _petsc()
     a = np.zeros(6, dtype=PETSc.ScalarType)
-    vec = xp.petsc_vec(a, comm=PETSc.COMM_SELF)
+    vec = xp.petsc.petsc_vec(a, comm=PETSc.COMM_SELF)
     assert vec.getSize() == 6 and vec.getType() == "seq"
     vec.set(3.0)
     assert a.tolist() == [3.0] * 6  # PETSc wrote into the array
@@ -33,7 +33,7 @@ def test_host_vector_shares_memory():
 def test_multidimensional_arrays_are_unrolled():
     PETSc = _petsc()
     a = np.arange(6, dtype=PETSc.ScalarType).reshape(2, 3)
-    vec = xp.petsc_vec(a, comm=PETSc.COMM_SELF)
+    vec = xp.petsc.petsc_vec(a, comm=PETSc.COMM_SELF)
     assert vec.getArray().tolist() == a.ravel().tolist()
 
 
@@ -55,7 +55,8 @@ def test_ksp_solve_writes_into_the_array():
     ksp.getPC().setType("none")
     ksp.setTolerances(rtol=1e-12)
     ksp.solve(
-        xp.petsc_vec(b, comm=PETSc.COMM_SELF), xp.petsc_vec(x, comm=PETSc.COMM_SELF)
+        xp.petsc.petsc_vec(b, comm=PETSc.COMM_SELF),
+        xp.petsc.petsc_vec(x, comm=PETSc.COMM_SELF),
     )
     residual = 2 * x - np.r_[0.0, x[:-1]] - np.r_[x[1:], 0.0] - 1.0
     assert np.abs(residual).max() < 1e-9
@@ -65,11 +66,11 @@ def test_rejects_arrays_that_would_need_a_copy():
     PETSc = _petsc()
     other = np.float32 if np.dtype(PETSc.ScalarType) != np.float32 else np.float64
     with pytest.raises(TypeError, match="scalar type"):
-        xp.petsc_vec(np.zeros(4, dtype=other))
+        xp.petsc.petsc_vec(np.zeros(4, dtype=other))
     with pytest.raises(ValueError, match="C-contiguous"):
-        xp.petsc_vec(np.zeros((4, 4))[:, 0])
+        xp.petsc.petsc_vec(np.zeros((4, 4))[:, 0])
     with pytest.raises(TypeError, match="NumPy or CuPy array"):
-        xp.petsc_vec([0.0, 1.0])
+        xp.petsc.petsc_vec([0.0, 1.0])
 
 
 class FakeDeviceArray:
@@ -113,21 +114,21 @@ def _fake_petsc(monkeypatch, vec_type=None, error=False):
 def test_device_arrays_give_device_vectors(monkeypatch, vec_type):
     _fake_petsc(monkeypatch, vec_type)
     array = FakeDeviceArray()
-    vec = xp.petsc_vec(array)
+    vec = xp.petsc.petsc_vec(array)
     assert vec.attr == ("cunumpy_array", array)
 
 
 def test_device_arrays_need_a_gpu_petsc(monkeypatch):
     Vec = _fake_petsc(monkeypatch, "seq")  # PETSc without CUDA made a host vector
     with pytest.raises(RuntimeError, match="created a 'seq' vector for a CuPy array"):
-        xp.petsc_vec(FakeDeviceArray())
+        xp.petsc.petsc_vec(FakeDeviceArray())
     assert Vec.destroyed
     _fake_petsc(monkeypatch, error=True)
     with pytest.raises(RuntimeError, match="built with CUDA or HIP support"):
-        xp.petsc_vec(FakeDeviceArray())
+        xp.petsc.petsc_vec(FakeDeviceArray())
 
 
 def test_missing_petsc4py(monkeypatch):
     monkeypatch.setitem(sys.modules, "petsc4py", None)
     with pytest.raises(ImportError, match="needs petsc4py"):
-        xp.petsc_vec(np.zeros(3))
+        xp.petsc.petsc_vec(np.zeros(3))

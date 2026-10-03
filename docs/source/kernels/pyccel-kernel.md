@@ -16,7 +16,7 @@ def smooth(field, out):
     out[0], out[-1] = field[0], field[-1]
 
 
-smooth_kernel = xp.PyccelKernel(smooth, outputs=(1,))
+smooth_kernel = xp.kernels.PyccelKernel(smooth, outputs=(1,))
 ```
 
 On every call it decides whether conversion is needed (the active backend is
@@ -44,10 +44,10 @@ copies back *every* converted array, which is correct but doubles the
 transfers. `outputs` lists the arguments that may be written:
 
 ```python
-xp.PyccelKernel(smooth, outputs=(1,))           # positional argument 1
-xp.PyccelKernel(update, outputs=(0, -1))        # first and last argument
-xp.PyccelKernel(solve, outputs=("out",))        # solve(a, b, out=out)
-xp.PyccelKernel(norm, outputs=())               # writes nothing
+xp.kernels.PyccelKernel(smooth, outputs=(1,))           # positional argument 1
+xp.kernels.PyccelKernel(update, outputs=(0, -1))        # first and last argument
+xp.kernels.PyccelKernel(solve, outputs=("out",))        # solve(a, b, out=out)
+xp.kernels.PyccelKernel(norm, outputs=())               # writes nothing
 ```
 
 * Positional arguments are declared by index (negative indices count from the
@@ -66,7 +66,7 @@ works. Instances of your own classes are traversed only if their class's module
 starts with one of the `object_modules` prefixes:
 
 ```python
-kernel = xp.PyccelKernel(push, object_modules=("my_simulation.",), outputs=(0,))
+kernel = xp.kernels.PyccelKernel(push, object_modules=("my_simulation.",), outputs=(0,))
 kernel(particles, dt)  # particles.positions etc. are converted
 ```
 
@@ -94,7 +94,7 @@ time. `count_transfers()` records one `kernel_conversion` event per converted
 call, naming the kernel and the number of arrays:
 
 ```python
-with xp.count_transfers() as counter:
+with xp.profiling.count_transfers() as counter:
     step(state, dt)
 for event in counter.kernel_conversion_calls:
     print(event.where, event.description)

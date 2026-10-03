@@ -41,11 +41,11 @@ need:
 Apply `order` to every per-marker array (positions, velocities, weights, ids),
 e.g. by keeping them as columns of one `(n, k)` array. A stable sort keeps the
 result independent of how the markers were ordered before.
-`xp.sort_by_key(keys, positions, velocities, weights)` does the argsort and
+`xp.algorithms.sort_by_key(keys, positions, velocities, weights)` does the argsort and
 the reordering of several arrays in one call.
 
 For a tree code, or for better locality in 2D and 3D, sort by Morton key
-(`xp.morton_keys`, see the API page) instead of by cell: the markers of every
+(`xp.algorithms.morton_keys`, see the API page) instead of by cell: the markers of every
 quadtree or octree node are then a contiguous range of the sorted arrays.
 
 ## Deposit without atomics: sort, then reduce
@@ -67,7 +67,7 @@ The two other GPU strategies, as kernels:
   varies between runs (results differ in the last bits).
 * **Per-block shared memory**: each block deposits into a copy of the grid in
   shared memory, then adds it to the global grid once per cell. Fast for small
-  grids. Check the size with `xp.max_shared_memory_per_block()` and pass
+  grids. Check the size with `xp.cuda.max_shared_memory_per_block()` and pass
   `shared_mem=` at the launch; above 48 KiB the kernel is set up for the larger
   limit automatically.
 
@@ -86,7 +86,7 @@ void deposit(Array1D<double> x, Array1D<double> w, Array1D<double> rho,
 }
 ```
 
-`cunumpy.testing.emulate_cuda_kernel(..., shared_mem=8 * nx)` runs such a
+`cunumpy.kernel_testing.emulate_cuda_kernel(..., shared_mem=8 * nx)` runs such a
 kernel on the CPU, barriers included, so it can be checked against the host
 version without a GPU.
 
@@ -104,7 +104,7 @@ group the markers by destination, exchange the counts, then the markers:
 :pyobject: exchange
 ```
 
-`xp.mpi_buffer` hands device arrays to MPI directly when it is CUDA-aware and
+`xp.mpi.mpi_buffer` hands device arrays to MPI directly when it is CUDA-aware and
 stages them through host memory otherwise (see [MPI](mpi.md)). Only the counts
 are host arrays. Remove the markers that left with the compaction above, and
 append the received ones.
@@ -133,13 +133,13 @@ v[i] = v_th * z0;
 Use a different counter for every random decision of a step (e.g.
 `4 * step + 0` for injection, `4 * step + 1` for collisions) so that they are
 independent. For draws that need not be per particle (e.g. a collision
-operator's own sampling), `xp.random_streams` gives one seeded generator per
+operator's own sampling), `xp.rng.random_streams` gives one seeded generator per
 rank.
 
 ## Write output without stalling the GPU
 
 ```python
-staging = xp.HostStaging(rho.shape, rho.dtype)  # once
+staging = xp.memory.HostStaging(rho.shape, rho.dtype)  # once
 pending = []
 for step in range(n_steps):
     advance()
@@ -189,4 +189,4 @@ raw.num_regs, raw.max_threads_per_block, raw.shared_size_bytes
 A kernel that uses many registers per thread cannot run 1024 threads per block;
 `max_threads_per_block` is the limit for this kernel on this device. Start
 with 128 or 256 threads per block, then time a few sizes on the target GPU
-(`xp.timed_region`) for the kernels that dominate a step.
+(`xp.profiling.timed_region`) for the kernels that dominate a step.

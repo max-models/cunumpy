@@ -7,9 +7,9 @@ generator, and an MPI run needs a different stream on every rank.
 
     import cunumpy as xp
 
-    xp.random_streams.seed(42, rank=comm.Get_rank())  # once, at start-up
-    v = xp.random_streams.normal(0.0, v_th, (n, 3))    # anywhere afterwards
-    rng = xp.random_streams.generator()               # the Generator itself
+    xp.rng.random_streams.seed(42, rank=comm.Get_rank())  # once, at start-up
+    v = xp.rng.random_streams.normal(0.0, v_th, (n, 3))    # anywhere afterwards
+    rng = xp.rng.random_streams.generator()               # the Generator itself
 
 Each rank draws the stream ``(seed, rank)`` (a NumPy ``SeedSequence`` with the
 rank as spawn key), so a run with the same seed and the same number of ranks

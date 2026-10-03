@@ -1,110 +1,56 @@
 # cunumpy/__init__.py
 import re as _re
+import warnings as _warnings
 from importlib.metadata import PackageNotFoundError, version
 
-from . import xp
-from .cuda_kernel import (
-    DEBUG_OPTIONS,
-    CudaArguments,
-    CudaKernel,
-    CudaKernelVariants,
-    CudaParameter,
-    CudaStruct,
-    CudaStructArguments,
-    CudaStructValue,
-    PyccelStructArguments,
-    ctype_of,
-    cuda_include_dir,
-    cuda_kernel_names,
-    include_hash,
-    parse_cuda_signature,
-    resolve_includes,
-    write_cuda_header,
+from . import (
+    algorithms,
+    cuda,
+    kernels,
+    memory,
+    mpi,
+    petsc,
+    profiling,
+    rng,
+    xp,
 )
-from .dispatch import Kernel, KernelCatalog
-from .fusion import fuse
-from .kernel import (
-    HOST_IMPLEMENTATIONS,
-    CompiledHostKernel,
-    HostImplementations,
-    KernelArguments,
-    PyccelKernel,
-    get_kernel_implementation,
-    resolve_host_args,
-    set_kernel_implementation,
-    use_kernel_implementation,
-)
-from .mirror import DeviceMirror
-from .morton import (
-    MAX_MORTON_LEVELS,
-    morton_decode,
-    morton_encode,
-    morton_keys,
-    morton_scales,
-)
-from .petsc import petsc_vec
-from .philox import (
-    philox4x32_10,
-    philox_normal,
-    philox_normal2,
-    philox_uniform,
-    philox_uniform2,
-)
-from .random_streams import RandomStreams, random_streams
 from .scipy_backend import scipy
-from .staging import HostStaging, StagedCopy
-from .transfers import (
-    TransferCounter,
-    TransferEvent,
-    assert_no_transfers,
-    count_transfers,
-)
 from .xp import (
-    DEFAULT_SHARED_MEMORY_PER_BLOCK,
-    Timing,
     as_device_array,
-    as_kernel_array,
     assert_same_backend,
-    bind_local_device,
-    cuda_debug,
     cupy_available,
     default_float_dtype,
-    device_count,
-    free_memory,
     get_array_backend,
     get_array_module,
     get_backend,
-    get_cuda_debug,
-    get_mpi_cuda_aware,
-    get_rng,
     is_cpu,
     is_gpu,
-    kernel_output,
-    local_rank,
-    max_shared_memory_per_block,
-    memory_info,
-    mpi_buffer,
-    mpi_is_cuda_aware,
-    nvtx_range,
-    pin_memory,
-    require_cuda_aware_mpi,
     same_backend,
-    segment_sum,
     set_backend,
-    set_cuda_debug,
-    set_device,
-    set_device_for_rank,
-    set_mpi_cuda_aware,
-    sort_by_key,
-    stream,
     synchronize,
-    synchronize_for_mpi,
-    timed_region,
     to_cunumpy,
     to_cupy,
     to_numpy,
     use_backend,
 )
+
+# Names that were at the top level before cunumpy 0.5, and the submodule each
+# moved to. They still resolve (with a DeprecationWarning) until cunumpy 0.6.
+_MOVED = {
+    **dict.fromkeys(cuda.__all__, "cuda"),
+    **dict.fromkeys(kernels.__all__, "kernels"),
+    **dict.fromkeys(rng.__all__, "rng"),
+    **dict.fromkeys(algorithms.__all__, "algorithms"),
+    **dict.fromkeys(mpi.__all__, "mpi"),
+    **dict.fromkeys(profiling.__all__, "profiling"),
+    **dict.fromkeys(memory.__all__, "memory"),
+    "petsc_vec": "petsc",
+}
+_MOVED.pop("BIT_GENERATORS")  # never was at the top level
+
+# Importing cunumpy.rng loads the module cunumpy.random_streams, which would
+# hide the deprecated top-level name random_streams (the generator).
+globals().pop("random_streams", None)
 
 try:
     __version__ = version("cunumpy")
@@ -140,111 +86,56 @@ def require_version(minimum: str) -> None:
 
 
 __all__ = [
-    "DEBUG_OPTIONS",
-    "DEFAULT_SHARED_MEMORY_PER_BLOCK",
-    "HOST_IMPLEMENTATIONS",
-    "MAX_MORTON_LEVELS",
-    "CompiledHostKernel",
-    "CudaArguments",
-    "CudaKernel",
-    "CudaKernelVariants",
-    "CudaParameter",
-    "CudaStruct",
-    "CudaStructArguments",
-    "CudaStructValue",
-    "DeviceMirror",
-    "HostImplementations",
-    "HostStaging",
-    "Kernel",
-    "KernelArguments",
-    "KernelCatalog",
-    "PyccelKernel",
-    "PyccelStructArguments",
-    "RandomStreams",
-    "StagedCopy",
-    "Timing",
-    "TransferCounter",
-    "TransferEvent",
     "__version__",
+    "algorithms",
     "as_device_array",
-    "as_kernel_array",
-    "assert_no_transfers",
     "assert_same_backend",
-    "bind_local_device",
-    "count_transfers",
-    "ctype_of",
-    "cuda_debug",
-    "cuda_include_dir",
-    "cuda_kernel_names",
+    "cuda",
     "cupy_available",
     "cupy_backend",
     "default_float_dtype",
-    "device_count",
-    "free_memory",
-    "fuse",
     "get_array_backend",
     "get_array_module",
     "get_backend",
-    "get_cuda_debug",
-    "get_kernel_implementation",
-    "get_mpi_cuda_aware",
-    "get_rng",
-    "include_hash",
     "is_cpu",
     "is_gpu",
-    "kernel_output",
-    "local_rank",
-    "max_shared_memory_per_block",
-    "memory_info",
-    "morton_decode",
-    "morton_encode",
-    "morton_keys",
-    "morton_scales",
-    "mpi_buffer",
-    "mpi_is_cuda_aware",
+    "kernels",
+    "memory",
+    "mpi",
     "numpy_backend",
-    "nvtx_range",
-    "parse_cuda_signature",
-    "petsc_vec",
-    "philox4x32_10",
-    "philox_normal",
-    "philox_normal2",
-    "philox_uniform",
-    "philox_uniform2",
-    "pin_memory",
-    "random_streams",
-    "require_cuda_aware_mpi",
+    "petsc",
+    "profiling",
     "require_version",
-    "resolve_host_args",
-    "resolve_includes",
+    "rng",
     "same_backend",
     "scipy",
-    "segment_sum",
     "set_backend",
-    "set_cuda_debug",
-    "set_device",
-    "set_device_for_rank",
-    "set_kernel_implementation",
-    "set_mpi_cuda_aware",
-    "sort_by_key",
-    "stream",
     "synchronize",
-    "synchronize_for_mpi",
-    "timed_region",
     "to_cunumpy",
     "to_cupy",
     "to_numpy",
     "use_backend",
-    "use_kernel_implementation",
-    "write_cuda_header",
     "xp",
 ]
 
 
 def __getattr__(name: str):
-    """Set cunumpy.<name> to cunumpy.xp.<name> (NumPy/CuPy)."""
+    """Set cunumpy.<name> to cunumpy.xp.<name> (NumPy/CuPy).
+
+    Names moved to a submodule in cunumpy 0.5 (see ``_MOVED``) still resolve,
+    with a ``DeprecationWarning``.
+    """
     if name == "numpy_backend":
         return xp.numpy_backend
     if name == "cupy_backend":
         return xp.cupy_backend
+    submodule = _MOVED.get(name)
+    if submodule is not None:
+        _warnings.warn(
+            f"cunumpy.{name} moved to cunumpy.{submodule}.{name}; the top-level "
+            "name is deprecated and will be removed in cunumpy 0.6",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return getattr(globals()[submodule], name)
     return getattr(xp.xp, name)

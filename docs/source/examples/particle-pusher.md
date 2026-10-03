@@ -80,7 +80,7 @@ import cunumpy as xp
 
 OUTPUTS = {"push": (0,), "deposit": (1,), "accelerate": (1,)}
 
-catalog = xp.KernelCatalog.from_package(
+catalog = xp.kernels.KernelCatalog.from_package(
     __name__,
     missing_cuda="fallback",
     host_options=lambda name: {"outputs": OUTPUTS[name]},
@@ -145,7 +145,7 @@ xp.set_backend("cupy")
 print(catalog.summary())        # CUDA kernels: 0 of 3 (missing: accelerate, deposit, push)
 
 sim = Simulation()
-with xp.count_transfers() as counter:
+with xp.profiling.count_transfers() as counter:
     sim.step(0.1)
 print(counter.report())
 ```
@@ -197,7 +197,7 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
-from cunumpy.testing import assert_kernels_agree
+from cunumpy.kernel_testing import assert_kernels_agree
 from pic.kernels import catalog
 
 N, N_CELLS, LENGTH = 10_000, 64, 2 * np.pi
@@ -274,7 +274,7 @@ Now the parity test covers all three, and the step should not transfer
 anything. Turn that into a test:
 
 ```python
-from cunumpy.testing import requires_cupy
+from cunumpy.kernel_testing import requires_cupy
 from pic.simulation import Simulation
 
 
@@ -283,7 +283,7 @@ def test_step_stays_on_device():
     with xp.use_backend("cupy"):
         sim = Simulation(n_particles=N)
         sim.step(0.1)  # warm-up: compiles the kernels
-        with xp.assert_no_transfers():
+        with xp.profiling.assert_no_transfers():
             sim.step(0.1)
 ```
 
@@ -303,9 +303,9 @@ if xp.cupy_backend:
     catalog.compile_all(jobs=4)
 
 sim = Simulation(n_particles=1_000_000)
-with xp.timed_region("100 steps") as timing:
+with xp.profiling.timed_region("100 steps") as timing:
     for _ in range(100):
-        with xp.nvtx_range("step"):
+        with xp.profiling.nvtx_range("step"):
             sim.step(0.05)
 print(f"{timing.elapsed / 100 * 1e3:.2f} ms/step, field energy {sim.field_energy():.4e}")
 ```

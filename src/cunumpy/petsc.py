@@ -9,7 +9,7 @@ array, which needs a petsc4py built with CUDA (or HIP) support::
 
     b = xp.zeros(n)            # filled by the deposit kernel
     phi = xp.zeros(n)          # the solution, read by the gather kernel
-    b_vec, phi_vec = xp.petsc_vec(b), xp.petsc_vec(phi)
+    b_vec, phi_vec = xp.petsc.petsc_vec(b), xp.petsc.petsc_vec(phi)
     ...
     xp.synchronize()           # CuPy work on b done before PETSc reads it
     ksp.solve(b_vec, phi_vec)  # writes into phi
@@ -43,7 +43,7 @@ def _petsc() -> Any:
         from petsc4py import PETSc
     except ImportError as error:
         raise ImportError(
-            "xp.petsc_vec needs petsc4py (pip install petsc4py)"
+            "xp.petsc.petsc_vec needs petsc4py (pip install petsc4py)"
         ) from error
     return PETSc
 

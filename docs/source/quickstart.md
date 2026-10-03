@@ -65,7 +65,7 @@ Keep the arrays on the GPU for the whole computation and transfer once. A test
 can check that a time step makes no transfer at all:
 
 ```python
-with xp.assert_no_transfers():
+with xp.profiling.assert_no_transfers():
     step(state, dt)
 ```
 
@@ -91,7 +91,7 @@ def axpy(a, x, y, n):  # the host version
     y[:n] += a * x[:n]
 
 
-kernel = xp.Kernel(axpy, xp.CudaKernel(AXPY, "axpy"))
+kernel = xp.kernels.Kernel(axpy, xp.cuda.CudaKernel(AXPY, "axpy"))
 
 x = xp.arange(1000, dtype=xp.float64)
 y = xp.zeros(1000)

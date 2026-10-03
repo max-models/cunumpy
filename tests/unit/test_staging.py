@@ -1,4 +1,4 @@
-"""Tests for `xp.HostStaging`: background copies of device arrays to the host."""
+"""Tests for `xp.memory.HostStaging`: background copies of device arrays to the host."""
 
 import types
 
@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
-from cunumpy import HostStaging
 from cunumpy import staging as staging_module
+from cunumpy.memory import HostStaging
 
 
 def test_host_arrays_are_copied_at_once():
@@ -138,7 +138,7 @@ def test_a_buffer_is_reused_only_after_its_copy_finished(fake_device):
 
 def test_copies_are_counted_as_transfers(fake_device):
     staging = HostStaging((2,), np.float64)
-    with xp.count_transfers() as counter:
+    with xp.profiling.count_transfers() as counter:
         staging.copy(np.zeros(2).view(DeviceArray))
     assert counter.total == 1
 

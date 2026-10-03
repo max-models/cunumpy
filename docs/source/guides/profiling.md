@@ -8,7 +8,7 @@ them. CuNumpy's helpers handle both and run unchanged on the NumPy backend.
 ## Time a region: `timed_region`
 
 ```python
-with xp.timed_region("field solve") as timing:
+with xp.profiling.timed_region("field solve") as timing:
     solve(field)
 
 print(f"{timing.name}: {timing.elapsed * 1e3:.2f} ms (synced={timing.synced})")
@@ -43,11 +43,11 @@ Timing tips:
 ## Mark regions for Nsight: `nvtx_range`
 
 ```python
-with xp.nvtx_range("push markers"):
+with xp.profiling.nvtx_range("push markers"):
     push(markers, dt, n_threads=n_markers)
 
 
-@xp.nvtx_range("time step")
+@xp.profiling.nvtx_range("time step")
 def step(state, dt):
     ...
 ```
@@ -73,7 +73,7 @@ slower than expected. `count_transfers()` lists every copy made through CuNumpy
 with its call site:
 
 ```python
-with xp.count_transfers() as counter:
+with xp.profiling.count_transfers() as counter:
     for _ in range(10):
         step(state, dt)
 print(counter.report())

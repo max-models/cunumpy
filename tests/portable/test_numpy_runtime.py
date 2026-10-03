@@ -23,7 +23,7 @@ def test_array_operations():
     assert xp.same_backend(a, xp.ones(2))
     xp.assert_same_backend(a, xp.ones(2))
     xp.synchronize()
-    xp.set_device(0)
+    xp.cuda.set_device(0)
 
 
 def test_conversions_preserve_identity_and_views():
@@ -66,7 +66,7 @@ def test_python_kernel_mutation_aliasing_and_returns(use_cupy):
         out[...] *= scale
         return values, out, float(values.sum()), {"array": values}
 
-    wrapped = xp.PyccelKernel(kernel, use_cupy=use_cupy, outputs=("out",))
+    wrapped = xp.kernels.PyccelKernel(kernel, use_cupy=use_cupy, outputs=("out",))
     result = wrapped(a, a, out=view, scale=3)
     assert result[0] is a
     assert result[1] is view
@@ -81,7 +81,7 @@ def test_python_kernel_none_return_and_exception():
     def fill(out):
         out[...] = 4
 
-    assert xp.PyccelKernel(fill)(a) is None
+    assert xp.kernels.PyccelKernel(fill)(a) is None
     np.testing.assert_array_equal(a, [4, 4])
 
     def fail(out):
@@ -89,5 +89,5 @@ def test_python_kernel_none_return_and_exception():
         raise ValueError("source kernel failed")
 
     with pytest.raises(ValueError, match="source kernel failed"):
-        xp.PyccelKernel(fail)(a)
+        xp.kernels.PyccelKernel(fail)(a)
     np.testing.assert_array_equal(a, [7, 4])

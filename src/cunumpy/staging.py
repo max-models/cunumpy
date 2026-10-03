@@ -4,7 +4,7 @@ Writing a field or the markers to HDF5 every few steps needs host arrays, and
 ``array.get()`` waits for the GPU and then for the copy, while no kernel runs.
 :class:`HostStaging` overlaps the copy with the next time steps::
 
-    staging = xp.HostStaging(rho.shape, rho.dtype)        # once
+    staging = xp.memory.HostStaging(rho.shape, rho.dtype)        # once
     for step in range(n_steps):
         advance(...)
         if step % output_every == 0:

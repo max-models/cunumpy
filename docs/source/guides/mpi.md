@@ -10,17 +10,17 @@ CuNumpy provides one helper per step.
 import cunumpy as xp
 
 xp.set_backend("cupy")
-xp.bind_local_device()        # 1. pick this rank's GPU, before MPI_Init
+xp.cuda.bind_local_device()        # 1. pick this rank's GPU, before MPI_Init
 
 from mpi4py import MPI        # 2. MPI_Init happens here
 
-xp.require_cuda_aware_mpi()   # 3. fail clearly if MPI cannot take GPU buffers
+xp.mpi.require_cuda_aware_mpi()   # 3. fail clearly if MPI cannot take GPU buffers
 
 comm = MPI.COMM_WORLD
 send = xp.full(1000, comm.rank, dtype=xp.float64)
 recv = xp.empty_like(send)
 
-xp.synchronize_for_mpi(send, recv)  # 4. before every MPI call on device buffers
+xp.mpi.synchronize_for_mpi(send, recv)  # 4. before every MPI call on device buffers
 comm.Sendrecv(send, dest=(comm.rank + 1) % comm.size,
               recvbuf=recv, source=(comm.rank - 1) % comm.size)
 ```
@@ -35,10 +35,10 @@ Without device selection every rank on a node uses GPU 0. A CUDA-aware MPI also
 binds to whatever device is current when `MPI_Init` runs, so the device must be
 chosen *before* `from mpi4py import MPI`. At that point MPI cannot be asked for
 the rank yet, but launchers export the node-local rank in environment
-variables, which `xp.local_rank()` reads (Open MPI, MVAPICH2, Intel MPI/MPICH,
+variables, which `xp.mpi.local_rank()` reads (Open MPI, MVAPICH2, Intel MPI/MPICH,
 PMI, Cray PALS, Slurm and `LOCAL_RANK`).
 
-`xp.bind_local_device()` selects device `local_rank() % device_count()`,
+`xp.cuda.bind_local_device()` selects device `local_rank() % device_count()`,
 creates its CUDA context, and returns the device id. If the launcher already
 restricts each rank to one GPU (`CUDA_VISIBLE_DEVICES` per rank, or Slurm's
 `--gpus-per-task=1`), every process sees one device and selects it.
@@ -65,7 +65,7 @@ variant `mpi_is_cuda_aware(comm)` lets a program choose a fallback instead,
 such as staging buffers through the host:
 
 ```python
-if xp.cupy_backend and not xp.mpi_is_cuda_aware(comm):
+if xp.cupy_backend and not xp.mpi.mpi_is_cuda_aware(comm):
     stage_through_host = True
 ```
 
@@ -84,7 +84,7 @@ def exchange_halo(field, comm, left, right):
     # field has shape (nx + 2, ny): one ghost row on each side
     send_l, send_r = field[1], field[-2]
     recv_l, recv_r = xp.empty_like(send_l), xp.empty_like(send_r)
-    xp.synchronize_for_mpi(send_l, send_r)
+    xp.mpi.synchronize_for_mpi(send_l, send_r)
     comm.Sendrecv(send_l, dest=left, recvbuf=recv_r, source=right)
     comm.Sendrecv(send_r, dest=right, recvbuf=recv_l, source=left)
     field[0], field[-1] = recv_l, recv_r
@@ -102,9 +102,9 @@ the NumPy backend) stages device buffers through the host. `mpi_buffer()`
 does the right thing for each case, so the MPI call is written once:
 
 ```python
-xp.mpi_is_cuda_aware(comm)  # once at startup; the answer is remembered
+xp.mpi.mpi_is_cuda_aware(comm)  # once at startup; the answer is remembered
 
-with xp.mpi_buffer(send_r) as sendbuf, xp.mpi_buffer(recv_l, send=False, recv=True) as recvbuf:
+with xp.mpi.mpi_buffer(send_r) as sendbuf, xp.mpi.mpi_buffer(recv_l, send=False, recv=True) as recvbuf:
     comm.Sendrecv(sendbuf, dest=right, recvbuf=recvbuf, source=left)
 ```
 
@@ -120,15 +120,15 @@ raises instead of guessing.
 ## Reproducible random numbers
 
 Each rank needs its own random stream, and a run is reproducible only if every
-draw comes from a seeded generator. Seed `xp.random_streams` once, after MPI is
+draw comes from a seeded generator. Seed `xp.rng.random_streams` once, after MPI is
 initialized, and draw from it everywhere:
 
 ```python
-xp.random_streams.seed(config.seed, rank=comm.Get_rank())
+xp.rng.random_streams.seed(config.seed, rank=comm.Get_rank())
 
-positions = xp.random_streams.random((n, 3))
-velocities = xp.random_streams.normal(0.0, v_th, (n, 3))
-rng = xp.random_streams.generator()  # for other distributions
+positions = xp.rng.random_streams.random((n, 3))
+velocities = xp.rng.random_streams.normal(0.0, v_th, (n, 3))
+rng = xp.rng.random_streams.generator()  # for other distributions
 ```
 
 Rank `r` draws the stream `(seed, r)`; the same seed and number of ranks give
@@ -149,9 +149,9 @@ srun --nodes=2 --ntasks-per-node=4 --gpus-per-task=1 python simulate.py --gpu
 Print the binding once at start-up to catch mapping errors early:
 
 ```python
-device = xp.bind_local_device()
+device = xp.cuda.bind_local_device()
 from mpi4py import MPI
-print(f"rank {MPI.COMM_WORLD.rank}: local rank {xp.local_rank()}, device {device}")
+print(f"rank {MPI.COMM_WORLD.rank}: local rank {xp.mpi.local_rank()}, device {device}")
 ```
 
 ## Common failures

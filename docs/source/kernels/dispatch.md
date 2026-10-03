@@ -24,7 +24,7 @@ def axpy_host(a, x, y, n):
         y[i] += a * x[i]
 
 
-axpy = xp.Kernel(axpy_host, xp.CudaKernel(AXPY, "axpy"), name="axpy")
+axpy = xp.kernels.Kernel(axpy_host, xp.cuda.CudaKernel(AXPY, "axpy"), name="axpy")
 
 axpy(2.0, x, y, x.size, n_threads=x.size)
 ```
@@ -66,7 +66,7 @@ middle of a run.
 
 ```text
 my_sim/kernels/
-├── __init__.py               # catalog = xp.KernelCatalog.from_package(__name__)
+├── __init__.py               # catalog = xp.kernels.KernelCatalog.from_package(__name__)
 ├── push/
 │   ├── push_kernels.py       # def push(...): ...        host kernel
 │   └── push_cuda.cu          # __global__ void push(...)  CUDA kernel
@@ -81,7 +81,7 @@ my_sim/kernels/
 # my_sim/kernels/__init__.py
 import cunumpy as xp
 
-catalog = xp.KernelCatalog.from_package(__name__, missing_cuda="fallback")
+catalog = xp.kernels.KernelCatalog.from_package(__name__, missing_cuda="fallback")
 ```
 
 ```python
@@ -106,7 +106,7 @@ Options:
 
   ```python
   OUTPUTS = {"push": (0,), "deposit": (2,)}
-  catalog = xp.KernelCatalog.from_package(
+  catalog = xp.kernels.KernelCatalog.from_package(
       __name__,
       host_options=lambda name: {"outputs": OUTPUTS.get(name)},
   )
@@ -132,7 +132,7 @@ where it is written:
 
 ```text
 my_sim/kernels/push/
-├── __init__.py          # kernel = xp.Kernel.from_folder(__name__, ...)
+├── __init__.py          # kernel = xp.kernels.Kernel.from_folder(__name__, ...)
 ├── push_pyccel.py       # "pyccel" (compiled with compile_host) and "python" (as is)
 ├── push_numba.py        # "numba": def push(...) decorated with numba.njit
 ├── push_numpy.py        # "numpy": vectorized
@@ -143,7 +143,7 @@ my_sim/kernels/push/
 # my_sim/kernels/push/__init__.py
 import cunumpy as xp
 
-kernel = xp.Kernel.from_folder(
+kernel = xp.kernels.Kernel.from_folder(
     __name__,
     host_suffix="_pyccel",
     compile_host=compile_kernels,  # see below
@@ -172,10 +172,10 @@ none is. Device arrays run the CUDA kernel. To choose, use the same pattern as
 for the array backend:
 
 ```python
-xp.set_kernel_implementation("numpy")       # like xp.set_backend
-with xp.use_kernel_implementation("numba"):  # like xp.use_backend
+xp.kernels.set_kernel_implementation("numpy")       # like xp.set_backend
+with xp.kernels.use_kernel_implementation("numba"):  # like xp.use_backend
     push(positions, velocities, dt)
-xp.set_kernel_implementation(None)          # back to the default
+xp.kernels.set_kernel_implementation(None)          # back to the default
 ```
 
 or `CUNUMPY_KERNEL_IMPLEMENTATION=numpy` for a whole run (read at import, like
@@ -205,7 +205,7 @@ def compile_kernels(module):
     return pyccel.epyccel(module, language="c")  # add a cache in real code
 
 
-catalog = xp.KernelCatalog.from_package(
+catalog = xp.kernels.KernelCatalog.from_package(
     __name__,
     host_suffix="_pyccel",          # push/push_pyccel.py next to push/push_cuda.cu
     compile_host=compile_kernels,
@@ -217,7 +217,7 @@ catalog = xp.KernelCatalog.from_package(
 host implementations" above); `catalog["push"].host_kernel.kernel.available("pyccel")`
 reports whether the compiled version builds, and `catalog["push"].selected()`
 which version runs. To test the path of a machine without Pyccel, run the code
-inside `with xp.use_kernel_implementation("numpy"):` (or set
+inside `with xp.kernels.use_kernel_implementation("numpy"):` (or set
 `CUNUMPY_KERNEL_IMPLEMENTATION=numpy` for a whole run). Note that `epyccel` compiles again on every call; a
 code that compiles at run time usually keeps the builds in an on-disk cache
 keyed on the module source, so that only the first run after an edit compiles.
@@ -234,7 +234,7 @@ for MPI, a path that has no GPU version yet. With `dispatch="arrays"` such calls
 run the host kernel:
 
 ```python
-catalog = xp.KernelCatalog.from_package(__name__, dispatch="arrays")
+catalog = xp.kernels.KernelCatalog.from_package(__name__, dispatch="arrays")
 
 catalog["gather"](positions, field, result, n_threads=n)  # CUDA if positions are CuPy
 catalog["gather"](host_positions, host_field, host_result)  # host kernel, also on CuPy
@@ -246,16 +246,16 @@ a device-only argument object (`CudaArguments`, a struct value). A
 arguments go to the host function directly, without conversion.
 
 The arguments of one call must then all be on one side, with the dtype and
-layout the kernels take. `xp.as_kernel_array(value, like, dtype)` brings an
+layout the kernels take. `xp.kernels.as_kernel_array(value, like, dtype)` brings an
 input to the side of the main array `like` (no copy if it already fits), and
-`xp.kernel_output(out, like, dtype)` gives the buffer for an output, copied
+`xp.kernels.kernel_output(out, like, dtype)` gives the buffer for an output, copied
 back into `out` after the block if it had to be converted:
 
 ```python
 from functools import partial
 
-convert = partial(xp.as_kernel_array, like=field, dtype=float)
-with xp.kernel_output(result, like=field, dtype=float) as buffer:
+convert = partial(xp.kernels.as_kernel_array, like=field, dtype=float)
+with xp.kernels.kernel_output(result, like=field, dtype=float) as buffer:
     catalog["gather"](convert(positions), convert(field), buffer, n_threads=n)
 ```
 

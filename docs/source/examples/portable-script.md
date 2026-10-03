@@ -51,13 +51,13 @@ def main():
     args = parser.parse_args()
 
     xp.set_backend("cupy" if args.gpu else "numpy")
-    print(f"backend={xp.get_backend()} devices={xp.device_count()} cunumpy={xp.__version__}")
+    print(f"backend={xp.get_backend()} devices={xp.cuda.device_count()} cunumpy={xp.__version__}")
 
     dx = 1.0 / args.n
     dt = 0.2 * dx**2  # stable for the explicit scheme
     u = xp.to_cunumpy(initial_condition(args.n, seed=0))  # one host-to-device copy
 
-    with xp.timed_region("time loop") as timing:
+    with xp.profiling.timed_region("time loop") as timing:
         for step in range(1, args.steps + 1):
             u = u + dt * laplacian(u, dx)
             if step % args.every == 0:
@@ -85,9 +85,9 @@ is also a quick check that both backends compute the same thing.
 ## Variations
 
 * **Check for transfers in a test.** Wrap a few steps in
-  `xp.assert_no_transfers()` to make sure nobody adds a `to_numpy()` to the loop
+  `xp.profiling.assert_no_transfers()` to make sure nobody adds a `to_numpy()` to the loop
   later.
-* **Profile.** Mark the update with `xp.nvtx_range("update")` and run
+* **Profile.** Mark the update with `xp.profiling.nvtx_range("update")` and run
   `nsys profile -t cuda,nvtx python heat.py --gpu`.
 * **Use it as a library.** `laplacian()` follows its input via
   `get_array_module()`, so other code can call it with NumPy or CuPy arrays no

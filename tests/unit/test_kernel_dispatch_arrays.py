@@ -10,16 +10,15 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
-from cunumpy import (
+from cunumpy import dispatch as dispatch_module
+from cunumpy.cuda import CudaArguments, CudaKernel
+from cunumpy.kernels import (
     CompiledHostKernel,
-    CudaArguments,
-    CudaKernel,
     HostImplementations,
     Kernel,
     KernelArguments,
     KernelCatalog,
 )
-from cunumpy import dispatch as dispatch_module
 
 SCALE_CUDA = r"""
 extern "C" __global__ void scale(double* x, double factor, int n) {
@@ -331,7 +330,7 @@ def self_declaring_package(tmp_path, monkeypatch):
         "def _compile(module):\n"
         "    COMPILED.append(module.__name__)\n"
         "    return module\n\n"
-        "kernel = xp.Kernel.from_folder(\n"
+        "kernel = xp.kernels.Kernel.from_folder(\n"
         "    __name__, host_suffix='_pyccel', dispatch='arrays',\n"
         "    compile_host=_compile, n_threads_from='first_array',\n"
         ")\n"
@@ -370,27 +369,27 @@ def test_from_folder_needs_a_kernel_folder(self_declaring_package):
 def test_kernel_implementation_setting(self_declaring_package):
     kernel = self_declaring_package.kernel
     calls = importlib.import_module("demo_folder_pkg.scale.scale_numpy").CALLS
-    assert xp.get_kernel_implementation() is None
-    with xp.use_kernel_implementation("numpy"):
-        assert xp.get_kernel_implementation() == "numpy"
+    assert xp.kernels.get_kernel_implementation() is None
+    with xp.kernels.use_kernel_implementation("numpy"):
+        assert xp.kernels.get_kernel_implementation() == "numpy"
         assert kernel.selected() == "numpy"
         x = np.ones(2)
         kernel(x, 3.0, 2)
         assert x.tolist() == [3.0, 3.0] and calls == [2]
-        with xp.use_kernel_implementation("python"):
+        with xp.kernels.use_kernel_implementation("python"):
             kernel(x, 2.0, 2)  # the uncompiled pyccel source
         assert calls == [2] and x.tolist() == [6.0, 6.0]
-    assert xp.get_kernel_implementation() is None
+    assert xp.kernels.get_kernel_implementation() is None
     assert self_declaring_package.COMPILED == []  # pyccel never needed
     # a chosen implementation that cannot run raises instead of running another
-    xp.set_kernel_implementation("numba")
+    xp.kernels.set_kernel_implementation("numba")
     try:
         with pytest.raises(LookupError, match="'numba' implementation .* unavailable"):
             kernel(np.ones(1), 2.0, 1)
     finally:
-        xp.set_kernel_implementation(None)
+        xp.kernels.set_kernel_implementation(None)
     with pytest.raises(ValueError, match="kernel implementation must be one of"):
-        xp.set_kernel_implementation("fortran")
+        xp.kernels.set_kernel_implementation("fortran")
 
 
 def test_default_skips_unavailable_implementations():
@@ -430,7 +429,7 @@ def test_kernel_implementation_environment_variable():
     import os
     import subprocess
 
-    code = "import cunumpy as xp; print(xp.get_kernel_implementation())"
+    code = "import cunumpy as xp; print(xp.kernels.get_kernel_implementation())"
     env = {**os.environ, "CUNUMPY_KERNEL_IMPLEMENTATION": "numpy"}
     printed = subprocess.run(
         [sys.executable, "-c", code],
@@ -459,14 +458,14 @@ def test_arrays_dispatch_calls_the_host_kernel_without_conversion(
     def no_conversion(self, args, kwargs):
         raise AssertionError("conversion checked")
 
-    monkeypatch.setattr(xp.PyccelKernel, "_needs_conversion", no_conversion)
+    monkeypatch.setattr(xp.kernels.PyccelKernel, "_needs_conversion", no_conversion)
     kernel = Kernel(scale, CudaKernel(SCALE_CUDA, "scale"), dispatch="arrays")
     x = np.ones(2)
     kernel(x, 2.0, 2)
     assert x.tolist() == [2.0, 2.0]
     # a host kernel that is told to convert keeps doing so
     forced = Kernel(
-        xp.PyccelKernel(scale, use_cupy=True),
+        xp.kernels.PyccelKernel(scale, use_cupy=True),
         CudaKernel(SCALE_CUDA, "scale"),
         dispatch="arrays",
     )
@@ -500,26 +499,29 @@ def test_check_signature_covers_every_host_implementation():
 def test_as_kernel_array_on_the_host():
     grid = np.zeros((4, 3))
     fits = np.ones(5)
-    assert xp.as_kernel_array(fits, like=grid, dtype=float) is fits  # no copy
+    assert xp.kernels.as_kernel_array(fits, like=grid, dtype=float) is fits  # no copy
     column = np.ones((5, 2))[:, 1]
-    converted = xp.as_kernel_array(column, like=grid, dtype=float)
+    converted = xp.kernels.as_kernel_array(column, like=grid, dtype=float)
     assert converted.flags.c_contiguous and converted is not column
-    ints = xp.as_kernel_array([1, 2], like=grid, dtype=float)
+    ints = xp.kernels.as_kernel_array([1, 2], like=grid, dtype=float)
     assert ints.dtype == np.float64 and isinstance(ints, np.ndarray)
 
 
 def test_kernel_output_writes_into_its_target():
     grid = np.zeros(3)
     out = np.zeros(4)
-    with xp.kernel_output(out, like=grid, dtype=float) as buffer:
+    with xp.kernels.kernel_output(out, like=grid, dtype=float) as buffer:
         assert buffer is out  # written directly
         buffer += 1.0
     strided = np.zeros((4, 2))[:, 0]
-    with xp.kernel_output(strided, like=grid, dtype=float) as buffer:
+    with xp.kernels.kernel_output(strided, like=grid, dtype=float) as buffer:
         assert buffer is not strided
         buffer[...] = 7.0
     assert strided.tolist() == [7.0] * 4
-    with pytest.raises(RuntimeError), xp.kernel_output(strided, like=grid) as buffer:
+    with (
+        pytest.raises(RuntimeError),
+        xp.kernels.kernel_output(strided, like=grid) as buffer,
+    ):
         buffer[...] = 1.0
         raise RuntimeError("kernel failed")
     assert strided.tolist() == [7.0] * 4  # not copied back after an error
@@ -531,10 +533,10 @@ def test_kernel_arrays_follow_a_device_grid():
     import cupy as cp
 
     grid = cp.zeros(3)
-    on_device = xp.as_kernel_array(np.ones(4), like=grid, dtype=float)
+    on_device = xp.kernels.as_kernel_array(np.ones(4), like=grid, dtype=float)
     assert xp.is_gpu(on_device)
     host_out = np.zeros(4)
-    with xp.kernel_output(host_out, like=grid, dtype=float) as buffer:
+    with xp.kernels.kernel_output(host_out, like=grid, dtype=float) as buffer:
         assert xp.is_gpu(buffer)
         buffer[...] = 2.0
     assert host_out.tolist() == [2.0] * 4

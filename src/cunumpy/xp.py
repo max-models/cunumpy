@@ -334,7 +334,7 @@ def mpi_buffer(
 
     One MPI call site for both backends and both kinds of MPI builds::
 
-        with xp.mpi_buffer(markers_out) as sendbuf, xp.mpi_buffer(
+        with xp.mpi.mpi_buffer(markers_out) as sendbuf, xp.mpi.mpi_buffer(
             markers_in, send=False, recv=True
         ) as recvbuf:
             comm.Sendrecv(sendbuf, dest, recvbuf=recvbuf, source=source)
@@ -377,8 +377,8 @@ def mpi_buffer(
     if cuda_aware is None:
         raise RuntimeError(
             "mpi_buffer(): it is not known whether MPI can take device buffers; "
-            "call xp.mpi_is_cuda_aware(comm) once at startup (every rank), or "
-            "xp.set_mpi_cuda_aware(True/False), or pass cuda_aware="
+            "call xp.mpi.mpi_is_cuda_aware(comm) once at startup (every rank), or "
+            "xp.mpi.set_mpi_cuda_aware(True/False), or pass cuda_aware="
         )
     if cuda_aware:
         synchronize_for_mpi(array)
@@ -714,10 +714,10 @@ class nvtx_range(ContextDecorator):
 
     Examples
     --------
-    >>> with xp.nvtx_range("push markers"):
+    >>> with xp.profiling.nvtx_range("push markers"):
     ...     kernel(markers, dt, n_threads=n)
 
-    >>> @xp.nvtx_range("accumulate")
+    >>> @xp.profiling.nvtx_range("accumulate")
     ... def accumulate(...):
     ...     ...
     """
@@ -796,7 +796,7 @@ def timed_region(name: str, *, sync: bool = True) -> Generator[Timing, None, Non
 
     Examples
     --------
-    >>> with xp.timed_region("push markers") as timing:
+    >>> with xp.profiling.timed_region("push markers") as timing:
     ...     kernel(markers, dt, n_threads=n)
     >>> print(f"{timing.name}: {timing.elapsed:.3f} s (synced={timing.synced})")
     """
@@ -1043,11 +1043,11 @@ def sort_by_key(keys: Any, *arrays: Any) -> tuple[Any, ...]:
     """Sort `keys` and reorder every array the same way, in one stable argsort.
 
     The usual first step of a particle code on the GPU: sort the particles by
-    cell index or Morton key (:func:`cunumpy.morton_keys`), then work on
+    cell index or Morton key (:func:`cunumpy.algorithms.morton_keys`), then work on
     contiguous ranges. The sort is stable, so equal keys keep their order and
     the result is reproducible::
 
-        keys, order, positions, charges = xp.sort_by_key(keys, positions, charges)
+        keys, order, positions, charges = xp.algorithms.sort_by_key(keys, positions, charges)
 
     Parameters
     ----------
@@ -1124,7 +1124,7 @@ def as_kernel_array(value: Any, like: Any, dtype: Any = None) -> Any:
     pass the main array (e.g. the grid) as `like`, and the kernel gets
     arguments all on one side::
 
-        convert = functools.partial(xp.as_kernel_array, like=grid, dtype=float)
+        convert = functools.partial(xp.kernels.as_kernel_array, like=grid, dtype=float)
         deposit(convert(positions), convert(weights), grid, ...)
 
     For an array the kernel writes, use :func:`kernel_output`, which copies a
@@ -1148,7 +1148,7 @@ def kernel_output(out: Any, like: Any, dtype: Any = None) -> Generator[Any]:
     written into `out` when the block ends without an error (moved back to the
     side of `out`)::
 
-        with xp.kernel_output(result, like=grid, dtype=float) as buffer:
+        with xp.kernels.kernel_output(result, like=grid, dtype=float) as buffer:
             gather(convert(positions), grid, buffer, ...)
     """
     buffer = as_kernel_array(out, like, dtype)

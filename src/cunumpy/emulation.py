@@ -1,7 +1,7 @@
 """Run a CUDA kernel on the CPU, one thread after another, for tests without a GPU.
 
 A ported kernel is usually checked against its host version on a GPU
-(:func:`cunumpy.testing.assert_kernels_agree`). Without one, CI cannot run that
+(:func:`cunumpy.kernel_testing.assert_kernels_agree`). Without one, CI cannot run that
 check, and the kernel's index and weight arithmetic go untested.
 :func:`emulate_cuda_kernel` closes that gap: it compiles the kernel source as
 C++ with the CUDA built-ins replaced by plain C++ (``threadIdx``, ``blockIdx``,
@@ -9,7 +9,7 @@ C++ with the CUDA built-ins replaced by plain C++ (``threadIdx``, ``blockIdx``,
 thread, serially, on copies of the NumPy arguments, and copies the arrays back,
 so the call looks like a launch::
 
-    from cunumpy.testing import emulate_cuda_kernel
+    from cunumpy.kernel_testing import emulate_cuda_kernel
 
     y = np.zeros(1000)
     emulate_cuda_kernel(axpy, 2.0, x, y, 1000, n_threads=1000)

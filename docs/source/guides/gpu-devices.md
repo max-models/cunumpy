@@ -21,8 +21,8 @@ On a multi-GPU workstation, pick the device before creating arrays:
 
 ```python
 xp.set_backend("cupy")
-print("GPUs:", xp.device_count())
-xp.set_device(1)          # arrays created from now on live on GPU 1
+print("GPUs:", xp.cuda.device_count())
+xp.cuda.set_device(1)          # arrays created from now on live on GPU 1
 values = xp.zeros(10**6)
 ```
 
@@ -39,7 +39,7 @@ For MPI programs with one rank per GPU, use `bind_local_device()` instead
 ## Memory
 
 ```python
-free, total = xp.memory_info()
+free, total = xp.cuda.memory_info()
 print(f"{free / 2**30:.1f} of {total / 2**30:.1f} GiB free")
 ```
 
@@ -55,7 +55,7 @@ another library or between phases with very different memory needs:
 
 ```python
 del large_temporary
-xp.free_memory()
+xp.cuda.free_memory()
 ```
 
 It cannot free memory still referenced by live arrays. If memory keeps
@@ -69,18 +69,18 @@ This is what makes GPUs fast, and it has three practical consequences:
 1. Reading a value on the host (`to_numpy()`, `float()`, `print`) waits for all
    queued work that produces it. This happens automatically.
 2. Timing with `time.perf_counter()` around a launch measures the launch, not
-   the work. Use `xp.timed_region()` (see [Timing and profiling](profiling.md)).
+   the work. Use `xp.profiling.timed_region()` (see [Timing and profiling](profiling.md)).
 3. Libraries that read device memory without CuPy's knowledge, most
    importantly MPI, need an explicit `xp.synchronize()` (or
-   `xp.synchronize_for_mpi()`) before they access a buffer.
+   `xp.mpi.synchronize_for_mpi()`) before they access a buffer.
 
 ## Streams
 
 Work on one stream runs in order; work on different streams may overlap.
-`xp.stream()` creates a non-blocking stream and makes it current for the block:
+`xp.cuda.stream()` creates a non-blocking stream and makes it current for the block:
 
 ```python
-with xp.stream() as s:
+with xp.cuda.stream() as s:
     device = xp.to_cupy(pinned_host)   # copy and compute queued on s
     result = xp.fft.fft(device)
 

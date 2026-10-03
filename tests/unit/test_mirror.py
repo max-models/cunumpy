@@ -1,4 +1,4 @@
-"""Tests for `cunumpy.DeviceMirror` and the shipped `cunumpy/atomic.cuh` header.
+"""Tests for `cunumpy.memory.DeviceMirror` and the shipped `cunumpy/atomic.cuh` header.
 
 On the NumPy backend a mirror is transparent: `device` is the host array and
 transfers are no-ops. Device copies and the atomic kernel need a GPU and are
@@ -11,7 +11,8 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
-from cunumpy import CudaKernel, DeviceMirror
+from cunumpy.cuda import CudaKernel
+from cunumpy.memory import DeviceMirror
 
 requires_gpu = pytest.mark.skipif(
     not xp.cupy_available(), reason="CuPy/GPU not available or not functional"
@@ -125,7 +126,7 @@ def test_rebind():
 
 
 def test_cuda_include_dir_contains_atomic_header():
-    include_dir = xp.cuda_include_dir()
+    include_dir = xp.cuda.cuda_include_dir()
     assert isinstance(include_dir, str)
     assert include_dir.endswith(os.path.join("cuda", "include"))
     header = os.path.join(include_dir, "cunumpy", "atomic.cuh")
@@ -139,7 +140,7 @@ def test_cuda_include_dir_contains_atomic_header():
 
 
 def test_cuda_kernel_options_include_cunumpy_headers():
-    flag = f"-I{xp.cuda_include_dir()}"
+    flag = f"-I{xp.cuda.cuda_include_dir()}"
     kernel = CudaKernel(BIN_ADD, "bin_add")
     assert flag not in kernel.options  # options are as given
     assert flag in kernel.compile_options()

@@ -19,7 +19,7 @@ void axpy(double a, const double* x, double* y, int n) {
 }
 """
 
-axpy = xp.CudaKernel(AXPY, "axpy")
+axpy = xp.cuda.CudaKernel(AXPY, "axpy")
 
 xp.set_backend("cupy")
 x = xp.arange(10_000, dtype=xp.float64)
@@ -59,7 +59,7 @@ every call:
 
 C types map to NumPy dtypes as on 64-bit Linux: `int` is `int32`, `long` and
 `long long` are `int64`, `float` is `float32`, `double` is `float64`.
-`xp.ctype_of(np.float64)` returns `"double"`, useful when generating source.
+`xp.cuda.ctype_of(np.float64)` returns `"double"`, useful when generating source.
 
 A wrong argument count, dtype or layout raises before anything is launched,
 with the parameter name in the message:
@@ -115,7 +115,7 @@ extern "C" __global__ void block_sum(const double* x, double* out, int n) {
     if (threadIdx.x == 0) out[blockIdx.x] = buffer[0];
 }
 """
-block_sum = xp.CudaKernel(BLOCK_SUM, "block_sum", block_size=128)
+block_sum = xp.cuda.CudaKernel(BLOCK_SUM, "block_sum", block_size=128)
 (n_blocks,), (threads,) = block_sum.launch_shape(x.size)
 partial = xp.zeros(n_blocks)
 block_sum(x, partial, x.size, n_threads=x.size, shared_mem=threads * 8)
@@ -128,7 +128,7 @@ Keeping CUDA source in `.cu` files gives editor support and lets kernels share
 headers:
 
 ```python
-push = xp.CudaKernel.from_file("kernels/push/push_cuda.cu")  # kernel name "push"
+push = xp.cuda.CudaKernel.from_file("kernels/push/push_cuda.cu")  # kernel name "push"
 ```
 
 `from_file` derives the kernel name from the file name minus the `_cuda.cu`
@@ -139,12 +139,12 @@ A file with several small kernels is loaded at once with `all_from_file`, which
 returns a dict by name; the kernels share one compilation:
 
 ```python
-ops = xp.CudaKernel.all_from_file("kernels/vector_ops.cu", block_size=256)
+ops = xp.cuda.CudaKernel.all_from_file("kernels/vector_ops.cu", block_size=256)
 ops["scale"](x, 2.0, x.size, n_threads=x.size)
 ops["shift"](x, 1.0, x.size, n_threads=x.size)
 ```
 
-`xp.cuda_kernel_names(source)` lists the `__global__` functions of a source.
+`xp.cuda.cuda_kernel_names(source)` lists the `__global__` functions of a source.
 
 ## Headers and the compile cache
 
@@ -156,10 +156,10 @@ Pass extra include directories with `include_dirs=[...]` and NVRTC flags with
 | `<cunumpy/index.cuh>` | `CUNUMPY_THREAD_1D(i, n)`, `_2D`, `_3D`, `CUNUMPY_GRID_STRIDE_1D(i, n)` |
 | `<cunumpy/array_view.cuh>` | strided views `Array1D<T>` to `Array4D<T>` |
 | `<cunumpy/atomic.cuh>` | `cunumpy_atomic_add` and indexed 2D/3D variants, see [Accumulation kernels](accumulation.md) |
-| `<cunumpy/morton.cuh>` | Morton (Z-order) keys `cunumpy_morton_key2(x, y, ...)`, `_key3`, equal to `xp.morton_keys` on the host |
-| `<cunumpy/random.cuh>` | counter-based random numbers `cunumpy_uniform(seed, stream, counter)`, `cunumpy_normal2(...)`, equal to `xp.philox_uniform` on the host |
+| `<cunumpy/morton.cuh>` | Morton (Z-order) keys `cunumpy_morton_key2(x, y, ...)`, `_key3`, equal to `xp.algorithms.morton_keys` on the host |
+| `<cunumpy/random.cuh>` | counter-based random numbers `cunumpy_uniform(seed, stream, counter)`, `cunumpy_normal2(...)`, equal to `xp.rng.philox_uniform` on the host |
 
-`xp.cuda_include_dir()` returns their directory for use with other compilers.
+`xp.cuda.cuda_include_dir()` returns their directory for use with other compilers.
 
 CuPy's disk cache is keyed on the source string and the options only, so
 editing an included header would normally *not* trigger a recompile.
@@ -187,7 +187,7 @@ void scale_column(Array2D<double> a, long long column, double factor) {
     a(i, column) *= factor;
 }
 """
-scale_column = xp.CudaKernel(SCALE_COLUMN, "scale_column")
+scale_column = xp.cuda.CudaKernel(SCALE_COLUMN, "scale_column")
 
 markers = xp.zeros((1000, 7))
 view = markers[::2, 1:5]                 # non-contiguous view is fine
@@ -224,8 +224,8 @@ __global__ void scale(T* x, T factor, int n) {
     if (i < n) x[i] *= factor;
 }
 """
-scale_f64 = xp.CudaKernel(SCALE, "scale", template_args=(np.float64,))
-scale_f32 = xp.CudaKernel(SCALE, "scale", template_args=(np.float32,))
+scale_f64 = xp.cuda.CudaKernel(SCALE, "scale", template_args=(np.float64,))
+scale_f32 = xp.cuda.CudaKernel(SCALE, "scale", template_args=(np.float32,))
 ```
 
 When the source itself is generated per variant (unrolled loops per dimension,
@@ -234,10 +234,10 @@ on first use and caches it:
 
 ```python
 def make_matvec(ndim, dtype):
-    return xp.CudaKernel(generate_source(ndim, xp.ctype_of(dtype)), "matvec")
+    return xp.cuda.CudaKernel(generate_source(ndim, xp.cuda.ctype_of(dtype)), "matvec")
 
 
-matvec = xp.CudaKernelVariants(make_matvec)
+matvec = xp.cuda.CudaKernelVariants(make_matvec)
 matvec.get(3, np.float64)(mat, x, out, n_threads=out.size)
 matvec.compile_all([(3, np.float64), (3, np.complex128)], jobs=4)  # at setup
 ```
