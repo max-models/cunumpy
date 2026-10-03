@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `KernelCatalog.from_package(..., include_dirs=None)` is now an explicit keyword; by default the source root of the top-level package (the directory containing it) is an include directory of every CUDA kernel, in addition to the kernel's own folder, so kernels can `#include "my_pkg/common.cuh"`.
 
 ### Added
+- `cunumpy/morton.cuh` and `xp.morton_keys`, `morton_encode`, `morton_decode`, `morton_scales`, `MAX_MORTON_LEVELS`: Morton (Z-order) keys of 2D and 3D points (`uint64`, up to 32 and 21 bits per axis), the same in a kernel and on the host (bit for bit), for sorting particles along a space-filling curve and building quadtrees and octrees from sorted keys.
+- `xp.sort_by_key(keys, *arrays)`: one stable argsort of `keys` applied to every array; returns the sorted keys, the order and the sorted arrays.
 - `cunumpy/random.cuh` and `xp.philox_uniform`, `philox_uniform2`, `philox_normal`, `philox_normal2`, `philox4x32_10`: counter-based random numbers (Philox4x32-10, passing the Random123 known-answer tests) as a pure function of `(seed, stream, counter)`, the same in a kernel and on the host (uniform numbers bit for bit, normal numbers up to the last bits of the math functions), so kernels that draw random numbers can be compared with their host versions.
 - `CudaKernel(..., n_threads_from="first_array")`: one thread per row of the first array argument when a launch gives neither `n_threads` nor `grid`.
 - `CudaKernel` launches with `shared_mem` above 48 KiB set the kernel's `max_dynamic_shared_size_bytes` once, up to the device's opt-in limit, and raise `ValueError` beyond it.

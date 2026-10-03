@@ -25,6 +25,13 @@ from .dispatch import Kernel, KernelCatalog
 from .fusion import fuse
 from .kernel import CompiledHostKernel, KernelArguments, PyccelKernel, resolve_host_args
 from .mirror import DeviceMirror
+from .morton import (
+    MAX_MORTON_LEVELS,
+    morton_decode,
+    morton_encode,
+    morton_keys,
+    morton_scales,
+)
 from .petsc import petsc_vec
 from .philox import (
     philox4x32_10,
@@ -76,6 +83,7 @@ from .xp import (
     set_device,
     set_device_for_rank,
     set_mpi_cuda_aware,
+    sort_by_key,
     stream,
     synchronize,
     synchronize_for_mpi,
@@ -122,6 +130,7 @@ def require_version(minimum: str) -> None:
 __all__ = [
     "DEBUG_OPTIONS",
     "DEFAULT_SHARED_MEMORY_PER_BLOCK",
+    "MAX_MORTON_LEVELS",
     "CompiledHostKernel",
     "CudaArguments",
     "CudaKernel",
@@ -170,6 +179,10 @@ __all__ = [
     "local_rank",
     "max_shared_memory_per_block",
     "memory_info",
+    "morton_decode",
+    "morton_encode",
+    "morton_keys",
+    "morton_scales",
     "mpi_buffer",
     "mpi_is_cuda_aware",
     "numpy_backend",
@@ -195,6 +208,7 @@ __all__ = [
     "set_device",
     "set_device_for_rank",
     "set_mpi_cuda_aware",
+    "sort_by_key",
     "stream",
     "synchronize",
     "synchronize_for_mpi",
