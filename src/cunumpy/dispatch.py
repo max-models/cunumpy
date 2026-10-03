@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import importlib.util
 import inspect
 import sys
 import warnings
@@ -34,7 +35,12 @@ from typing import Any
 import array_api_compat
 
 from .cuda_kernel import CudaKernel, _compile_in_threads
-from .kernel import CompiledHostKernel, PyccelKernel, resolve_host_args
+from .kernel import (
+    CompiledHostKernel,
+    HostImplementations,
+    PyccelKernel,
+    resolve_host_args,
+)
 from .transfers import _ACTIVE as _COUNTERS
 from .transfers import _record
 from .xp import get_backend
@@ -97,6 +103,41 @@ def _pyccel_stub_parameters(function: Any) -> list[str] | None:
         if isinstance(node, ast.FunctionDef) and node.name == func_name:
             return [a.arg for a in node.args.posonlyargs + node.args.args]
     return None
+
+
+def _import_loader(module: str, name: str) -> Callable[[], Callable[..., Any]]:
+    """Loads function `name` of `module` on first use (the import may fail)."""
+    return lambda: getattr(importlib.import_module(module), name)
+
+
+def _fallback_loader(
+    host_fallback: (
+        Mapping[str, Callable[..., Any]]
+        | Callable[[str], Callable[..., Any] | None]
+        | None
+    ),
+    name: str,
+) -> dict[str, Callable[[], Callable[..., Any]]]:
+    """`from_package`'s `host_fallback` for kernel `name`, as its NumPy implementation."""
+    fallback = (
+        host_fallback(name)
+        if callable(host_fallback)
+        else (host_fallback or {}).get(name)
+    )
+    return {} if fallback is None else {"numpy": lambda: fallback}
+
+
+def _positional_parameters(function: Any) -> list[str] | None:
+    """Names of the positional parameters of `function`, or None without a signature."""
+    try:
+        signature = inspect.signature(function)
+    except (TypeError, ValueError):
+        return None
+    positional = (
+        inspect.Parameter.POSITIONAL_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    )
+    return [p.name for p in signature.parameters.values() if p.kind in positional]
 
 
 def _source_root(package: str) -> Path:
@@ -194,6 +235,147 @@ class Kernel:
         self._test_args: ModuleType | None = None
         self._warned = False
 
+    @classmethod
+    def from_folder(
+        cls,
+        package: str,
+        *,
+        host_suffix: str = "_kernels",
+        cuda_suffix: str = "_cuda.cu",
+        test_args_suffix: str | None = "_test_args",
+        check_name_length: bool = True,
+        missing_cuda: str = "raise",
+        host_options: Mapping[str, Any] | None = None,
+        include_dirs: Sequence[str | Path] | None = None,
+        dispatch: str = "backend",
+        compile_host: Callable[[Any], Any] | None = None,
+        extra_implementations: (
+            Mapping[str, Callable[[], Callable[..., Any]]] | None
+        ) = None,
+        **cuda_options: Any,
+    ) -> Kernel:
+        """The kernel of one kernel folder, the unit of :meth:`KernelCatalog.from_package`.
+
+        `package` is the dotted name of the folder ``<name>``. Every file of the
+        folder that defines a version of the kernel (a function ``<name>``, or
+        the ``__global__`` function ``<name>``) is one implementation:
+
+        * ``<name><host_suffix>.py``: ``"pyccel"``, compiled with `compile_host`
+          (as it is without one), and ``"python"``, the same file uncompiled;
+        * ``<name>_numba.py``: ``"numba"`` (the function decorated there, e.g.
+          with ``numba.njit``; unavailable if the import fails);
+        * ``<name>_numpy.py``: ``"numpy"``;
+        * ``<name><cuda_suffix>``: the CUDA kernel.
+
+        The host implementations form a :class:`~cunumpy.HostImplementations`:
+        a call runs the one set with :func:`~cunumpy.set_kernel_implementation`,
+        or by default the first available of pyccel, numba and NumPy. The
+        folder's own ``__init__.py`` can declare its kernel with this method, so
+        that the kernel is imported from where it is written::
+
+            # my_sim/kernels/push/__init__.py
+            kernel = xp.Kernel.from_folder(
+                __name__, host_suffix="_pyccel", compile_host=compile, dispatch="arrays"
+            )
+
+            # anywhere in the code
+            from my_sim.kernels.push import kernel as push
+
+        Nothing is compiled here: the CUDA source is parsed, the host module
+        imported.
+
+        Parameters
+        ----------
+        package : str
+            Dotted name of the kernel folder (``__name__`` in its ``__init__.py``).
+        host_suffix, cuda_suffix, test_args_suffix, check_name_length
+            As for :meth:`KernelCatalog.from_package`.
+        missing_cuda, host_options, dispatch
+            Passed on to :class:`Kernel`.
+        include_dirs : Sequence[str | Path] | None
+            Include directories of the CUDA kernel, in addition to the folder
+            itself; by default the source root of the top-level package (the
+            directory containing it).
+        compile_host : Callable | None
+            Returns the compiled form of the ``<name><host_suffix>`` module
+            (cunumpy does not compile anything itself, e.g. a wrapper around
+            ``pyccel.epyccel`` with a cache), called on first use of the pyccel
+            implementation; if it raises, that implementation is unavailable.
+        extra_implementations : Mapping | None
+            Loaders of host implementations that are not files of the folder,
+            by implementation name, e.g. ``{"numpy": lambda: push_numpy}``.
+        **cuda_options
+            Passed on to :meth:`CudaKernel.from_file`, e.g. ``block_size`` or
+            ``n_threads_from``.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the folder has no host kernel module.
+        """
+        spec = importlib.util.find_spec(package)
+        if spec is None or not spec.submodule_search_locations:
+            raise ModuleNotFoundError(f"{package!r} is not a package (kernel folder)")
+        folder = Path(next(iter(spec.submodule_search_locations)))
+        name = package.rpartition(".")[2]
+        if not (folder / f"{name}{host_suffix}.py").is_file():
+            raise FileNotFoundError(
+                f"kernel folder {folder} has no host kernel {name}{host_suffix}.py"
+            )
+        wrapper = f"bind_c_{name}{host_suffix}"
+        if check_name_length and len(wrapper) > FORTRAN_NAME_LIMIT:
+            warnings.warn(
+                f"kernel {name!r}: the module name {name}{host_suffix} gives the "
+                f"pyccel Fortran wrapper module {wrapper!r} ({len(wrapper)} "
+                f"characters), longer than Fortran's limit of "
+                f"{FORTRAN_NAME_LIMIT}; shorten the kernel name to at most "
+                f"{FORTRAN_NAME_LIMIT - len('bind_c_') - len(host_suffix)} "
+                "characters or compile with the C backend",
+                stacklevel=2,
+            )
+        test_args = None
+        if (
+            test_args_suffix is not None
+            and (folder / f"{name}{test_args_suffix}.py").is_file()
+        ):
+            test_args = f"{package}.{name}{test_args_suffix}"
+        module = importlib.import_module(f"{package}.{name}{host_suffix}")
+        python = getattr(module, name)
+        loaders: dict[str, Callable[[], Callable[..., Any]]] = {
+            "python": lambda: python,
+            "pyccel": (
+                (lambda: getattr(compile_host(module), name))
+                if compile_host is not None
+                else (lambda: python)
+            ),
+        }
+        for implementation in ("numba", "numpy"):
+            if (folder / f"{name}_{implementation}.py").is_file():
+                loaders[implementation] = _import_loader(
+                    f"{package}.{name}_{implementation}", name
+                )
+        loaders.update(extra_implementations or {})
+        host = HostImplementations(name, loaders)
+        if include_dirs is None:
+            include_dirs = (_source_root(package),)
+        cuda_options["include_dirs"] = tuple(include_dirs)
+        cuda_path = folder / f"{name}{cuda_suffix}"
+        cuda_kernel = (
+            CudaKernel.from_file(cuda_path, name, **cuda_options)
+            if cuda_path.is_file()
+            else None
+        )
+        return cls(
+            host,
+            cuda_kernel,
+            name=name,
+            missing_cuda=missing_cuda,
+            cuda_path=cuda_path,
+            host_options=host_options,
+            dispatch=dispatch,
+            test_args=test_args,
+        )
+
     def __repr__(self) -> str:
         return (
             f"Kernel(name={self._name!r}, cuda={self._cuda_kernel is not None}, "
@@ -264,42 +446,87 @@ class Kernel:
         available.
         """
         function = self._host_kernel.kernel
-        if isinstance(function, CompiledHostKernel):
+        if isinstance(function, (CompiledHostKernel, HostImplementations)):
             function = function.python
-        try:
-            signature = inspect.signature(function)
-        except (TypeError, ValueError):
-            return _pyccel_stub_parameters(function)
-        positional = (
-            inspect.Parameter.POSITIONAL_ONLY,
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        parameters = _positional_parameters(function)
+        return (
+            parameters if parameters is not None else _pyccel_stub_parameters(function)
         )
-        return [p.name for p in signature.parameters.values() if p.kind in positional]
 
     def check_signature(self) -> None:
-        """Check that the host and CUDA kernels take the same parameters, in order.
+        """Check that all implementations of the kernel take the same parameters.
 
         Compares the parameter names of the host function with those of the
-        parsed ``__global__`` signature. Nothing is checked without a CUDA
-        kernel, without a parsed CUDA signature (``check_signature=False``) or
-        without a Python host signature.
+        parsed ``__global__`` signature, with those of the other host
+        implementations of a :class:`~cunumpy.HostImplementations` (numba,
+        NumPy; nothing is compiled, an implementation that fails to import is
+        skipped) and with the fallback of a :class:`~cunumpy.CompiledHostKernel`.
+        A side is skipped without a CUDA kernel, without a parsed CUDA signature
+        (``check_signature=False``), or without a Python signature.
 
         Raises
         ------
         ValueError
             If the names or their order differ; the message shows both lists.
         """
-        if self._cuda_kernel is None or self._cuda_kernel.signature is None:
-            return
         host = self.host_parameters()
         if host is None:
             return
-        cuda = [param.name for param in self._cuda_kernel.signature]
-        if host != cuda:
-            raise ValueError(
-                f"kernel {self._name!r}: the host kernel takes ({', '.join(host)}), "
-                f"the CUDA kernel ({', '.join(cuda)})"
-            )
+        if self._cuda_kernel is not None and self._cuda_kernel.signature is not None:
+            cuda = [param.name for param in self._cuda_kernel.signature]
+            if host != cuda:
+                raise ValueError(
+                    f"kernel {self._name!r}: the host kernel takes "
+                    f"({', '.join(host)}), the CUDA kernel ({', '.join(cuda)})"
+                )
+        function = self._host_kernel.kernel
+        others: dict[str, Any] = {}
+        if isinstance(function, CompiledHostKernel) and function.fallback is not None:
+            others["fallback"] = function.fallback
+        elif isinstance(function, HostImplementations):
+            for name in ("numba", "numpy"):
+                if function.available(name):
+                    # a numba dispatcher keeps the Python function in py_func
+                    implementation = function.get(name)
+                    others[name] = getattr(implementation, "py_func", implementation)
+        for name, implementation in others.items():
+            parameters = _positional_parameters(implementation)
+            if parameters is not None and parameters != host:
+                which = "its fallback" if name == "fallback" else f"the {name} version"
+                raise ValueError(
+                    f"kernel {self._name!r}: the host kernel takes "
+                    f"({', '.join(host)}), {which} ({', '.join(parameters)})"
+                )
+
+    @property
+    def implementations(self) -> tuple[str, ...]:
+        """Names of the implementations, e.g. ``("pyccel", "numpy", "python", "cuda")``.
+
+        A host kernel that is not a :class:`~cunumpy.HostImplementations` counts
+        as ``"host"``.
+        """
+        function = self._host_kernel.kernel
+        host = (
+            function.names if isinstance(function, HostImplementations) else ("host",)
+        )
+        return (*host, "cuda") if self._cuda_kernel is not None else host
+
+    def selected(self, device: bool = False) -> str:
+        """The implementation a call with host (or `device`) arguments runs now.
+
+        For host arguments: the setting of
+        :func:`~cunumpy.set_kernel_implementation` or the default (loads it), or
+        ``"host"`` for a host kernel that is not a
+        :class:`~cunumpy.HostImplementations`. For device arguments ``"cuda"``,
+        or ``"host"`` if there is no CUDA kernel and ``missing_cuda="fallback"``.
+        Useful to check that a run does not use a slow path.
+        """
+        if device:
+            return "cuda" if self._device_kernel() is self._cuda_kernel else "host"
+        function = self._host_kernel.kernel
+        return (
+            function.selected() if isinstance(function, HostImplementations) else "host"
+        )
 
     def get_kernel(self) -> PyccelKernel | CudaKernel:
         """The kernel for the active backend.
@@ -387,6 +614,14 @@ class Kernel:
                     "called on the CuPy backend",
                 )
             args, _ = resolve_host_args(args)
+            if (
+                self._dispatch == "arrays"
+                and not on_device
+                and kernel._use_cupy is not True
+            ):
+                # only host arguments, by the choice above: nothing to convert,
+                # even while CuPy is the active backend
+                return kernel.kernel(*args)
             return kernel(*args)
         if n_threads is None and grid is None and kernel.n_threads_from is None:
             raise ValueError(
@@ -506,55 +741,26 @@ class KernelCatalog(Mapping):
         root = Path(importlib.import_module(package).__file__).parent
         if include_dirs is None:
             include_dirs = (_source_root(package),)
-        cuda_options["include_dirs"] = tuple(include_dirs)
         kernels = {}
         for folder in sorted(p for p in root.iterdir() if p.is_dir()):
             name = folder.name
             if not (folder / f"{name}{host_suffix}.py").is_file():
                 continue
-            wrapper = f"bind_c_{name}{host_suffix}"
-            if check_name_length and len(wrapper) > FORTRAN_NAME_LIMIT:
-                warnings.warn(
-                    f"kernel {name!r}: the module name {name}{host_suffix} gives the "
-                    f"pyccel Fortran wrapper module {wrapper!r} ({len(wrapper)} "
-                    f"characters), longer than Fortran's limit of "
-                    f"{FORTRAN_NAME_LIMIT}; shorten the kernel name to at most "
-                    f"{FORTRAN_NAME_LIMIT - len('bind_c_') - len(host_suffix)} "
-                    "characters or compile with the C backend",
-                    stacklevel=2,
-                )
-            test_args = None
-            if (
-                test_args_suffix is not None
-                and (folder / f"{name}{test_args_suffix}.py").is_file()
-            ):
-                test_args = f"{package}.{name}.{name}{test_args_suffix}"
-            module = importlib.import_module(f"{package}.{name}.{name}{host_suffix}")
-            host: Callable[..., Any] = getattr(module, name)
-            if compile_host is not None:
-                fallback = (
-                    host_fallback(name)
-                    if callable(host_fallback)
-                    else (host_fallback or {}).get(name)
-                )
-                host = CompiledHostKernel(module, name, compile_host, fallback)
-            cuda_path = folder / f"{name}{cuda_suffix}"
-            cuda_kernel = (
-                CudaKernel.from_file(cuda_path, name, **cuda_options)
-                if cuda_path.is_file()
-                else None
-            )
-            kernels[name] = Kernel(
-                host,
-                cuda_kernel,
-                name=name,
+            kernels[name] = Kernel.from_folder(
+                f"{package}.{name}",
+                host_suffix=host_suffix,
+                cuda_suffix=cuda_suffix,
+                test_args_suffix=test_args_suffix,
+                check_name_length=check_name_length,
                 missing_cuda=missing_cuda,
-                cuda_path=cuda_path,
                 host_options=(
                     host_options(name) if callable(host_options) else host_options
                 ),
+                include_dirs=include_dirs,
                 dispatch=dispatch,
-                test_args=test_args,
+                compile_host=compile_host,
+                extra_implementations=_fallback_loader(host_fallback, name),
+                **cuda_options,
             )
         return cls(kernels)
 
