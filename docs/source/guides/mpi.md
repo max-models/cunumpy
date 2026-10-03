@@ -95,6 +95,47 @@ columns are not (copy them with `xp.ascontiguousarray()` first). No
 synchronization is needed after MPI returns; kernels launched afterwards see
 the received data.
 
+### 5. One call site for both MPI builds: `mpi_buffer`
+
+Code that must also run with an MPI library that is not CUDA-aware (or on
+the NumPy backend) stages device buffers through the host. `mpi_buffer()`
+does the right thing for each case, so the MPI call is written once:
+
+```python
+xp.mpi_is_cuda_aware(comm)  # once at startup; the answer is remembered
+
+with xp.mpi_buffer(send_r) as sendbuf, xp.mpi_buffer(recv_l, send=False, recv=True) as recvbuf:
+    comm.Sendrecv(sendbuf, dest=right, recvbuf=recvbuf, source=left)
+```
+
+A host array is yielded as it is. A device array is yielded as it is (after
+`synchronize_for_mpi`) when MPI is CUDA-aware, and otherwise replaced by a
+pinned host copy: filled from the device before the block when `send=True`,
+copied back into the device array after the block when `recv=True`. The
+copies are counted by `count_transfers()`, so a GPU run with a plain MPI
+build is visible in the transfer report. Without a recorded answer (no
+`mpi_is_cuda_aware()` call and no `set_mpi_cuda_aware()`), a device array
+raises instead of guessing.
+
+## Reproducible random numbers
+
+Each rank needs its own random stream, and a run is reproducible only if every
+draw comes from a seeded generator. Seed `xp.random_streams` once, after MPI is
+initialized, and draw from it everywhere:
+
+```python
+xp.random_streams.seed(config.seed, rank=comm.Get_rank())
+
+positions = xp.random_streams.random((n, 3))
+velocities = xp.random_streams.normal(0.0, v_th, (n, 3))
+rng = xp.random_streams.generator()  # for other distributions
+```
+
+Rank `r` draws the stream `(seed, r)`; the same seed and number of ranks give
+the same results, and different ranks never share numbers. Avoid unseeded
+generators (`np.random.default_rng()` without a seed) anywhere in the time loop:
+one of them makes every run different.
+
 ## Launching
 
 ```bash

@@ -23,7 +23,10 @@ kernel receives in that position, ``__cuda_args__()`` what a
 from __future__ import annotations
 
 import copy
+import importlib
+import warnings
 from collections.abc import Callable, Mapping, Sequence
+from types import ModuleType
 from typing import Any
 
 import array_api_compat
@@ -33,7 +36,7 @@ from .transfers import _ACTIVE as _COUNTERS
 from .transfers import _record
 from .xp import _cupy_backend, _to_cupy, _to_numpy
 
-__all__ = ["KernelArguments", "PyccelKernel", "resolve_host_args"]
+__all__ = ["CompiledHostKernel", "KernelArguments", "PyccelKernel", "resolve_host_args"]
 
 
 class KernelArguments:
@@ -506,3 +509,100 @@ class PyccelKernel:
     def outputs(self) -> tuple[int | str, ...] | None:
         """Declared output arguments, or ``None`` if every array is copied back."""
         return self._outputs
+
+
+class CompiledHostKernel:
+    """A host kernel compiled on its first call, with a fallback.
+
+    cunumpy does not compile anything itself: `compiler` is the caller's
+    function that turns the kernel module into a compiled one, e.g. a wrapper
+    around ``pyccel.epyccel`` with a cache, or a function importing modules
+    compiled ahead of time.
+
+    Parameters
+    ----------
+    module : str | ModuleType
+        The module that defines the kernel, or its name.
+    name : str
+        Name of the kernel function in `module`.
+    compiler : Callable[[ModuleType], ModuleType]
+        Returns the compiled form of the module (with the same function names).
+    fallback : Callable | None
+        Called instead when compilation fails (e.g. a vectorized NumPy
+        implementation with the same arguments). Without one, the uncompiled
+        Python function is called, with a warning: correct, but slow.
+
+    Notes
+    -----
+    :attr:`compiled` builds the kernel and reports whether that worked, so
+    that callers can choose another code path; :attr:`error` keeps the
+    exception of a failed build.
+    """
+
+    def __init__(
+        self,
+        module: str | ModuleType,
+        name: str,
+        compiler: Callable[[ModuleType], ModuleType],
+        fallback: Callable[..., Any] | None = None,
+    ) -> None:
+        self._module = module
+        self.__name__ = name
+        self._compiler = compiler
+        self._fallback = fallback
+        self._compiled: Callable[..., Any] | None = None
+        self._built = False
+        self.error: BaseException | None = None
+        self._warned = False
+
+    def __repr__(self) -> str:
+        state = (
+            "not built"
+            if not self._built
+            else ("compiled" if self._compiled else "failed")
+        )
+        return f"CompiledHostKernel({self.__name__!r}, {state})"
+
+    @property
+    def module(self) -> ModuleType:
+        """The (uncompiled) module that defines the kernel."""
+        if isinstance(self._module, str):
+            self._module = importlib.import_module(self._module)
+        return self._module
+
+    @property
+    def python(self) -> Callable[..., Any]:
+        """The uncompiled Python function (for signatures and reference results)."""
+        return getattr(self.module, self.__name__)
+
+    def build(self) -> Callable[..., Any] | None:
+        """Compile now (once); the compiled function, or None if that failed."""
+        if not self._built:
+            self._built = True
+            try:
+                self._compiled = getattr(self._compiler(self.module), self.__name__)
+            except Exception as error:  # noqa: BLE001 -- no Pyccel or no compiler
+                self.error = error
+        return self._compiled
+
+    @property
+    def compiled(self) -> bool:
+        """Whether the compiled version is available (compiles on first access)."""
+        return self.build() is not None
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        kernel = self.build()
+        if kernel is None:
+            if self._fallback is not None:
+                kernel = self._fallback
+            else:
+                if not self._warned:
+                    warnings.warn(
+                        f"Kernel {self.__name__!r} could not be compiled "
+                        f"({self.error!r}); running its uncompiled Python version.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    self._warned = True
+                kernel = self.python
+        return kernel(*args, **kwargs)

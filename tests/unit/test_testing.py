@@ -16,12 +16,12 @@ import pytest
 import cunumpy as xp
 import cunumpy.testing
 from cunumpy import CudaArguments, CudaKernel, Kernel, parse_cuda_signature
+from cunumpy.testing import backend  # noqa: F401 - the fixture is used by name
 from cunumpy.testing import (
     BACKENDS,
     _collect_arrays,
     _compare_results,
     assert_kernels_agree,
-    backend,  # noqa: F401 - the fixture is used by name
     device_function_kernel,
     requires_cupy,
 )

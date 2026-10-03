@@ -46,11 +46,13 @@ This module imports CuPy only when a kernel is compiled, so it can be imported
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import inspect
 import math
 import os
 import re
+import sys
 import typing
 from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -69,6 +71,7 @@ __all__ = [
     "CudaStruct",
     "CudaStructArguments",
     "CudaStructValue",
+    "PyccelStructArguments",
     "ctype_of",
     "cuda_include_dir",
     "cuda_kernel_names",
@@ -90,8 +93,8 @@ def cuda_include_dir() -> str:
     """The directory of the CUDA headers shipped with cunumpy.
 
     :class:`CudaKernel` adds it to the include path automatically, so kernels
-    can ``#include "cunumpy/array_view.cuh"`` (strided ``Array1D<T>``,
-    ``Array2D<T>``, ``Array3D<T>`` views passed by value) and
+    can ``#include "cunumpy/array_view.cuh"`` (strided ``Array1D<T>``
+    to ``Array4D<T>`` views passed by value) and
     ``#include "cunumpy/index.cuh"`` (thread-index and grid-stride macros such
     as ``CUNUMPY_THREAD_1D(i, n)``), ``#include "cunumpy/atomic.cuh"`` (atomic
     adds) and ``#include "cunumpy/reduce.cuh"`` (warp and block reductions).
@@ -156,7 +159,7 @@ class CudaParameter(NamedTuple):
         The struct type, for a struct passed by value.
     view_ndim : int | None
         The number of dimensions, for an array view (``Array1D<T>`` to
-        ``Array3D<T>``, see :func:`cuda_include_dir`) passed by value.
+        ``Array4D<T>``, see :func:`cuda_include_dir`) passed by value.
     """
 
     name: str
@@ -228,10 +231,10 @@ _CTYPE_OF = {
 _QUALIFIERS = {"const", "volatile", "__restrict__", "__restrict", "restrict"}
 
 _COMPLEX = re.compile(r"(?:(?:thrust|cuda::std)::)?complex\s*<\s*(float|double)\s*>")
-# Array1D<T> to Array3D<T> (cunumpy/array_view.cuh), T a scalar type of _CTYPES
-_VIEW = re.compile(r"\bArray([123])D\s*<((?:[^<>]|complex<[^<>]*>)+?)>")
+# Array1D<T> to Array4D<T> (cunumpy/array_view.cuh), T a scalar type of _CTYPES
+_VIEW = re.compile(r"\bArray([1234])D\s*<((?:[^<>]|complex<[^<>]*>)+?)>")
 _TOKEN = re.compile(
-    r"Array[123]D<[^<>]*(?:<[^<>]*>[^<>]*)?>|complex<(?:float|double)>"
+    r"Array[1234]D<[^<>]*(?:<[^<>]*>[^<>]*)?>|complex<(?:float|double)>"
     r"|[A-Za-z_]\w*|\*|\[\s*\]"
 )
 
@@ -597,8 +600,23 @@ def _describe(param: CudaParameter, index: int) -> str:
     return f"argument {index} ({ctype} {param.name})"
 
 
+def _current_device_id() -> int | None:
+    """The id of the current CUDA device, or None if CuPy has not been imported.
+
+    CuPy is looked up in ``sys.modules`` and never imported here: without it
+    there are no device arrays whose device could be checked.
+    """
+    cp = sys.modules.get("cupy")
+    if cp is None:
+        return None
+    try:
+        return int(cp.cuda.runtime.getDevice())
+    except Exception:  # noqa: BLE001 - no device check without a working runtime
+        return None
+
+
 def _check_device_array(param: CudaParameter, index: int, value: Any) -> None:
-    """Raise unless `value` is a device array of the declared dtype."""
+    """Raise unless `value` is a device array of the declared dtype on the current device."""
     # checked on the class: on the instance, CuPy builds the whole interface dict
     if not hasattr(type(value), "__cuda_array_interface__") and not hasattr(
         value, "__cuda_array_interface__"
@@ -612,6 +630,17 @@ def _check_device_array(param: CudaParameter, index: int, value: Any) -> None:
             f"{_describe(param, index)} must have dtype {param.dtype}, got "
             f"{value.dtype}"
         )
+    # an array on another GPU: the kernel would read a foreign address, which
+    # neither cupy.RawKernel nor the struct packing notices
+    device_id = getattr(getattr(value, "device", None), "id", None)
+    if device_id is not None:
+        current = _current_device_id()
+        if current is not None and device_id != current:
+            raise ValueError(
+                f"{_describe(param, index)} is on CUDA device {device_id}, but the "
+                f"current device is {current}; kernels only take arrays of the "
+                "current device (see cunumpy.bind_local_device)"
+            )
 
 
 def _pointer_checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
@@ -701,6 +730,9 @@ def _scalar_checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
         if isinstance(value, np.generic):
             if value.dtype == dtype:
                 return value
+            if isinstance(value, np.integer) and kind in "iuf":
+                # by value, like a Python int: np.int64(5) fits an int parameter
+                return cast_int(int(value))
             if np.can_cast(value.dtype, dtype, casting="safe"):
                 return scalar_type(value)
             raise TypeError(
@@ -806,8 +838,8 @@ def _pyccel_ctype(annotation: Any, scalars: Mapping[str, str], what: str) -> str
     ctype = scalars[scalar]
     if ndim == 0:
         return ctype
-    if ndim > 3:
-        raise ValueError(f"{what}: arrays have at most 3 dimensions, got {ndim}")
+    if ndim > 4:
+        raise ValueError(f"{what}: arrays have at most 4 dimensions, got {ndim}")
     return f"Array{ndim}D<{ctype}>"
 
 
@@ -877,6 +909,59 @@ def write_cuda_header(
     return source
 
 
+def _read_python_source(source: str | Path) -> tuple[str, str]:
+    """`(text, description)` of a Python source given as a path or as code."""
+    if isinstance(source, Path) or (
+        "\n" not in source and source.strip().endswith(".py")
+    ):
+        path = Path(source)
+        return path.read_text(), str(path)
+    return str(source), "<source>"
+
+
+def _find_init(tree: ast.Module, class_name: str, where: str) -> ast.FunctionDef:
+    """The ``__init__`` function of the class `class_name` in a parsed module."""
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            for item in node.body:
+                if isinstance(item, ast.FunctionDef) and item.name == "__init__":
+                    return item
+            raise ValueError(f"class {class_name!r} in {where} has no __init__")
+    raise ValueError(f"no class {class_name!r} in {where}")
+
+
+def _stored_parameters(init: ast.FunctionDef) -> dict[str, str]:
+    """``{parameter: attribute}`` for the ``self.<attribute> = <parameter>`` statements."""
+    stored: dict[str, str] = {}
+    for node in ast.walk(init):
+        targets: list[ast.expr] = []
+        if isinstance(node, ast.Assign):
+            targets, value = list(node.targets), node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        else:
+            continue
+        if not isinstance(value, ast.Name):
+            continue
+        for target in targets:
+            if (
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "self"
+            ):
+                stored.setdefault(value.id, target.attr)
+    return stored
+
+
+def _annotation_text(annotation: ast.expr) -> str:
+    """The pyccel-style annotation string of a parsed annotation."""
+    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+        return annotation.value
+    text = ast.unparse(annotation)
+    # Final['float[:]'] -> float[:] (the quotes come from the string annotation)
+    return text.replace("'", "").replace('"', "")
+
+
 class CudaStruct:
     """A C struct type passed to CUDA kernels by value.
 
@@ -900,7 +985,7 @@ class CudaStruct:
         ``(field name, C type)`` pairs, in order, e.g. ``("x", "double*")`` or
         ``("n", "int")``. Scalar fields, pointers to the scalar types of
         :func:`ctype_of` (or ``void*``), and array views ``Array1D<T>`` to
-        ``Array3D<T>`` of those scalar types (from ``cunumpy/array_view.cuh``,
+        ``Array4D<T>`` of those scalar types (from ``cunumpy/array_view.cuh``,
         packed as pointer, shape and strides in elements) are supported.
 
     Examples
@@ -1007,6 +1092,82 @@ class CudaStruct:
             what = f"parameter {param.name!r} of {getattr(func, '__qualname__', func)}"
             fields.append((param.name, _pyccel_ctype(param.annotation, scalars, what)))
         return cls(name, fields)
+
+    @classmethod
+    def from_pyccel_class(
+        cls,
+        source: str | Path,
+        class_name: str,
+        name: str | None = None,
+        *,
+        int_type: str = "long long",
+        scalar_names: Mapping[str, str] | None = None,
+        exclude: Sequence[str] = (),
+        attribute_names: bool = True,
+    ) -> CudaStruct:
+        """Build the struct from the ``__init__`` of a class in a Python source file.
+
+        Like :meth:`from_signature`, but for a class whose module is compiled
+        by pyccel: importing such a module gives the compiled class, whose
+        ``__init__`` has no Python signature. The ``.py`` source is parsed
+        with :mod:`ast` instead and is never imported or executed.
+
+        One field per parameter of ``__init__`` (``self`` skipped), in order.
+        A parameter that ``__init__`` stores as ``self.<attribute> = <parameter>``
+        gives a field named after the attribute (`attribute_names`), so that
+        the struct members are the attribute names the host kernels use, also
+        when the constructor parameter is called differently.
+
+        Parameters
+        ----------
+        source : str | Path
+            Path of the ``.py`` file, or the source code itself (a string that
+            contains a newline or does not end with ``.py``).
+        class_name : str
+            Name of the class in the source.
+        name : str | None
+            Name of the struct type in C; `class_name` by default.
+        int_type, scalar_names
+            As for :meth:`from_signature`.
+        exclude : Sequence[str]
+            Parameter or attribute names that do not become fields, e.g.
+            scratch arrays the host class allocates for itself.
+        attribute_names : bool
+            Name the fields after the attributes the parameters are stored in
+            (default); False keeps the parameter names.
+
+        Raises
+        ------
+        ValueError
+            The class or its ``__init__`` is not found, or an annotation
+            cannot be mapped (see :meth:`from_signature`).
+
+        Examples
+        --------
+        >>> MarkerArgs = CudaStruct.from_pyccel_class(
+        ...     "kernel_arguments/pusher_args_kernels.py", "MarkerArguments", "MarkerArgs"
+        ... )  # doctest: +SKIP
+        """
+        text, where = _read_python_source(source)
+        init = _find_init(ast.parse(text, filename=where), class_name, where)
+        stored = _stored_parameters(init) if attribute_names else {}
+        scalars = dict(_PYCCEL_SCALARS, int=int_type)
+        if scalar_names:
+            scalars.update(scalar_names)
+        excluded = set(exclude)
+        fields = []
+        for arg in init.args.posonlyargs + init.args.args + init.args.kwonlyargs:
+            if arg.arg == "self":
+                continue
+            field = stored.get(arg.arg, arg.arg)
+            if arg.arg in excluded or field in excluded:
+                continue
+            what = f"parameter {arg.arg!r} of {class_name}.__init__ in {where}"
+            if arg.annotation is None:
+                raise ValueError(f"{what} has no type annotation")
+            annotation = _annotation_text(arg.annotation)
+            fields.append((field, _pyccel_ctype(annotation, scalars, what)))
+        return cls(class_name if name is None else name, fields)
 
     def __repr__(self) -> str:
         return f"CudaStruct({self._name!r}, {len(self._fields)} fields)"
@@ -1484,11 +1645,192 @@ def _field_state(struct: CudaStruct, values: Mapping[str, Any]) -> tuple[Any, ..
     return tuple(state)
 
 
+def _is_device_array(value: Any) -> bool:
+    return hasattr(type(value), "__cuda_array_interface__") or hasattr(
+        value, "__cuda_array_interface__"
+    )
+
+
+def _host_state(value: Any) -> Any:
+    """What a host argument object depends on, to detect replaced values."""
+    if _is_device_array(value) or isinstance(value, np.ndarray):
+        ptr = getattr(getattr(value, "data", None), "ptr", None)
+        if ptr is None:
+            ptr = getattr(getattr(value, "ctypes", None), "data", None)
+        return (id(value), ptr, tuple(getattr(value, "shape", ())))
+    if isinstance(value, (bool, int, float, complex, str, np.generic)):
+        return (type(value), value)
+    return ("id", id(value))
+
+
+class PyccelStructArguments(CudaStructArguments):
+    """Argument object with a pyccel host class and a C struct for CUDA kernels.
+
+    The :class:`~cunumpy.KernelArguments` form of :class:`CudaStructArguments`:
+    the same object is passed to a :class:`~cunumpy.Kernel` on both backends.
+    On the device path it arrives as the packed struct (``__cuda_args__()``);
+    on the host path, ``__host_args__()`` builds an instance of
+    :attr:`host_class` (typically a pyccel-compiled argument class, which
+    cannot inherit from anything) from the attributes named in
+    :attr:`host_fields`, once, and again when one of them was replaced.
+
+    A subclass sets :attr:`struct_name`, :attr:`fields` and :attr:`host_class`,
+    stores every field as an attribute (NumPy or CuPy arrays, whatever the
+    owner has) and, on the CuPy backend, calls :meth:`pack` at the end of its
+    constructor so that invalid arrays raise there (:meth:`has_device_arrays`
+    tells). Objects holding host arrays are copied and pickled without
+    packing; the struct is only built from device arrays.
+
+    On the CuPy backend there is no host form: the arrays are device arrays,
+    and a host kernel would have to copy them. ``__host_args__()`` raises
+    then, unless :attr:`host_copies` is True, in which case the host object is
+    built from host copies (counted by :func:`~cunumpy.count_transfers`) and
+    what the host kernel writes is **not** copied back; use it for read-only
+    evaluations only.
+
+    Attributes
+    ----------
+    host_class : type
+        The class of the host argument object, e.g. the pyccel class.
+    host_fields : Sequence[str] | None
+        The attributes passed to ``host_class(...)``, positionally and in this
+        order; by default the struct fields in declaration order.
+    host_copies : bool
+        Whether ``__host_args__()`` may copy device arrays to the host
+        (default False).
+
+    Examples
+    --------
+    >>> from my_kernels import pusher_args_kernels  # pyccel-compiled module
+    >>> class MarkerArguments(PyccelStructArguments):
+    ...     struct_name = "MarkerArgs"
+    ...     fields = (("markers", "Array2D<double>"), ("Np", "long long"))
+    ...     host_class = pusher_args_kernels.MarkerArguments
+    ...
+    ...     def __init__(self, markers, Np):
+    ...         self.markers = markers
+    ...         self.Np = Np
+    ...         if xp.is_gpu(markers):
+    ...             self.pack()
+    >>> push(MarkerArguments(markers, Np), dt, n_threads=markers.shape[0])  # doctest: +SKIP
+    """
+
+    host_class: type | None = None
+    host_fields: Sequence[str] | None = None
+    host_copies: bool = False
+
+    def _host_field_names(self) -> tuple[str, ...]:
+        if self.host_fields is not None:
+            return tuple(self.host_fields)
+        struct = getattr(type(self), "struct", None)
+        if struct is None:
+            raise TypeError(
+                f"{type(self).__qualname__} does not define struct_name and fields"
+            )
+        return tuple(field.name for field in struct.fields)
+
+    def __host_args__(self) -> Any:
+        """The host argument object, built from the current attributes."""
+        host_class = self.host_class
+        if host_class is None:
+            raise TypeError(
+                f"{type(self).__qualname__}.host_class is not set: the class of "
+                "the host argument object (e.g. the pyccel class) is required"
+            )
+        names = self._host_field_names()
+        values = [getattr(self, name) for name in names]
+        state = tuple(_host_state(value) for value in values)
+        if (
+            self.__dict__.get("_host_value") is not None
+            and self.__dict__.get("_host_state") == state
+        ):
+            return self._host_value
+        host_values = []
+        for name, value in zip(names, values):
+            if _is_device_array(value):
+                if not self.host_copies:
+                    raise RuntimeError(
+                        f"{type(self).__qualname__}.{name} is a device array: there "
+                        "is no host form on the CuPy backend. Call the CUDA kernel, "
+                        "or set host_copies = True for a read-only host evaluation "
+                        "from host copies"
+                    )
+                from .xp import to_numpy
+
+                value = to_numpy(value)
+            host_values.append(value)
+        self._host_value = host_class(*host_values)
+        self._host_state = state
+        return self._host_value
+
+    def has_device_arrays(self) -> bool:
+        """Whether any array field is a device array (then the struct can be packed)."""
+        struct = getattr(type(self), "struct", None)
+        if struct is None:
+            return False
+        return any(
+            _is_device_array(getattr(self, field.name, None))
+            for field in struct.fields
+            if field.pointer or field.view_ndim is not None
+        )
+
+    def __getstate__(self) -> dict[str, Any]:
+        # the host object is rebuilt from the copied or restored attributes
+        state = super().__getstate__()
+        state.pop("_host_value", None)
+        state.pop("_host_state", None)
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        # on the NumPy backend the fields are host arrays: nothing to pack
+        self.__dict__.update(state)
+        if self.has_device_arrays():
+            self.pack()
+
+
+def _first_array_length(args: tuple[Any, ...]) -> int:
+    """``n_threads_from="first_array"``: the first axis of the first array argument."""
+    for arg in args:
+        shape = getattr(arg, "shape", None)
+        if shape is not None and len(shape) > 0 and hasattr(arg, "dtype"):
+            return int(shape[0])
+    raise TypeError(
+        "n_threads_from='first_array' needs an array argument; pass n_threads"
+    )
+
+
 def _as_shape(value: int | Sequence[int], what: str) -> tuple[int, ...]:
     shape = (value,) if isinstance(value, (int, np.integer)) else tuple(value)
     if not 1 <= len(shape) <= 3:
         raise ValueError(f"{what} must have 1 to 3 dimensions, got {shape}")
     return tuple(int(n) for n in shape)
+
+
+def _device_arrays_in(args: Sequence[Any]) -> Iterator[tuple[str, Any]]:
+    """``(label, array)`` for every device array among kernel arguments.
+
+    Arrays are found directly, in the fields of :class:`CudaStructArguments`
+    objects and struct values, and in the values of other ``__cuda_args__()``
+    objects.
+    """
+    for index, arg in enumerate(args):
+        label = f"argument {index}"
+        if _is_device_array(arg):
+            yield label, arg
+        elif isinstance(arg, CudaStructArguments) and hasattr(type(arg), "struct"):
+            for field in arg.struct.fields:
+                value = getattr(arg, field.name, None)
+                if _is_device_array(value):
+                    yield f"{label}.{field.name}", value
+        elif isinstance(arg, CudaStructValue):
+            for field in arg.struct.fields:
+                value = arg[field.name]
+                if _is_device_array(value):
+                    yield f"{label}.{field.name}", value
+        elif hasattr(arg, "__cuda_args__"):
+            for j, value in enumerate(arg.__cuda_args__()):
+                if _is_device_array(value):
+                    yield f"{label}[{j}]", value
 
 
 class CudaKernel:
@@ -1511,7 +1853,7 @@ class CudaKernel:
         The headers shipped with cunumpy (:func:`cuda_include_dir`) are always
         found at compile time (see :meth:`compile_options`):
         ``#include "cunumpy/array_view.cuh"`` gives the ``Array1D<T>`` to
-        ``Array3D<T>`` views, ``#include "cunumpy/index.cuh"`` the thread-index
+        ``Array4D<T>`` views, ``#include "cunumpy/index.cuh"`` the thread-index
         macros, ``#include "cunumpy/atomic.cuh"`` atomic adds,
         ``#include "cunumpy/reduce.cuh"`` warp and block reductions.
     source_dir : str | Path | None
@@ -1571,8 +1913,14 @@ class CudaKernel:
         template_args: Sequence[Any] | None = None,
         check_signature: bool = True,
         debug: bool | None = None,
+        n_threads_from: Callable[[tuple[Any, ...]], Any] | str | None = None,
+        check_finite: bool = False,
     ) -> None:
         self._block = self._check_block(_as_shape(block_size, "block_size"))
+        self.n_threads_from = n_threads_from
+        # dynamic shared memory the compiled kernel is set up for (see __call__)
+        self._shared_mem_opt_in = 48 * 1024
+        self._check_finite = bool(check_finite)
         self._debug = None if debug is None else bool(debug)
         self._source = source
         self._name = name
@@ -1796,6 +2144,47 @@ class CudaKernel:
         return self._structs
 
     @property
+    def n_threads_from(self) -> Callable[[tuple[Any, ...]], Any] | None:
+        """Default launch size: a function of the positional arguments, or None.
+
+        Called with the tuple of arguments of a launch that gives neither
+        `n_threads` nor `grid`, and returns `n_threads` (an integer or a
+        tuple), e.g. ``lambda args: args[2].n_markers`` for a kernel whose
+        third argument is a struct argument object with the marker count.
+        Set it to ``"first_array"`` for the most common case, one thread per
+        row: the length of the first array argument (its first axis).
+        Settable, also on the ``cuda_kernel`` of a :class:`~cunumpy.Kernel`.
+        """
+        return self._n_threads_from
+
+    @n_threads_from.setter
+    def n_threads_from(
+        self, value: Callable[[tuple[Any, ...]], Any] | str | None
+    ) -> None:
+        if value == "first_array":
+            value = _first_array_length
+        if value is not None and not callable(value):
+            raise TypeError("n_threads_from must be callable, 'first_array' or None")
+        self._n_threads_from = value
+
+    @property
+    def check_finite(self) -> bool:
+        """Whether every launch checks the floating-point arrays for NaN or inf.
+
+        After the launch (synchronized), every floating-point or complex array
+        among the arguments, including the array fields of struct argument
+        objects, is scanned, and a non-finite value raises ``RuntimeError``
+        naming the kernel and the argument. Costs a synchronization and one
+        pass over the arrays per launch; for debugging (e.g. a pusher writing
+        NaN velocities), not for production. Settable.
+        """
+        return self._check_finite
+
+    @check_finite.setter
+    def check_finite(self, value: bool) -> None:
+        self._check_finite = bool(value)
+
+    @property
     def template_args(self) -> tuple[Any, ...] | None:
         """Template arguments, or None if the kernel is not a template."""
         return self._template_args
@@ -1967,6 +2356,8 @@ class CudaKernel:
             mode, such an error surfaces at a later synchronization (a
             ``.get()``, an MPI call, ...), not necessarily in this kernel.
         """
+        if n_threads is None and grid is None and self._n_threads_from is not None:
+            n_threads = self._n_threads_from(args)
         grid_shape, block_shape = self.launch_shape(n_threads, grid=grid, block=block)
         if shared_mem < 0:
             raise ValueError(f"shared_mem must be non-negative, got {shared_mem}")
@@ -1975,11 +2366,50 @@ class CudaKernel:
             return
 
         kernel = self.compile()
+        if shared_mem > self._shared_mem_opt_in:
+            self._opt_in_shared_memory(kernel, shared_mem)
         debug = self.debug_active()
         with stream if stream is not None else nullcontext():
             kernel(grid_shape, block_shape, values, shared_mem=shared_mem)
-            if debug:
+            if debug or self._check_finite:
                 self._synchronize_after_launch(stream, grid_shape, block_shape)
+            if self._check_finite:
+                self._check_finite_arrays(args)
+
+    def _opt_in_shared_memory(self, kernel: Any, shared_mem: int) -> None:
+        """Allow `shared_mem` bytes of dynamic shared memory above the default limit.
+
+        Up to :data:`~cunumpy.DEFAULT_SHARED_MEMORY_PER_BLOCK` (48 KiB) every
+        device launches without setup. Above it, newer GPUs need the kernel
+        attribute ``max_dynamic_shared_size_bytes``; it is set once (and again
+        for a larger request) up to the device's opt-in limit.
+        """
+        from .xp import DEFAULT_SHARED_MEMORY_PER_BLOCK, max_shared_memory_per_block
+
+        if shared_mem <= DEFAULT_SHARED_MEMORY_PER_BLOCK:
+            return
+        limit = max_shared_memory_per_block(opt_in=True)
+        if shared_mem > limit:
+            raise ValueError(
+                f"kernel {self.expression!r}: shared_mem={shared_mem} bytes exceeds "
+                f"the {limit} bytes a block may use on this device"
+            )
+        kernel.max_dynamic_shared_size_bytes = shared_mem
+        self._shared_mem_opt_in = shared_mem
+
+    def _check_finite_arrays(self, args: tuple[Any, ...]) -> None:
+        """Raise if a floating-point array among `args` holds NaN or inf."""
+        import cupy as cp
+
+        for label, array in _device_arrays_in(args):
+            kind = getattr(array.dtype, "kind", "")
+            if kind not in "fc":
+                continue
+            if not bool(cp.isfinite(array).all()):
+                raise RuntimeError(
+                    f"kernel {self.expression!r} left a NaN or inf in {label} "
+                    f"(dtype {array.dtype}, shape {tuple(array.shape)})"
+                )
 
     def _synchronize_after_launch(
         self, stream: Any, grid: tuple[int, ...], block: tuple[int, ...]
@@ -2020,7 +2450,7 @@ def _is_capturing(stream: Any) -> bool:
         return False
     try:
         return bool(is_capturing())
-    except Exception:  # noqa: BLE001 -- e.g. the legacy null stream, which cannot capture
+    except Exception:  # noqa: BLE001 - e.g. the legacy null stream cannot capture
         return False
 
 

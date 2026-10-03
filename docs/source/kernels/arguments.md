@@ -121,7 +121,7 @@ push(value, 0.1, n_threads=x.size)
 ```
 
 Fields may be scalars, pointers to scalar types (or `void*`), and array views
-`Array1D<T>` to `Array3D<T>`. Packing checks every field like a kernel
+`Array1D<T>` to `Array4D<T>`. Packing checks every field like a kernel
 argument: pointers need C-contiguous CuPy arrays of the declared dtype, scalars
 are range-checked and cast. Adding a field means editing the one Python
 definition; kernels that use the struct pick it up.
@@ -203,6 +203,47 @@ push(args, dt, n_threads=args.n_markers)
   argument object in a `KernelArguments`: `__host_args__()` returns the host
   object, `__cuda_args__()` returns `cuda_args.__cuda_args__()`.
 
+### `PyccelStructArguments`: a pyccel host class and a struct
+
+When the host kernels take a pyccel-compiled argument class, that class cannot
+inherit from `CudaStructArguments` (or anything else). `PyccelStructArguments`
+holds it instead: the same object is passed to a `Kernel` on both backends, and
+arrives as the pyccel object on the host path and as the struct on the device
+path:
+
+```python
+from my_sim.kernel_arguments import pusher_args_kernels  # compiled by pyccel
+
+
+class MarkerArguments(xp.PyccelStructArguments):
+    struct_name = "MarkerArgs"
+    fields = (("markers", "Array2D<double>"), ("Np", "long long"), ("n_markers", "int"))
+    host_class = pusher_args_kernels.MarkerArguments
+    host_fields = ("markers", "Np")  # its constructor arguments, in order
+
+    def __init__(self, markers, Np):
+        self.markers = markers  # NumPy or CuPy, whatever the owner has
+        self.Np = Np
+        self.n_markers = markers.shape[0]
+        if self.has_device_arrays():
+            self.pack()  # fail early on a bad device array
+
+
+args = MarkerArguments(particles.markers, Np)
+push(args, dt, n_threads=args.n_markers)  # Kernel: same call on both backends
+```
+
+* `__host_args__()` builds `host_class(*host_fields)` once and again when one of
+  those attributes was replaced (a resized array, a changed scalar). The host
+  object is not pickled; a copy or an unpickled object rebuilds it.
+* On the CuPy backend the attributes are device arrays, and there is no host
+  form: `__host_args__()` raises. Set `host_copies = True` on a class whose host
+  kernels only *read* the arrays (an evaluation, not a push): the host object
+  is then built from host copies, which `count_transfers()` reports, and what
+  the host kernel writes is not copied back.
+* Objects holding host arrays are copied and pickled without packing; the
+  struct is only built from device arrays.
+
 ### Check the layout against the compiler
 
 Values are packed with the NumPy dtype of the struct. If the compiler lays the
@@ -247,6 +288,19 @@ Mappings: `float` to `double`, `int` to `long long` (Pyccel integers are
 C types, `"float[:, :]"` to `Array2D<double>` (1 to 3 dimensions). `Final[...]`
 and `const` are ignored. `scalar_names={"float": "float"}` switches to single
 precision. Parameters without a mappable annotation raise `ValueError`.
+
+If the module of the argument class is compiled by pyccel, importing it gives
+the compiled class, whose `__init__` has no Python signature.
+`CudaStruct.from_pyccel_class(path, class_name, name)` parses the `.py` source
+with `ast` instead (never importing it), names each field after the attribute
+the parameter is stored in (`self.first_init_idx = first_pusher_idx` gives a
+field `first_init_idx`), and skips the parameters in `exclude=`:
+
+```python
+MarkerArgs = xp.CudaStruct.from_pyccel_class(
+    "my_sim/kernel_arguments/pusher_args_kernels.py", "MarkerArguments", "MarkerArgs"
+)
+```
 
 Array view fields accept non-contiguous arrays, and the kernel indexes them like
 the host kernel does:

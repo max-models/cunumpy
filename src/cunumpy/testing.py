@@ -5,9 +5,21 @@ every kernel: build the arguments on both backends, run the host kernel and the
 CUDA kernel, and compare what they wrote. This module provides that test
 (:func:`assert_kernels_agree`), the pytest markers to parametrize tests over
 the backends (:data:`BACKENDS`, :data:`requires_cupy`, the :func:`backend`
-fixture), and :func:`device_function_kernel`, which wraps a ``__device__``
+fixture), :func:`device_function_kernel`, which wraps a ``__device__``
 function in an elementwise ``__global__`` kernel so that device helpers can be
-tested from Python without a hand-written test kernel.
+tested from Python without a hand-written test kernel, and
+:func:`emulate_cuda_kernel` (from :mod:`cunumpy.emulation`), which runs a CUDA
+kernel on the CPU, one thread after another, so that its arithmetic can be
+checked against the host kernel in CI without a GPU. Without a GPU, the CuPy
+code paths of a program (argument objects, conversions, backend branches) can
+still run on the fake CuPy of :mod:`cunumpy._fake_cupy` (:func:`install_fake_cupy`,
+or ``CUNUMPY_FAKE_CUPY=1``); :func:`fake_cupy_active` tells whether it is in
+use, and ``requires_cupy`` skips the tests that launch kernels then.
+
+A catalog's parity tests need no code per kernel when each kernel folder
+holds ``<name>_test_args.py`` with ``make_args(backend, seed)`` (and
+``N_THREADS``): :func:`parity_cases` and :func:`check_parity` drive
+:func:`assert_kernels_agree` from these modules.
 
 The module imports pytest only when one of its pytest objects is used, so it
 can be imported (e.g. for :func:`device_function_kernel`) without pytest, and
@@ -44,6 +56,7 @@ from typing import Any
 import array_api_compat
 import numpy as np
 
+from . import _fake_cupy
 from .cuda_kernel import (
     CudaKernel,
     CudaParameter,
@@ -54,6 +67,7 @@ from .cuda_kernel import (
     _strip_comments,
 )
 from .dispatch import Kernel
+from .emulation import emulate_cuda_kernel, emulation_compiler
 from .xp import cupy_available, get_backend, to_numpy, use_backend
 
 # the pytest objects are created on first access, see __getattr__
@@ -61,11 +75,39 @@ __all__ = [
     "BACKENDS",  # noqa: F822
     "assert_kernels_agree",
     "backend",  # noqa: F822
+    "check_parity",
     "device_function_kernel",
+    "emulate_cuda_kernel",
+    "emulation_compiler",
+    "fake_cupy_active",
+    "install_fake_cupy",
+    "parity_cases",
     "requires_cupy",  # noqa: F822
 ]
 
 SKIP_REASON = "CuPy/GPU not available"
+FAKE_SKIP_REASON = "the fake CuPy cannot run CUDA kernels"
+
+
+def fake_cupy_active() -> bool:
+    """Whether the fake CuPy (:mod:`cunumpy._fake_cupy`) stands in for CuPy."""
+    return _fake_cupy.is_active()
+
+
+def install_fake_cupy() -> Any:
+    """Install the fake CuPy for this process; see :mod:`cunumpy._fake_cupy`.
+
+    Call it before the first backend use (e.g. at the top of ``conftest.py``),
+    or set ``CUNUMPY_FAKE_CUPY=1`` in the environment instead. Returns the
+    fake ``cupy`` module.
+    """
+    return _fake_cupy.install()
+
+
+def _can_launch() -> bool:
+    """Whether CUDA kernels can run: a functional CuPy that is not the fake."""
+    return cupy_available() and not fake_cupy_active()
+
 
 # pytest objects, built on first use so that importing this module does not
 # import pytest (see __getattr__ below)
@@ -84,7 +126,10 @@ def _pytest() -> Any:
 
 def _build_lazy() -> None:
     pytest = _pytest()
-    requires_cupy = pytest.mark.skipif(not cupy_available(), reason=SKIP_REASON)
+    requires_cupy = pytest.mark.skipif(
+        not _can_launch(),
+        reason=FAKE_SKIP_REASON if fake_cupy_active() else SKIP_REASON,
+    )
     backends = ["numpy", pytest.param("cupy", marks=requires_cupy)]
 
     @pytest.fixture(params=backends)
@@ -211,7 +256,7 @@ def assert_kernels_agree(
     kernel: Kernel,
     make_args: Callable[[str, int], Sequence[Any]],
     *,
-    n_threads: int | Sequence[int] | None = None,
+    n_threads: int | Sequence[int] | Callable[[tuple[Any, ...]], Any] | None = None,
     grid: int | Sequence[int] | None = None,
     block: int | Sequence[int] | None = None,
     rtol: float = 1e-12,
@@ -243,8 +288,11 @@ def assert_kernels_agree(
         and convert it with :func:`~cunumpy.to_cunumpy`. Kernels take positional
         arguments only.
     n_threads, grid, block
-        Launch configuration of the CUDA kernel (`n_threads` or `grid` is
-        required), see :meth:`CudaKernel.__call__ <cunumpy.CudaKernel.__call__>`.
+        Launch configuration of the CUDA kernel, see
+        :meth:`CudaKernel.__call__ <cunumpy.CudaKernel.__call__>`. `n_threads`
+        may also be a function of the tuple of arguments, e.g.
+        ``lambda args: args[0].shape[0]``. One of `n_threads` and `grid` is
+        required unless the CUDA kernel has ``n_threads_from``.
     rtol, atol : float
         Tolerances of ``numpy.testing.assert_allclose``.
     n_calls : int
@@ -276,18 +324,21 @@ def assert_kernels_agree(
 
     Notes
     -----
-    The test is skipped with ``pytest.skip`` if CuPy or a GPU is not available.
+    The test is skipped with ``pytest.skip`` if CuPy or a GPU is not available,
+    or if the fake CuPy is active.
     """
     if not isinstance(kernel, Kernel):
         raise TypeError(f"expected a Kernel, got {type(kernel).__name__}")
     if not kernel.has_cuda:
         raise ValueError(f"kernel {kernel.name!r} has no CUDA version")
-    if n_threads is None and grid is None:
+    if n_threads is None and grid is None and kernel.cuda_kernel.n_threads_from is None:
         raise TypeError("n_threads (or grid) is required to launch the CUDA kernel")
     if n_calls < 1:
         raise ValueError(f"n_calls must be at least 1, got {n_calls}")
     if outputs is None:
         outputs = kernel.host_kernel.outputs
+    if fake_cupy_active():
+        _pytest().skip(FAKE_SKIP_REASON)
     if not cupy_available():
         _pytest().skip(SKIP_REASON)
 
@@ -297,13 +348,102 @@ def assert_kernels_agree(
             if get_backend() != backend:  # pragma: no cover - cupy_available() lied
                 raise RuntimeError(f"could not activate the {backend} backend")
             args = tuple(make_args(backend, seed))
+            launch = n_threads(args) if callable(n_threads) else n_threads
             for _ in range(n_calls):
-                kernel(*args, n_threads=n_threads, grid=grid, block=block)
+                kernel(*args, n_threads=launch, grid=grid, block=block)
             results[backend] = _collect_arrays(args, outputs)
 
     host = {name: to_numpy(a) for name, a in results["numpy"].items()}
     _compare_results(host, results["cupy"], rtol, atol, kernel.name)
     return host
+
+
+# ---------------------------------------------------------------------------
+# parity tests from <name>_test_args.py modules
+# ---------------------------------------------------------------------------
+
+#: Module-level names a ``<name>_test_args.py`` module may define, and the
+#: keyword of :func:`assert_kernels_agree` each one sets.
+TEST_ARGS_SETTINGS = {
+    "N_THREADS": "n_threads",
+    "GRID": "grid",
+    "BLOCK": "block",
+    "RTOL": "rtol",
+    "ATOL": "atol",
+    "N_CALLS": "n_calls",
+    "OUTPUTS": "outputs",
+    "SEED": "seed",
+}
+
+
+def parity_cases(catalog: Any) -> list[Any]:
+    """The kernels of a catalog with a CUDA version, as pytest parameters.
+
+    One ``pytest.param(kernel, id=name)`` per kernel of
+    ``catalog.parity_cases()``. A kernel without a test-arguments module
+    (:attr:`Kernel.test_args_module <cunumpy.Kernel.test_args_module>`, from
+    ``<name>_test_args.py`` in its folder) is marked ``skip`` with a reason
+    naming the missing file, so the report shows which kernels still lack
+    their parity test::
+
+        @pytest.mark.parametrize("kernel", parity_cases(catalog))
+        def test_parity(kernel):
+            check_parity(kernel)
+    """
+    pytest = _pytest()
+    cases = []
+    for name, kernel in catalog.parity_cases():
+        marks = ()
+        if kernel.test_args_module is None:
+            marks = (
+                pytest.mark.skip(
+                    reason=f"no test arguments for {name!r}: add {name}_test_args.py "
+                    "with make_args(backend, seed) and N_THREADS to its folder"
+                ),
+            )
+        cases.append(pytest.param(kernel, id=name, marks=marks))
+    return cases
+
+
+def check_parity(kernel: Kernel, **overrides: Any) -> dict[str, np.ndarray]:
+    """Run :func:`assert_kernels_agree` with the kernel's test-arguments module.
+
+    The module (``<name>_test_args.py`` in the kernel's folder, see
+    :meth:`KernelCatalog.from_package <cunumpy.KernelCatalog.from_package>`)
+    defines ``make_args(backend, seed)`` and, as module-level names, the
+    launch and comparison settings of :data:`TEST_ARGS_SETTINGS`:
+    ``N_THREADS`` (an integer, a tuple, or a function of the argument tuple),
+    or ``GRID``, plus optionally ``BLOCK``, ``RTOL``, ``ATOL``, ``N_CALLS``,
+    ``OUTPUTS`` and ``SEED``. Keyword arguments override them.
+
+    Returns
+    -------
+    dict[str, numpy.ndarray]
+        The host arrays, as :func:`assert_kernels_agree` returns them.
+
+    Raises
+    ------
+    ValueError
+        If the kernel has no test-arguments module.
+    TypeError
+        If the module has no callable ``make_args``.
+    """
+    module = kernel.test_args
+    if module is None:
+        raise ValueError(
+            f"kernel {kernel.name!r} has no test-arguments module: add "
+            f"{kernel.name}_test_args.py with make_args(backend, seed) to its folder"
+        )
+    make_args = getattr(module, "make_args", None)
+    if not callable(make_args):
+        raise TypeError(f"{module.__name__} must define make_args(backend, seed)")
+    settings = {
+        keyword: getattr(module, name)
+        for name, keyword in TEST_ARGS_SETTINGS.items()
+        if hasattr(module, name)
+    }
+    settings.update(overrides)
+    return assert_kernels_agree(kernel, make_args, **settings)
 
 
 # ---------------------------------------------------------------------------
@@ -319,11 +459,13 @@ _FUNCTION_QUALIFIERS = {"__device__", "__host__", "__forceinline__", "inline", "
 
 def _parse_prototype(
     signature: str,
+    structs: dict[str, Any] | None = None,
 ) -> tuple[CudaParameter | None, str, list[tuple[str, CudaParameter]]]:
     """Parse a C function prototype into (result, name, [(text, parameter)]).
 
     The result is None for a ``void`` function; each parameter is its original
-    text together with its parsed form.
+    text together with its parsed form. A struct of `structs` may be taken by
+    value or by (const) reference.
     """
     match = _PROTOTYPE.match(_strip_comments(signature))
     if match is None:
@@ -351,7 +493,15 @@ def _parse_prototype(
     params = []
     if params_text not in ("", "void"):
         for text in _split_top_level(params_text):
-            params.append((text.strip(), _parse_parameter(text)))
+            text = text.strip()
+            by_reference = "&" in text
+            param = _parse_parameter(text.replace("&", " "), structs or None)
+            if by_reference and param.struct is None:
+                raise ValueError(
+                    f"unsupported parameter {text!r} of {name!r}: only structs can "
+                    "be passed by reference"
+                )
+            params.append((text, param))
     return result, name, params
 
 
@@ -380,7 +530,9 @@ def device_function_kernel(
         The C prototype of the device function, e.g.
         ``"int find_span(const double* t, int p, double eta)"``. Pointer
         parameters, scalar parameters of the types :class:`CudaKernel` supports,
-        and a scalar or ``void`` return type are supported.
+        struct parameters (by value or by ``const`` reference, for the structs
+        passed in ``structs``) and a scalar or ``void`` return type are
+        supported.
     name : str | None
         Name of the generated kernel; ``"<function>_kernel"`` by default.
     includes : Sequence[str]
@@ -392,8 +544,10 @@ def device_function_kernel(
     out_param : str
         Name of the generated output array parameter.
     **kwargs
-        Passed on to :class:`CudaKernel`, e.g. ``include_dirs``, ``options`` or
-        ``block_size``.
+        Passed on to :class:`CudaKernel`, e.g. ``include_dirs``, ``options``,
+        ``block_size`` or ``structs`` (the :class:`~cunumpy.CudaStruct` types
+        of struct parameters, whose definitions `header_source` or the
+        `includes` must provide).
 
     Returns
     -------
@@ -404,6 +558,9 @@ def device_function_kernel(
 
         * a pointer parameter stays as it is and is passed through unchanged to
           every call (an array shared by all threads);
+        * a struct parameter (``DomainArgs d`` or ``const DomainArgs& d``) is
+          taken by value and passed through unchanged to every call (pass a
+          :class:`~cunumpy.CudaStructArguments` object or a packed value);
         * a scalar parameter ``T x`` becomes a device array ``const T* x`` of
           length ``n``, and thread ``i`` calls the function with ``x[i]``;
         * the return value of thread ``i`` is stored in ``out[i]``, an array
@@ -430,7 +587,8 @@ def device_function_kernel(
     >>> x = cp.arange(10.0); out = cp.empty(10)  # doctest: +SKIP
     >>> sq(x, out, 10, n_threads=10)  # doctest: +SKIP
     """
-    result, function, params = _parse_prototype(signature)
+    structs = {struct.name: struct for struct in kwargs.get("structs", ())}
+    result, function, params = _parse_prototype(signature, structs)
     if name is None:
         name = f"{function}_kernel"
     reserved = {out_param, n_threads_param}
@@ -446,6 +604,9 @@ def device_function_kernel(
     for text, param in params:
         if param.pointer:
             wrapper_params.append(text)
+            call_args.append(param.name)
+        elif param.struct is not None:
+            wrapper_params.append(f"{param.ctype} {param.name}")  # by value
             call_args.append(param.name)
         else:
             wrapper_params.append(f"const {param.ctype}* {param.name}")

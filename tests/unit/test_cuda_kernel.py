@@ -198,7 +198,7 @@ def test_wrong_scalars_raise():
     with pytest.raises(OverflowError, match="out of range"):
         kernel.prepare_args(1.0, x, y, 2**31)  # overflows int
     with pytest.raises(TypeError, match="losing information"):
-        kernel.prepare_args(1.0, x, y, np.int64(5))  # int64 into int
+        kernel.prepare_args(np.complex128(1.0), x, y, 5)  # complex into double
     with pytest.raises(TypeError):
         kernel.prepare_args("1.0", x, y, 5)
 
@@ -467,9 +467,7 @@ PARTICLES = CudaStruct(
     ],
 )
 
-PUSH_SOURCE = (
-    PARTICLES.declaration
-    + r"""
+PUSH_SOURCE = PARTICLES.declaration + r"""
 extern "C" __global__
 void push(Particles p, double dt, double* out, unsigned long long* size) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
@@ -480,7 +478,6 @@ void push(Particles p, double dt, double* out, unsigned long long* size) {
     if (i < p.n && p.alive[i]) p.x[i] += dt * p.charge;
 }
 """
-)
 
 
 def test_struct_layout_and_declaration():
@@ -693,7 +690,7 @@ def test_parse_view_parameters():
     with pytest.raises(ValueError, match="array views"):
         parse_cuda_signature("__global__ void f(Array2D<Other> a) {}", "f")
     with pytest.raises(ValueError, match="unsupported type"):
-        parse_cuda_signature("__global__ void f(Array4D<double> a) {}", "f")
+        parse_cuda_signature("__global__ void f(Array5D<double> a) {}", "f")
 
 
 def test_view_parameters_pack_pointer_shape_and_strides():
@@ -948,7 +945,7 @@ def test_from_signature_errors():
     def unknown(x: "str[:]"):
         pass
 
-    def too_many(x: "float[:, :, :, :]"):
+    def too_many(x: "float[:, :, :, :, :]"):
         pass
 
     def unparsable(x: "float[:](order=F)"):  # noqa: F821  (deliberately unparsable)
@@ -960,7 +957,7 @@ def test_from_signature_errors():
         CudaStruct.from_signature(missing, "A")
     with pytest.raises(ValueError, match="unsupported scalar type 'str'"):
         CudaStruct.from_signature(unknown, "A")
-    with pytest.raises(ValueError, match="at most 3 dimensions"):
+    with pytest.raises(ValueError, match="at most 4 dimensions"):
         CudaStruct.from_signature(too_many, "A")
     with pytest.raises(ValueError, match="cannot parse the annotation"):
         CudaStruct.from_signature(unparsable, "A")
@@ -2057,3 +2054,128 @@ def test_reductions_on_gpu(block_size):
     np.testing.assert_allclose(
         cp.asnumpy(warp), np.nan_to_num(padded).reshape(-1, 32).sum(axis=1), rtol=1e-12
     )
+
+
+# ---------------------------------------------------------------------------
+# 4D views and NumPy integer scalars
+# ---------------------------------------------------------------------------
+
+VIEW_4D = r"""
+#include "cunumpy/array_view.cuh"
+extern "C" __global__
+void scale_4d(Array4D<double> a, double factor, int n) {}
+"""
+
+
+def test_array4d_parameters_pack_pointer_shape_and_strides():
+    param, _, _ = parse_cuda_signature(VIEW_4D, "scale_4d")
+    assert param.view_ndim == 4 and param.ctype == "Array4D<double>"
+    kernel = CudaKernel(VIEW_4D, "scale_4d")
+    # every second component of a (2, 3, 4, 6) grid: a non-contiguous view
+    a = FakeDeviceArray(
+        np.float64, ptr=0x40, shape=(2, 3, 4, 3), strides=(576, 192, 48, 16)
+    )
+    packed, _, _ = kernel.prepare_args(a, 2.0, 5)
+    assert packed["data"] == 0x40
+    assert packed["shape"].tolist() == [2, 3, 4, 3]
+    assert packed["strides"].tolist() == [72, 24, 6, 2]
+    assert packed.dtype.itemsize == 72  # sizeof(Array4D<double>)
+    with pytest.raises(TypeError, match="must be a 4D array"):
+        kernel.prepare_args(FakeDeviceArray(np.float64, shape=(2, 3, 4)), 2.0, 5)
+
+
+def test_array4d_struct_fields_and_annotations():
+    struct = CudaStruct("Grid", [("e", "Array4D<double>"), ("n", "int")])
+    assert struct.dtype.fields["e"][0].itemsize == 72
+    assert "    Array4D<double> e;" in struct.declaration
+
+    def init(self, e: "float[:, :, :, :]", n: int): ...
+
+    from_annotations = CudaStruct.from_signature(init, "Grid")
+    assert from_annotations.fields[0].ctype == "Array4D<double>"
+
+    def too_many(self, e: "float[:, :, :, :, :]"): ...
+
+    with pytest.raises(ValueError, match="at most 4 dimensions"):
+        CudaStruct.from_signature(too_many, "Grid")
+
+
+def test_array4d_header_layout():
+    header = (Path(cuda_include_dir()) / "cunumpy" / "array_view.cuh").read_text()
+    assert "struct Array4D" in header
+    assert "sizeof(Array4D<double>) == 72" in header
+
+
+def test_numpy_integer_scalars_are_checked_by_value():
+    kernel = CudaKernel(AXPY, "axpy")  # (double a, double* x, double* y, int n)
+    x, y = FakeDeviceArray(np.float64), FakeDeviceArray(np.float64)
+    for n in (np.int64(5), np.int16(5), np.uint64(5), 5):
+        *_, packed_n = kernel.prepare_args(1.0, x, y, n)
+        assert type(packed_n) is np.int32 and packed_n == 5
+    with pytest.raises(OverflowError, match="out of range"):
+        kernel.prepare_args(1.0, x, y, np.int64(2**31))
+    with pytest.raises(TypeError):
+        kernel.prepare_args(1.0, x, y, np.float64(5.0))  # a float is not an int
+    # integers into a double parameter keep working
+    a, *_ = kernel.prepare_args(np.int64(3), x, y, 1)
+    assert type(a) is np.float64 and a == 3.0
+
+
+# ---------------------------------------------------------------------------
+# launch conveniences: n_threads_from="first_array", shared memory opt-in
+# ---------------------------------------------------------------------------
+
+
+class RecordingRawKernel:
+    """Stands for a compiled cupy.RawKernel: records launches and attributes."""
+
+    def __init__(self):
+        self.launches = []
+        self.max_dynamic_shared_size_bytes = 48 * 1024
+
+    def __call__(self, grid, block, args, shared_mem=0):
+        self.launches.append((grid, block, shared_mem))
+
+
+@pytest.fixture
+def recorded(monkeypatch):
+    """A CudaKernel whose launches are recorded instead of run."""
+    kernel = CudaKernel(AXPY, "axpy", block_size=128)
+    raw = RecordingRawKernel()
+    monkeypatch.setattr(kernel, "compile", lambda: raw)
+    monkeypatch.setattr(kernel, "debug_active", lambda: False)
+    return kernel, raw
+
+
+def test_n_threads_from_first_array(recorded):
+    kernel, raw = recorded
+    kernel.n_threads_from = "first_array"
+    x = FakeDeviceArray(np.float64, shape=(1000,))
+    y = FakeDeviceArray(np.float64, shape=(1000,))
+    kernel(2.0, x, y, 1000)  # the scalar first argument is skipped
+    assert raw.launches == [((8,), (128,), 0)]
+    kernel(2.0, x, y, 1000, n_threads=10)  # explicit sizes still win
+    assert raw.launches[-1] == ((1,), (128,), 0)
+    with pytest.raises(TypeError, match="n_threads_from must be"):
+        kernel.n_threads_from = "rows"
+    as_option = CudaKernel(AXPY, "axpy", n_threads_from="first_array")
+    assert as_option.n_threads_from((1.0, x)) == 1000
+    with pytest.raises(TypeError, match="needs an array argument"):
+        as_option.n_threads_from((1.0, 2))
+
+
+def test_shared_memory_above_the_default_is_opted_in(recorded, monkeypatch):
+    kernel, raw = recorded
+    monkeypatch.setattr(
+        xp.xp, "max_shared_memory_per_block", lambda opt_in=False: 100_000
+    )
+    x, y = FakeDeviceArray(np.float64), FakeDeviceArray(np.float64)
+    kernel(1.0, x, y, 1, n_threads=1, shared_mem=40_000)  # below 48 KiB: no setup
+    assert raw.max_dynamic_shared_size_bytes == 48 * 1024
+    kernel(1.0, x, y, 1, n_threads=1, shared_mem=80_000)
+    assert raw.max_dynamic_shared_size_bytes == 80_000
+    kernel(1.0, x, y, 1, n_threads=1, shared_mem=60_000)  # already allowed
+    assert raw.max_dynamic_shared_size_bytes == 80_000
+    with pytest.raises(ValueError, match="exceeds the 100000 bytes"):
+        kernel(1.0, x, y, 1, n_threads=1, shared_mem=100_001)
+    assert [s for *_, s in raw.launches] == [40_000, 80_000, 60_000]

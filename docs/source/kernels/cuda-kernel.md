@@ -53,8 +53,8 @@ every call:
 | `double*`, `const int*`, ... | C-contiguous CuPy array of exactly that dtype | NumPy arrays (`TypeError`, never copied), other dtypes, non-contiguous views |
 | `void*` | C-contiguous CuPy array of any dtype | host arrays, views |
 | `double`, `float`, `complex<double>` | Python `int`/`float`, NumPy scalars that cast safely | strings, arrays, unsafe casts (`np.float64` into `float`) |
-| `int`, `long long`, `size_t`, `int64_t`, ... | Python `int` in range, `bool`, matching NumPy integers | out-of-range values (`OverflowError`), floats |
-| `Array1D<T>` ... `Array3D<T>` | CuPy array of dtype `T` and that ndim, contiguous or not | wrong dtype or ndim |
+| `int`, `long long`, `size_t`, `int64_t`, ... | Python `int` and NumPy integers whose value is in range, `bool` | out-of-range values (`OverflowError`), floats |
+| `Array1D<T>` ... `Array4D<T>` | CuPy array of dtype `T` and that ndim, contiguous or not | wrong dtype or ndim |
 | a `CudaStruct` type | a value of that struct | anything else |
 
 C types map to NumPy dtypes as on 64-bit Linux: `int` is `int32`, `long` and
@@ -154,8 +154,9 @@ Pass extra include directories with `include_dirs=[...]` and NVRTC flags with
 | Header | Provides |
 | --- | --- |
 | `<cunumpy/index.cuh>` | `CUNUMPY_THREAD_1D(i, n)`, `_2D`, `_3D`, `CUNUMPY_GRID_STRIDE_1D(i, n)` |
-| `<cunumpy/array_view.cuh>` | strided views `Array1D<T>`, `Array2D<T>`, `Array3D<T>` |
+| `<cunumpy/array_view.cuh>` | strided views `Array1D<T>` to `Array4D<T>` |
 | `<cunumpy/atomic.cuh>` | `cunumpy_atomic_add` and indexed 2D/3D variants, see [Accumulation kernels](accumulation.md) |
+| `<cunumpy/random.cuh>` | counter-based random numbers `cunumpy_uniform(seed, stream, counter)`, `cunumpy_normal2(...)`, equal to `xp.philox_uniform` on the host |
 
 `xp.cuda_include_dir()` returns their directory for use with other compilers.
 
