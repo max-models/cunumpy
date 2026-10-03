@@ -111,9 +111,11 @@ def _import_loader(module: str, name: str) -> Callable[[], Callable[..., Any]]:
 
 
 def _fallback_loader(
-    host_fallback: Mapping[str, Callable[..., Any]]
-    | Callable[[str], Callable[..., Any] | None]
-    | None,
+    host_fallback: (
+        Mapping[str, Callable[..., Any]]
+        | Callable[[str], Callable[..., Any] | None]
+        | None
+    ),
     name: str,
 ) -> dict[str, Callable[[], Callable[..., Any]]]:
     """`from_package`'s `host_fallback` for kernel `name`, as its NumPy implementation."""
