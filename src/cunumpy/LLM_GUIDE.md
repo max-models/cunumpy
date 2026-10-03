@@ -68,6 +68,9 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
 | many kernels in a package, ported incrementally | `xp.KernelCatalog.from_package(__name__, missing_cuda="fallback")` |
 | host kernels compiled at first call (your compile function), NumPy fallback | `from_package(..., host_suffix="_pyccel", compile_host=my_compile, host_fallback={...})` -> `xp.CompiledHostKernel` |
 | host arrays reach kernels while CuPy is active | `Kernel(..., dispatch="arrays")` / `from_package(..., dispatch="arrays")`: CUDA only for device arguments |
+| one kernel folder declares its kernel in its own `__init__.py` | `kernel = xp.Kernel.from_folder(__name__, host_suffix="_pyccel", compile_host=..., fallback=..., dispatch="arrays")` |
+| bring a `dispatch="arrays"` kernel's arguments to the side of the main array | `xp.as_kernel_array(a, like=grid, dtype=float)`; outputs: `with xp.kernel_output(out, like=grid, dtype=float) as buf:` |
+| test the path without the host compiler | `with xp.force_host_fallback():` or `CUNUMPY_HOST_FALLBACK=1` |
 | check host and CUDA kernels take the same parameters | `catalog.check_signatures()` (in a unit test) |
 | test a CUDA kernel's arithmetic without a GPU | `cunumpy.testing.emulate_cuda_kernel(kernel, *numpy_args, n_threads=n)` (C++ compiler; shared memory and __syncthreads ok, no warp ops; `shared_mem=` for extern shared) |
 | shared-memory budget of a block | `xp.max_shared_memory_per_block()` (48 KiB without a GPU) |
@@ -244,6 +247,8 @@ k.get_kernel(); k.compile(); k.has_cuda
 catalog = xp.KernelCatalog.from_package(__name__, *, host_suffix="_kernels",
     cuda_suffix="_cuda.cu", missing_cuda="raise", host_options=None,
     include_dirs=None, **cuda_options)
+kernel = xp.Kernel.from_folder(__name__, *, host_suffix="_kernels", compile_host=None,
+    fallback=None, dispatch="backend", **same options as from_package)
 catalog["push"]; catalog.summary(); catalog.with_cuda; catalog.without_cuda
 catalog.compile_all(jobs=1); catalog.parity_cases(); catalog.register(kernel)
 ```

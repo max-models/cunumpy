@@ -123,6 +123,39 @@ A catalog is a read-only mapping: `catalog["push"]`, `"push" in catalog`,
 `len(catalog)`, iteration over names. `KernelCatalog()` plus
 `catalog.register(kernel)` builds one by hand.
 
+### One folder, declared in its own `__init__.py`
+
+`Kernel.from_folder()` builds the kernel of one folder, with the same options
+as `from_package` (`from_package` calls it for every folder). The folder's
+`__init__.py` can then declare its kernel, and code imports the kernel from
+where it is written:
+
+```python
+# my_sim/kernels/push/__init__.py
+import cunumpy as xp
+
+from my_sim.kernels.push.push_numpy import push as _numpy_version
+
+kernel = xp.Kernel.from_folder(
+    __name__,
+    host_suffix="_pyccel",
+    compile_host=compile_kernels,  # see below
+    fallback=_numpy_version,
+    dispatch="arrays",
+    n_threads_from="first_array",
+)
+```
+
+```python
+# anywhere in the code
+from my_sim.kernels.push import kernel as push
+
+push(positions, velocities, dt)  # CUDA for CuPy arrays, host kernel otherwise
+```
+
+Per-kernel options (a fallback, `missing_cuda`, launch defaults) then sit next
+to the kernel instead of in mappings keyed by name.
+
 ## Compiled Pyccel host kernels
 
 By default the host kernel is the Python function itself, which is fine for
@@ -152,7 +185,9 @@ catalog = xp.KernelCatalog.from_package(
 
 Each host kernel is a `cunumpy.CompiledHostKernel`:
 `catalog["push"].host_kernel.kernel.compiled` reports whether the compiled
-version is available. Note that `epyccel` compiles again on every call; a
+version is available. To test the path of a machine without Pyccel, run the
+code inside `with xp.force_host_fallback():` (or set `CUNUMPY_HOST_FALLBACK=1`
+for a whole run): every compiled host kernel then runs its fallback. Note that `epyccel` compiles again on every call; a
 code that compiles at run time usually keeps the builds in an on-disk cache
 keyed on the module source, so that only the first run after an edit compiles.
 
@@ -176,7 +211,22 @@ catalog["gather"](host_positions, host_field, host_result)  # host kernel, also 
 
 The CUDA kernel runs if any top-level argument is on the GPU: a CuPy array, or
 a device-only argument object (`CudaArguments`, a struct value). A
-`KernelArguments` object has both forms and does not decide on its own.
+`KernelArguments` object has both forms and does not decide on its own. Host
+arguments go to the host function directly, without conversion.
+
+The arguments of one call must then all be on one side, with the dtype and
+layout the kernels take. `xp.as_kernel_array(value, like, dtype)` brings an
+input to the side of the main array `like` (no copy if it already fits), and
+`xp.kernel_output(out, like, dtype)` gives the buffer for an output, copied
+back into `out` after the block if it had to be converted:
+
+```python
+from functools import partial
+
+convert = partial(xp.as_kernel_array, like=field, dtype=float)
+with xp.kernel_output(result, like=field, dtype=float) as buffer:
+    catalog["gather"](convert(positions), convert(field), buffer, n_threads=n)
+```
 
 ## Same parameters on both sides
 
@@ -191,7 +241,8 @@ def test_kernel_signatures():
 It compares the parameter names of each host function (for a compiled host
 kernel, its Python source, or the `__pyccel__/<module>.pyi` stub that pyccel
 writes next to a compiled extension module) with the parsed `__global__`
-signature, and lists every kernel that differs, e.g.
+signature, and the parameters of a compiled host kernel's fallback with the host
+function's, and lists every kernel that differs, e.g.
 `kernel 'push': the host kernel takes (x, v, dt, n), the CUDA kernel (x, v, n, dt)`.
 
 ## Porting status and setup

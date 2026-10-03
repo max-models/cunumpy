@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import importlib.util
 import inspect
 import sys
 import warnings
@@ -97,6 +98,19 @@ def _pyccel_stub_parameters(function: Any) -> list[str] | None:
         if isinstance(node, ast.FunctionDef) and node.name == func_name:
             return [a.arg for a in node.args.posonlyargs + node.args.args]
     return None
+
+
+def _positional_parameters(function: Any) -> list[str] | None:
+    """Names of the positional parameters of `function`, or None without a signature."""
+    try:
+        signature = inspect.signature(function)
+    except (TypeError, ValueError):
+        return None
+    positional = (
+        inspect.Parameter.POSITIONAL_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    )
+    return [p.name for p in signature.parameters.values() if p.kind in positional]
 
 
 def _source_root(package: str) -> Path:
@@ -194,6 +208,118 @@ class Kernel:
         self._test_args: ModuleType | None = None
         self._warned = False
 
+    @classmethod
+    def from_folder(
+        cls,
+        package: str,
+        *,
+        host_suffix: str = "_kernels",
+        cuda_suffix: str = "_cuda.cu",
+        test_args_suffix: str | None = "_test_args",
+        check_name_length: bool = True,
+        missing_cuda: str = "raise",
+        host_options: Mapping[str, Any] | None = None,
+        include_dirs: Sequence[str | Path] | None = None,
+        dispatch: str = "backend",
+        compile_host: Callable[[Any], Any] | None = None,
+        fallback: Callable[..., Any] | None = None,
+        **cuda_options: Any,
+    ) -> Kernel:
+        """The kernel of one kernel folder, the unit of :meth:`KernelCatalog.from_package`.
+
+        `package` is the dotted name of the folder ``<name>``; the function
+        ``<name>`` of its module ``<name><host_suffix>`` is the host kernel, and
+        ``<name><cuda_suffix>`` in the folder, if present, the CUDA kernel. The
+        folder's own ``__init__.py`` can declare its kernel with it, so that
+        the kernel is imported from where it is written::
+
+            # my_sim/kernels/push/__init__.py
+            kernel = xp.Kernel.from_folder(__name__, dispatch="arrays")
+
+            # anywhere in the code
+            from my_sim.kernels.push import kernel as push
+
+        Nothing is compiled here: the CUDA source is parsed, the host module
+        imported.
+
+        Parameters
+        ----------
+        package : str
+            Dotted name of the kernel folder (``__name__`` in its ``__init__.py``).
+        host_suffix, cuda_suffix, test_args_suffix, check_name_length
+            As for :meth:`KernelCatalog.from_package`.
+        missing_cuda, host_options, dispatch
+            Passed on to :class:`Kernel`.
+        include_dirs : Sequence[str | Path] | None
+            Include directories of the CUDA kernel, in addition to the folder
+            itself; by default the source root of the top-level package (the
+            directory containing it).
+        compile_host : Callable | None
+            Compiles the host kernel module (see
+            :class:`~cunumpy.CompiledHostKernel`); by default the Python
+            function is called as it is.
+        fallback : Callable | None
+            With `compile_host`: called when compilation fails, e.g. a
+            vectorized NumPy version with the same arguments.
+        **cuda_options
+            Passed on to :meth:`CudaKernel.from_file`, e.g. ``block_size`` or
+            ``n_threads_from``.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the folder has no host kernel module.
+        """
+        spec = importlib.util.find_spec(package)
+        if spec is None or not spec.submodule_search_locations:
+            raise ModuleNotFoundError(f"{package!r} is not a package (kernel folder)")
+        folder = Path(next(iter(spec.submodule_search_locations)))
+        name = package.rpartition(".")[2]
+        if not (folder / f"{name}{host_suffix}.py").is_file():
+            raise FileNotFoundError(
+                f"kernel folder {folder} has no host kernel {name}{host_suffix}.py"
+            )
+        wrapper = f"bind_c_{name}{host_suffix}"
+        if check_name_length and len(wrapper) > FORTRAN_NAME_LIMIT:
+            warnings.warn(
+                f"kernel {name!r}: the module name {name}{host_suffix} gives the "
+                f"pyccel Fortran wrapper module {wrapper!r} ({len(wrapper)} "
+                f"characters), longer than Fortran's limit of "
+                f"{FORTRAN_NAME_LIMIT}; shorten the kernel name to at most "
+                f"{FORTRAN_NAME_LIMIT - len('bind_c_') - len(host_suffix)} "
+                "characters or compile with the C backend",
+                stacklevel=2,
+            )
+        test_args = None
+        if (
+            test_args_suffix is not None
+            and (folder / f"{name}{test_args_suffix}.py").is_file()
+        ):
+            test_args = f"{package}.{name}{test_args_suffix}"
+        module = importlib.import_module(f"{package}.{name}{host_suffix}")
+        host: Callable[..., Any] = getattr(module, name)
+        if compile_host is not None:
+            host = CompiledHostKernel(module, name, compile_host, fallback)
+        if include_dirs is None:
+            include_dirs = (_source_root(package),)
+        cuda_options["include_dirs"] = tuple(include_dirs)
+        cuda_path = folder / f"{name}{cuda_suffix}"
+        cuda_kernel = (
+            CudaKernel.from_file(cuda_path, name, **cuda_options)
+            if cuda_path.is_file()
+            else None
+        )
+        return cls(
+            host,
+            cuda_kernel,
+            name=name,
+            missing_cuda=missing_cuda,
+            cuda_path=cuda_path,
+            host_options=host_options,
+            dispatch=dispatch,
+            test_args=test_args,
+        )
+
     def __repr__(self) -> str:
         return (
             f"Kernel(name={self._name!r}, cuda={self._cuda_kernel is not None}, "
@@ -266,40 +392,48 @@ class Kernel:
         function = self._host_kernel.kernel
         if isinstance(function, CompiledHostKernel):
             function = function.python
-        try:
-            signature = inspect.signature(function)
-        except (TypeError, ValueError):
-            return _pyccel_stub_parameters(function)
-        positional = (
-            inspect.Parameter.POSITIONAL_ONLY,
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        parameters = _positional_parameters(function)
+        return (
+            parameters if parameters is not None else _pyccel_stub_parameters(function)
         )
-        return [p.name for p in signature.parameters.values() if p.kind in positional]
 
     def check_signature(self) -> None:
-        """Check that the host and CUDA kernels take the same parameters, in order.
+        """Check that the host kernel, its fallback and the CUDA kernel agree.
 
         Compares the parameter names of the host function with those of the
-        parsed ``__global__`` signature. Nothing is checked without a CUDA
-        kernel, without a parsed CUDA signature (``check_signature=False``) or
-        without a Python host signature.
+        parsed ``__global__`` signature and, for a
+        :class:`~cunumpy.CompiledHostKernel` with a fallback, with those of the
+        fallback. A side is skipped without a CUDA kernel, without a parsed CUDA
+        signature (``check_signature=False``), without a fallback, or without a
+        Python signature (of the host function or the fallback).
 
         Raises
         ------
         ValueError
             If the names or their order differ; the message shows both lists.
         """
-        if self._cuda_kernel is None or self._cuda_kernel.signature is None:
-            return
         host = self.host_parameters()
         if host is None:
             return
-        cuda = [param.name for param in self._cuda_kernel.signature]
-        if host != cuda:
-            raise ValueError(
-                f"kernel {self._name!r}: the host kernel takes ({', '.join(host)}), "
-                f"the CUDA kernel ({', '.join(cuda)})"
-            )
+        if self._cuda_kernel is not None and self._cuda_kernel.signature is not None:
+            cuda = [param.name for param in self._cuda_kernel.signature]
+            if host != cuda:
+                raise ValueError(
+                    f"kernel {self._name!r}: the host kernel takes "
+                    f"({', '.join(host)}), the CUDA kernel ({', '.join(cuda)})"
+                )
+        function = self._host_kernel.kernel
+        fallback = (
+            function.fallback if isinstance(function, CompiledHostKernel) else None
+        )
+        if fallback is not None:
+            fallback_params = _positional_parameters(fallback)
+            if fallback_params is not None and fallback_params != host:
+                raise ValueError(
+                    f"kernel {self._name!r}: the host kernel takes "
+                    f"({', '.join(host)}), its fallback "
+                    f"({', '.join(fallback_params)})"
+                )
 
     def get_kernel(self) -> PyccelKernel | CudaKernel:
         """The kernel for the active backend.
@@ -387,6 +521,14 @@ class Kernel:
                     "called on the CuPy backend",
                 )
             args, _ = resolve_host_args(args)
+            if (
+                self._dispatch == "arrays"
+                and not on_device
+                and kernel._use_cupy is not True
+            ):
+                # only host arguments, by the choice above: nothing to convert,
+                # even while CuPy is the active backend
+                return kernel.kernel(*args)
             return kernel(*args)
         if n_threads is None and grid is None and kernel.n_threads_from is None:
             raise ValueError(
@@ -506,55 +648,30 @@ class KernelCatalog(Mapping):
         root = Path(importlib.import_module(package).__file__).parent
         if include_dirs is None:
             include_dirs = (_source_root(package),)
-        cuda_options["include_dirs"] = tuple(include_dirs)
         kernels = {}
         for folder in sorted(p for p in root.iterdir() if p.is_dir()):
             name = folder.name
             if not (folder / f"{name}{host_suffix}.py").is_file():
                 continue
-            wrapper = f"bind_c_{name}{host_suffix}"
-            if check_name_length and len(wrapper) > FORTRAN_NAME_LIMIT:
-                warnings.warn(
-                    f"kernel {name!r}: the module name {name}{host_suffix} gives the "
-                    f"pyccel Fortran wrapper module {wrapper!r} ({len(wrapper)} "
-                    f"characters), longer than Fortran's limit of "
-                    f"{FORTRAN_NAME_LIMIT}; shorten the kernel name to at most "
-                    f"{FORTRAN_NAME_LIMIT - len('bind_c_') - len(host_suffix)} "
-                    "characters or compile with the C backend",
-                    stacklevel=2,
-                )
-            test_args = None
-            if (
-                test_args_suffix is not None
-                and (folder / f"{name}{test_args_suffix}.py").is_file()
-            ):
-                test_args = f"{package}.{name}.{name}{test_args_suffix}"
-            module = importlib.import_module(f"{package}.{name}.{name}{host_suffix}")
-            host: Callable[..., Any] = getattr(module, name)
-            if compile_host is not None:
-                fallback = (
-                    host_fallback(name)
-                    if callable(host_fallback)
-                    else (host_fallback or {}).get(name)
-                )
-                host = CompiledHostKernel(module, name, compile_host, fallback)
-            cuda_path = folder / f"{name}{cuda_suffix}"
-            cuda_kernel = (
-                CudaKernel.from_file(cuda_path, name, **cuda_options)
-                if cuda_path.is_file()
-                else None
-            )
-            kernels[name] = Kernel(
-                host,
-                cuda_kernel,
-                name=name,
+            kernels[name] = Kernel.from_folder(
+                f"{package}.{name}",
+                host_suffix=host_suffix,
+                cuda_suffix=cuda_suffix,
+                test_args_suffix=test_args_suffix,
+                check_name_length=check_name_length,
                 missing_cuda=missing_cuda,
-                cuda_path=cuda_path,
                 host_options=(
                     host_options(name) if callable(host_options) else host_options
                 ),
+                include_dirs=include_dirs,
                 dispatch=dispatch,
-                test_args=test_args,
+                compile_host=compile_host,
+                fallback=(
+                    host_fallback(name)
+                    if callable(host_fallback)
+                    else (host_fallback or {}).get(name)
+                ),
+                **cuda_options,
             )
         return cls(kernels)
 

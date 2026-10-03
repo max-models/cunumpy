@@ -288,6 +288,23 @@ class DeviceParticles(xp.CudaArguments):
         super().__init__(self.markers, self.degree, self.markers.shape[0])
 ```
 
+### `as_kernel_array(value, like, dtype=None)`, `kernel_output(out, like, dtype=None)`
+
+For the arguments of a `Kernel` with `dispatch="arrays"`, whose choice follows
+the arrays. `as_kernel_array` returns `value` on the side of `like` (a CuPy
+array if `like` is one, a NumPy array otherwise), C-contiguous and with `dtype`
+(any if `None`): `value` itself if it already is such an array, else one copy,
+moved across if needed (counted by `count_transfers()`). `kernel_output` is a
+context manager yielding the buffer for an array the kernel writes: `out`
+itself if `as_kernel_array` takes it unchanged, else a converted copy whose
+contents are written into `out` (on its own side) when the block ends without
+an error.
+
+```python
+with xp.kernel_output(result, like=field, dtype=float) as buffer:
+    gather(xp.as_kernel_array(positions, like=field, dtype=float), field, buffer)
+```
+
 ## Random numbers and dtype
 
 ### `get_rng(seed=None)`
@@ -1350,11 +1367,12 @@ array, or a device-only argument object: one with `__cuda_args__()` but no
 `__host_args__()`, such as a `CudaArguments` or a struct value), else the host
 kernel, whatever the backend. Use `"arrays"` in codes that hand host arrays to
 kernels while CuPy is active (diagnostics, MPI staging, CPU fallbacks): those
-calls then run the host kernel instead of failing in the CUDA argument checks.
+calls then run the host kernel instead of failing in the CUDA argument checks,
+calling the host function directly (no device-array conversion).
 `missing_cuda` applies to device arguments without a CUDA kernel.
 
-`kernel.check_signature()` checks that the host and CUDA kernels take the same
-parameters in the same order (the names of the Python host function, or of the
+`kernel.check_signature()` checks that the host and CUDA kernels (and the
+fallback of a `CompiledHostKernel`) take the same parameters in the same order (the names of the Python host function, or of the
 uncompiled Python version of a `CompiledHostKernel`, against the parsed
 `__global__` signature) and raises `ValueError` showing both lists otherwise.
 It does nothing without a CUDA kernel, with `check_signature=False`, or when
@@ -1471,6 +1489,24 @@ that have a CUDA kernel, for a parametrised parity test (see "Testing
 utilities"). `KernelCatalog(kernels)` and `catalog.register(kernel, name=None)`
 build a catalog by hand.
 
+## `Kernel.from_folder`
+
+```python
+# my_sim/kernels/push/__init__.py
+kernel = xp.Kernel.from_folder(__name__, host_suffix="_pyccel", dispatch="arrays",
+                               compile_host=compile_kernels, fallback=push_numpy)
+```
+
+The kernel of one kernel folder `package` (its dotted name, `__name__` in its
+`__init__.py`): the function `<name>` of `<name><host_suffix>.py` is the host
+kernel, `<name><cuda_suffix>` in the folder, if present, the CUDA kernel. Takes
+the options of `KernelCatalog.from_package` for one kernel: `host_suffix`,
+`cuda_suffix`, `test_args_suffix`, `check_name_length`, `missing_cuda`,
+`host_options`, `include_dirs`, `dispatch`, `compile_host`, `fallback` (one
+callable, used with `compile_host`) and CUDA options such as `block_size` or
+`n_threads_from`. Raises `FileNotFoundError` if the folder has no host kernel
+module and `ModuleNotFoundError` if `package` is not a package.
+
 ## `CompiledHostKernel`
 
 ```python
@@ -1487,7 +1523,16 @@ on-disk cache, or one that imports modules compiled ahead of time with the
 the uncompiled Python function with a `RuntimeWarning`. `kernel.compiled`
 builds and reports whether that worked (so that callers can choose another
 path), `kernel.error` is the exception of a failed build, `kernel.python` the
-uncompiled function and `kernel.build()` compiles now.
+uncompiled function, `kernel.fallback` the fallback and `kernel.build()`
+compiles now.
+
+`with xp.force_host_fallback():` makes every `CompiledHostKernel` run its
+fallback as if compilation had failed (`compiled` is False inside the block;
+already compiled versions are kept for after it), to test the path of a
+machine without the compiler; `force_host_fallback(False)` switches it off
+inside such a block. The environment variable `CUNUMPY_HOST_FALLBACK=1`, read
+when cunumpy is imported, does the same for a whole run. The switch is global,
+not per thread.
 
 ## Testing utilities
 

@@ -290,3 +290,193 @@ def test_arrays_dispatch_on_gpu():
         kernel(device, 3.0, 5, n_threads=5)
     assert host.tolist() == [2.0] * 5
     assert device.get().tolist() == [3.0] * 5
+
+
+# ---------------------------------------------------------------------------
+# one kernel folder, declared in its own __init__.py
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def self_declaring_package(tmp_path, monkeypatch):
+    """`scale/__init__.py` declares its kernel with Kernel.from_folder."""
+    root = tmp_path / "demo_folder_pkg"
+    (root / "scale").mkdir(parents=True)
+    (root / "__init__.py").write_text("")
+    (root / "scale" / "scale_pyccel.py").write_text(
+        "def scale(x: 'float[:]', factor: float, n: int):\n"
+        "    for i in range(n):\n"
+        "        x[i] *= factor\n"
+    )
+    (root / "scale" / "scale_numpy.py").write_text(
+        "def scale(x, factor, n):\n    x[:n] *= factor\n"
+    )
+    (root / "scale" / "scale_cuda.cu").write_text(SCALE_CUDA)
+    (root / "scale" / "__init__.py").write_text(
+        "import cunumpy as xp\n"
+        "from demo_folder_pkg.scale.scale_numpy import scale as _numpy\n\n"
+        "COMPILED = []\n\n"
+        "def _compile(module):\n"
+        "    COMPILED.append(module.__name__)\n"
+        "    return module\n\n"
+        "kernel = xp.Kernel.from_folder(\n"
+        "    __name__, host_suffix='_pyccel', dispatch='arrays',\n"
+        "    compile_host=_compile, fallback=_numpy, n_threads_from='first_array',\n"
+        ")\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    yield "demo_folder_pkg"
+    for module in [m for m in sys.modules if m.startswith("demo_folder_pkg")]:
+        del sys.modules[module]
+
+
+def test_from_folder_in_the_folders_own_init(self_declaring_package):
+    import importlib
+
+    folder = importlib.import_module(f"{self_declaring_package}.scale")
+    kernel = folder.kernel
+    assert kernel.name == "scale" and kernel.dispatch == "arrays"
+    assert kernel.cuda_kernel.n_threads_from is not None
+    host = kernel.host_kernel.kernel
+    assert isinstance(host, CompiledHostKernel)
+    assert (
+        host.fallback
+        is sys.modules[f"{self_declaring_package}.scale.scale_numpy"].scale
+    )
+    kernel.check_signature()  # host, fallback and CUDA kernel: x, factor, n
+    x = np.ones(3)
+    kernel(x, 2.0, 3)
+    assert x.tolist() == [2.0] * 3
+    assert folder.COMPILED == [f"{self_declaring_package}.scale.scale_pyccel"]
+    # the catalog of the parent package builds the same kernel
+    catalog = KernelCatalog.from_package(self_declaring_package, host_suffix="_pyccel")
+    assert catalog["scale"].host_parameters() == kernel.host_parameters()
+
+
+def test_from_folder_needs_a_kernel_folder(self_declaring_package):
+    with pytest.raises(FileNotFoundError, match="no host kernel scale_kernels.py"):
+        Kernel.from_folder(f"{self_declaring_package}.scale")  # default suffix
+    with pytest.raises(ModuleNotFoundError, match="not a package"):
+        Kernel.from_folder(f"{self_declaring_package}.scale.scale_numpy")
+
+
+def test_arrays_dispatch_calls_the_host_kernel_without_conversion(
+    fake_gpu, monkeypatch
+):
+    # CuPy is active, but host arguments never go through PyccelKernel's
+    # device-to-host conversion: the choice already says they are host arrays
+    def no_conversion(self, args, kwargs):
+        raise AssertionError("conversion checked")
+
+    monkeypatch.setattr(xp.PyccelKernel, "_needs_conversion", no_conversion)
+    kernel = Kernel(scale, CudaKernel(SCALE_CUDA, "scale"), dispatch="arrays")
+    x = np.ones(2)
+    kernel(x, 2.0, 2)
+    assert x.tolist() == [2.0, 2.0]
+    # a host kernel that is told to convert keeps doing so
+    forced = Kernel(
+        xp.PyccelKernel(scale, use_cupy=True),
+        CudaKernel(SCALE_CUDA, "scale"),
+        dispatch="arrays",
+    )
+    with pytest.raises(AssertionError, match="conversion checked"):
+        forced(x, 2.0, 2)
+
+
+def test_check_signature_covers_the_fallback():
+    module = _module("m", "def scale(x, factor, n):\n    x *= factor\n")
+
+    def fallback(x, n, factor):
+        pass
+
+    kernel = Kernel(CompiledHostKernel(module, "scale", lambda m: m, fallback))
+    with pytest.raises(ValueError, match=r"its fallback \(x, n, factor\)"):
+        kernel.check_signature()
+    Kernel(
+        CompiledHostKernel(module, "scale", lambda m: m, lambda x, factor, n: None)
+    ).check_signature()
+
+
+def test_force_host_fallback():
+    module = _module("m", "def double(x):\n    x *= 2\n")
+    compiled = []
+
+    def compiler(mod):
+        compiled.append(mod)
+        return mod
+
+    used = []
+    kernel = CompiledHostKernel(module, "double", compiler, fallback=used.append)
+    with xp.force_host_fallback():
+        assert not kernel.compiled
+        kernel("x")
+        with xp.force_host_fallback(False):
+            assert kernel.compiled  # compiles once, kept for later
+    assert used == ["x"] and compiled == [module]
+    with xp.force_host_fallback():
+        assert not kernel.compiled  # the compiled version is kept, not used
+    assert kernel.compiled and compiled == [module]
+
+
+def test_host_fallback_environment_variable():
+    import os
+    import subprocess
+
+    code = "import cunumpy.kernel as k; print(k._FORCE_FALLBACK)"
+    env = {**os.environ, "CUNUMPY_HOST_FALLBACK": "1"}
+    printed = subprocess.run(
+        [sys.executable, "-c", code],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert printed.strip() == "True"
+
+
+# ---------------------------------------------------------------------------
+# kernel arguments on the side of the arrays
+# ---------------------------------------------------------------------------
+
+
+def test_as_kernel_array_on_the_host():
+    grid = np.zeros((4, 3))
+    fits = np.ones(5)
+    assert xp.as_kernel_array(fits, like=grid, dtype=float) is fits  # no copy
+    column = np.ones((5, 2))[:, 1]
+    converted = xp.as_kernel_array(column, like=grid, dtype=float)
+    assert converted.flags.c_contiguous and converted is not column
+    ints = xp.as_kernel_array([1, 2], like=grid, dtype=float)
+    assert ints.dtype == np.float64 and isinstance(ints, np.ndarray)
+
+
+def test_kernel_output_writes_into_its_target():
+    grid = np.zeros(3)
+    out = np.zeros(4)
+    with xp.kernel_output(out, like=grid, dtype=float) as buffer:
+        assert buffer is out  # written directly
+        buffer += 1.0
+    strided = np.zeros((4, 2))[:, 0]
+    with xp.kernel_output(strided, like=grid, dtype=float) as buffer:
+        assert buffer is not strided
+        buffer[...] = 7.0
+    assert strided.tolist() == [7.0] * 4
+    with pytest.raises(RuntimeError), xp.kernel_output(strided, like=grid) as buffer:
+        buffer[...] = 1.0
+        raise RuntimeError("kernel failed")
+    assert strided.tolist() == [7.0] * 4  # not copied back after an error
+
+
+def test_kernel_arrays_follow_a_device_grid():
+    if not xp.cupy_available():
+        pytest.skip("CuPy not installed or not functional")
+    import cupy as cp
+
+    grid = cp.zeros(3)
+    on_device = xp.as_kernel_array(np.ones(4), like=grid, dtype=float)
+    assert xp.is_gpu(on_device)
+    host_out = np.zeros(4)
+    with xp.kernel_output(host_out, like=grid, dtype=float) as buffer:
+        assert xp.is_gpu(buffer)
+        buffer[...] = 2.0
+    assert host_out.tolist() == [2.0] * 4

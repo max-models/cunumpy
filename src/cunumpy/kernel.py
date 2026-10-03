@@ -24,8 +24,10 @@ from __future__ import annotations
 
 import copy
 import importlib
+import os
 import warnings
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from types import ModuleType
 from typing import Any
 
@@ -511,6 +513,42 @@ class PyccelKernel:
         return self._outputs
 
 
+#: Whether every CompiledHostKernel runs its fallback instead of compiling,
+#: set by ``CUNUMPY_HOST_FALLBACK=1`` or `force_host_fallback`.
+_FORCE_FALLBACK = os.environ.get("CUNUMPY_HOST_FALLBACK", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+
+@contextmanager
+def force_host_fallback(enabled: bool = True) -> Iterator[None]:
+    """Run every :class:`CompiledHostKernel` as if its compilation had failed.
+
+    Inside the block, a compiled host kernel calls its fallback (or the
+    uncompiled Python function, with a warning) without compiling, and
+    :attr:`CompiledHostKernel.compiled` is False; already compiled kernels are
+    kept for after the block. This tests the code path of a machine without the
+    compiler (e.g. without pyccel). The environment variable
+    ``CUNUMPY_HOST_FALLBACK=1`` (read when cunumpy is imported) does the same
+    for a whole run. Not thread-safe: the switch is global.
+
+    Parameters
+    ----------
+    enabled : bool
+        False switches it off inside the block, e.g. to compare with the
+        compiled version in a run with ``CUNUMPY_HOST_FALLBACK=1``.
+    """
+    global _FORCE_FALLBACK
+    previous = _FORCE_FALLBACK
+    _FORCE_FALLBACK = enabled
+    try:
+        yield
+    finally:
+        _FORCE_FALLBACK = previous
+
+
 class CompiledHostKernel:
     """A host kernel compiled on its first call, with a fallback.
 
@@ -575,8 +613,18 @@ class CompiledHostKernel:
         """The uncompiled Python function (for signatures and reference results)."""
         return getattr(self.module, self.__name__)
 
+    @property
+    def fallback(self) -> Callable[..., Any] | None:
+        """What runs when compilation fails, or None for the Python function."""
+        return self._fallback
+
     def build(self) -> Callable[..., Any] | None:
-        """Compile now (once); the compiled function, or None if that failed."""
+        """Compile now (once); the compiled function, or None if that failed.
+
+        None also inside :func:`force_host_fallback`, without compiling.
+        """
+        if _FORCE_FALLBACK:
+            return None
         if not self._built:
             self._built = True
             try:

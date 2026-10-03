@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for Python 3.8 and 3.9 (both end-of-life); `cunumpy` now requires Python 3.10 or newer.
 
 ### Changed
+- `Kernel(..., dispatch="arrays")` calls the host kernel directly for host arguments, without `PyccelKernel`'s check for device arrays to convert, which converted nothing but ran while CuPy was the active backend (unless the `PyccelKernel` was built with `use_cupy=True`).
+- `Kernel.check_signature()` (and `KernelCatalog.check_signatures()`) also compares the parameters of a `CompiledHostKernel`'s fallback with those of the host kernel.
 - `CudaKernel` pointer and array view parameters and `CudaStruct` pointer and view fields reject an array that lives on another CUDA device than the current one (`ValueError`; `cupy.RawKernel` would read the foreign address silently). Checked only when CuPy is imported and the array reports a `device`.
 - `assert_kernels_agree(..., n_threads=...)` also takes a function of the argument tuple, and `n_threads` may be omitted when the CUDA kernel has `n_threads_from`.
 - NumPy integer scalars passed to integer kernel parameters (and struct fields) are checked by value, like Python ints: `np.int64(5)` fits an `int` parameter; before, they raised `TypeError` unless their dtype was exactly the parameter's.
@@ -26,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `KernelCatalog.from_package(..., include_dirs=None)` is now an explicit keyword; by default the source root of the top-level package (the directory containing it) is an include directory of every CUDA kernel, in addition to the kernel's own folder, so kernels can `#include "my_pkg/common.cuh"`.
 
 ### Added
+- `Kernel.from_folder(package, ...)`: the kernel of one kernel folder, with the options of `KernelCatalog.from_package` (`host_suffix`, `compile_host`, `fallback`, `dispatch`, `include_dirs`, CUDA options...). A folder's own `__init__.py` can declare `kernel = xp.Kernel.from_folder(__name__, ...)`, so code imports the kernel from where it is written; `from_package` now builds each kernel with it.
+- `xp.as_kernel_array(value, like, dtype=None)` and `xp.kernel_output(out, like, dtype=None)`: bring the arguments of a `dispatch="arrays"` kernel to the side of the main array `like` (CuPy or NumPy, C-contiguous, `dtype`), without a copy when they already fit; `kernel_output` yields the buffer the kernel writes and copies it back into `out` if it had to be converted.
+- `xp.force_host_fallback(enabled=True)` and the environment variable `CUNUMPY_HOST_FALLBACK=1`: every `CompiledHostKernel` runs its fallback as if compilation had failed (`compiled` is False), to test the code path of a machine without the compiler. `CompiledHostKernel.fallback` returns the fallback.
 - `cunumpy/random.cuh` and `xp.philox_uniform`, `philox_uniform2`, `philox_normal`, `philox_normal2`, `philox4x32_10`: counter-based random numbers (Philox4x32-10, passing the Random123 known-answer tests) as a pure function of `(seed, stream, counter)`, the same in a kernel and on the host (uniform numbers bit for bit, normal numbers up to the last bits of the math functions), so kernels that draw random numbers can be compared with their host versions.
 - `CudaKernel(..., n_threads_from="first_array")`: one thread per row of the first array argument when a launch gives neither `n_threads` nor `grid`.
 - `CudaKernel` launches with `shared_mem` above 48 KiB set the kernel's `max_dynamic_shared_size_bytes` once, up to the device's opt-in limit, and raise `ValueError` beyond it.

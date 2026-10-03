@@ -23,7 +23,13 @@ from .cuda_kernel import (
 )
 from .dispatch import Kernel, KernelCatalog
 from .fusion import fuse
-from .kernel import CompiledHostKernel, KernelArguments, PyccelKernel, resolve_host_args
+from .kernel import (
+    CompiledHostKernel,
+    KernelArguments,
+    PyccelKernel,
+    force_host_fallback,
+    resolve_host_args,
+)
 from .mirror import DeviceMirror
 from .petsc import petsc_vec
 from .philox import (
@@ -46,6 +52,7 @@ from .xp import (
     DEFAULT_SHARED_MEMORY_PER_BLOCK,
     Timing,
     as_device_array,
+    as_kernel_array,
     assert_same_backend,
     bind_local_device,
     cuda_debug,
@@ -61,6 +68,7 @@ from .xp import (
     get_rng,
     is_cpu,
     is_gpu,
+    kernel_output,
     local_rank,
     max_shared_memory_per_block,
     memory_info,
@@ -144,6 +152,7 @@ __all__ = [
     "TransferEvent",
     "__version__",
     "as_device_array",
+    "as_kernel_array",
     "assert_no_transfers",
     "assert_same_backend",
     "bind_local_device",
@@ -156,6 +165,7 @@ __all__ = [
     "cupy_backend",
     "default_float_dtype",
     "device_count",
+    "force_host_fallback",
     "free_memory",
     "fuse",
     "get_array_backend",
@@ -167,6 +177,7 @@ __all__ = [
     "include_hash",
     "is_cpu",
     "is_gpu",
+    "kernel_output",
     "local_rank",
     "max_shared_memory_per_block",
     "memory_info",
