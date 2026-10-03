@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
-from cunumpy.xp import _LOCAL_RANK_VARIABLES
+from cunumpy._mpi import _LOCAL_RANK_VARIABLES
 
 
 @pytest.fixture

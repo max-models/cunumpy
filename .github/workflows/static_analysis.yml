@@ -28,27 +28,16 @@ jobs:
           ./cloc --version
           ./cloc $(git ls-files)
 
-  black:
+  ruff-format:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout the code
         uses: actions/checkout@v4
 
-      - name: Code formatting with black
+      - name: Code formatting with ruff
         run: |
-          pip install black "black[jupyter]"
-          black --check src/
-
-  isort:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout the code
-        uses: actions/checkout@v4
-
-      - name: Code formatting with isort
-        run: |
-          pip install isort
-          isort --check src/
+          pip install ruff
+          ruff format --check src/ tests/
 
   mypy:
     runs-on: ubuntu-latest
@@ -80,10 +69,10 @@ jobs:
       - name: Checkout the code
         uses: actions/checkout@v4
 
-      - name: Linting with ruff
+      - name: Linting with ruff (including import sorting)
         run: |
           pip install ruff
-          ruff check src/
+          ruff check src/ tests/
 
   pylint:
     runs-on: ubuntu-latest

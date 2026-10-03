@@ -129,11 +129,13 @@ def kernel_package(tmp_path, monkeypatch):
     for name, body in (("scale", "x[i] *= a"), ("shift", "x[i] += a")):
         (root / name).mkdir(parents=True)
         (root / name / "__init__.py").write_text("")
-        (root / name / f"{name}_kernels.py").write_text(textwrap.dedent(f"""
+        (root / name / f"{name}_kernels.py").write_text(
+            textwrap.dedent(f"""
                 def {name}(x, a, n):
                     for i in range(n):
                         {body}
-                """))
+                """)
+        )
     (root / "scale" / "scale_cuda.cu").write_text(SCALE_CUDA)
     (root / "not_a_kernel").mkdir()
     (root / "__init__.py").write_text(

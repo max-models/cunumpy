@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
-from cunumpy import staging as staging_module
+from cunumpy import _staging as staging_module
 from cunumpy.memory import HostStaging
 
 

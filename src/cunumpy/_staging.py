@@ -34,8 +34,8 @@ from typing import Any
 import array_api_compat
 import numpy as np
 
-from .transfers import _ACTIVE as _COUNTERS
-from .transfers import _record
+from ._transfers import _ACTIVE as _COUNTERS
+from ._transfers import _record
 
 __all__ = ["HostStaging", "StagedCopy"]
 

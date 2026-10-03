@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
+import cunumpy._device as device_module
 import cunumpy.xp as cxp  # the internal submodule, to inspect array_backend directly
 
 
@@ -397,7 +398,7 @@ def test_synchronize_warns_on_attribute_error(monkeypatch):
 
 
 def test_max_shared_memory_per_block_without_a_gpu(monkeypatch):
-    monkeypatch.setattr(xp.xp, "cupy_available", lambda: False)
+    monkeypatch.setattr(device_module, "cupy_available", lambda: False)
     assert (
         xp.cuda.max_shared_memory_per_block() == xp.cuda.DEFAULT_SHARED_MEMORY_PER_BLOCK
     )
@@ -418,7 +419,7 @@ def test_max_shared_memory_per_block_reads_the_device(monkeypatch):
     cupy = types.ModuleType("cupy")
     cupy.cuda = types.SimpleNamespace(Device=Device)
     monkeypatch.setitem(sys.modules, "cupy", cupy)
-    monkeypatch.setattr(xp.xp, "cupy_available", lambda: True)
+    monkeypatch.setattr(device_module, "cupy_available", lambda: True)
     assert xp.cuda.max_shared_memory_per_block() == 49152
     assert xp.cuda.max_shared_memory_per_block(1) == 49153
     assert xp.cuda.max_shared_memory_per_block(opt_in=True) == 232448

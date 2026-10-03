@@ -13,13 +13,13 @@ host and device that cunumpy makes inside a block::
         step()
 """
 
-from .transfers import (
+from ._profiling import Timing, nvtx_range, timed_region
+from ._transfers import (
     TransferCounter,
     TransferEvent,
     assert_no_transfers,
     count_transfers,
 )
-from .xp import Timing, nvtx_range, timed_region
 
 __all__ = [
     "Timing",

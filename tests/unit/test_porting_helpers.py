@@ -22,10 +22,10 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
-import cunumpy.cuda_kernel as cuda_kernel_module
+import cunumpy._cuda_kernel as cuda_kernel_module
 import cunumpy.kernel_testing
+from cunumpy._dispatch import FORTRAN_NAME_LIMIT, _pyccel_stub_parameters
 from cunumpy.cuda import CudaKernel, CudaStruct
-from cunumpy.dispatch import FORTRAN_NAME_LIMIT, _pyccel_stub_parameters
 from cunumpy.kernel_testing import check_parity, device_function_kernel, parity_cases
 from cunumpy.kernels import Kernel, KernelCatalog, PyccelStructArguments
 

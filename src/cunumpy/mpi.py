@@ -13,7 +13,7 @@ finds out which. :func:`local_rank` is the rank of this process on its node
 mpi4py is imported only by the functions that need it.
 """
 
-from .xp import (
+from ._mpi import (
     get_mpi_cuda_aware,
     local_rank,
     mpi_buffer,

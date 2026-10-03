@@ -57,7 +57,7 @@ _INSTALL = {
 
 
 class ScipyNamespace:
-    """SciPy (sub)package of the active backend; see :mod:`cunumpy.scipy_backend`.
+    """SciPy (sub)package of the active backend; see :data:`cunumpy.scipy`.
 
     Parameters
     ----------

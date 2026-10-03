@@ -14,7 +14,7 @@ from . import (
     rng,
     xp,
 )
-from .scipy_backend import scipy
+from ._scipy_backend import scipy
 from .xp import (
     as_device_array,
     assert_same_backend,
@@ -47,10 +47,6 @@ _MOVED = {
     "petsc_vec": "petsc",
 }
 _MOVED.pop("BIT_GENERATORS")  # never was at the top level
-
-# Importing cunumpy.rng loads the module cunumpy.random_streams, which would
-# hide the deprecated top-level name random_streams (the generator).
-globals().pop("random_streams", None)
 
 try:
     __version__ = version("cunumpy")
@@ -120,10 +116,13 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    """Set cunumpy.<name> to cunumpy.xp.<name> (NumPy/CuPy).
+    """Resolve names that are not in the namespace: cunumpy.<name> -> cunumpy.xp.<name>.
 
-    Names moved to a submodule in cunumpy 0.5 (see ``_MOVED``) still resolve,
-    with a ``DeprecationWarning``.
+    The public names of the active backend are copied into this namespace (see
+    `_sync_backend_namespace`), so this only runs for names missing from the
+    backend's ``__all__``, for ``numpy_backend``/``cupy_backend``, and for the
+    names moved to a submodule in cunumpy 0.5 (see ``_MOVED``), which still
+    resolve with a ``DeprecationWarning``.
     """
     if name == "numpy_backend":
         return xp.numpy_backend
@@ -139,3 +138,56 @@ def __getattr__(name: str):
         )
         return getattr(globals()[submodule], name)
     return getattr(xp.xp, name)
+
+
+# `xp.zeros` must be as fast as `numpy.zeros`. A module-level __getattr__ runs
+# only after the normal lookup failed, which costs about 3 us per access, so the
+# public names of the active backend module are copied into this namespace, and
+# replaced whenever the backend changes. cunumpy's own names and the deprecated
+# names of _MOVED (e.g. `fuse`, which CuPy also has) are never overwritten.
+_OWN_NAMES = frozenset(globals())
+_backend_names: dict[int, dict[str, object]] = {}  # id(module) -> names to copy
+_switches: dict[tuple[int, int], tuple[tuple[str, ...], dict[str, object]]] = {}
+_synced_module: list[int] = [0]  # id of the module whose names are in the namespace
+
+
+def _names_of(module) -> dict[str, object]:
+    names = _backend_names.get(id(module))
+    if names is None:
+        names = {
+            name: getattr(module, name)
+            for name in getattr(module, "__all__", ())
+            if not name.startswith("_")
+            and name not in _OWN_NAMES
+            and name not in _MOVED
+            and hasattr(module, name)
+        }
+        _backend_names[id(module)] = names
+    return names
+
+
+def _sync_backend_namespace(module) -> None:
+    new = _names_of(module)
+    namespace = globals()
+    old_id = _synced_module[0]
+    if old_id not in _backend_names:
+        namespace.update(new)
+    else:
+        # per pair of modules: the names to drop and the names whose value
+        # changes (NumPy and CuPy share dtypes, constants, ...)
+        key = (old_id, id(module))
+        switch = _switches.get(key)
+        if switch is None:
+            old = _backend_names[old_id]
+            switch = _switches[key] = (
+                tuple(old.keys() - new.keys()),
+                {k: v for k, v in new.items() if old.get(k, new) is not v},
+            )
+        stale, changed = switch
+        for name in stale:
+            namespace.pop(name, None)
+        namespace.update(changed)
+    _synced_module[0] = id(module)
+
+
+xp.array_backend.add_listener(_sync_backend_namespace)

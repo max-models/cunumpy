@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
-from cunumpy import dispatch as dispatch_module
+from cunumpy import _dispatch as dispatch_module
 from cunumpy.cuda import CudaArguments, CudaKernel
 from cunumpy.kernels import (
     CompiledHostKernel,

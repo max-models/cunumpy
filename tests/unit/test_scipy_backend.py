@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
-from cunumpy import scipy_backend
-from cunumpy.scipy_backend import SUBMODULES, ScipyNamespace
+from cunumpy import _scipy_backend as scipy_backend
+from cunumpy._scipy_backend import SUBMODULES, ScipyNamespace
 
 
 @pytest.fixture

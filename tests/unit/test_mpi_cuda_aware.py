@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
-from cunumpy import xp as xp_module
+from cunumpy import _mpi as mpi_module
 
 
 class FakeComm:
@@ -62,12 +62,12 @@ def fake_mpi(monkeypatch):
 @pytest.fixture
 def device_buffers(monkeypatch):
     """Pretend the CuPy backend is active, with host arrays as probe buffers."""
-    monkeypatch.setattr(xp_module, "_device_buffers_in_use", lambda: True)
+    monkeypatch.setattr(mpi_module, "_device_buffers_in_use", lambda: True)
 
     def buffers(rank, n=4):
         return np.arange(n, dtype=np.float64) + rank, np.empty(n, dtype=np.float64)
 
-    monkeypatch.setattr(xp_module, "_mpi_probe_buffers", buffers)
+    monkeypatch.setattr(mpi_module, "_mpi_probe_buffers", buffers)
 
 
 def test_numpy_backend_returns_false_without_mpi(no_mpi4py):

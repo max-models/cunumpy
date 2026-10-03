@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
+import cunumpy._device as device_module
 from cunumpy import as_device_array
 from cunumpy.cuda import (
     CudaArguments,
@@ -467,7 +468,9 @@ PARTICLES = CudaStruct(
     ],
 )
 
-PUSH_SOURCE = PARTICLES.declaration + r"""
+PUSH_SOURCE = (
+    PARTICLES.declaration
+    + r"""
 extern "C" __global__
 void push(Particles p, double dt, double* out, unsigned long long* size) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
@@ -478,6 +481,7 @@ void push(Particles p, double dt, double* out, unsigned long long* size) {
     if (i < p.n && p.alive[i]) p.x[i] += dt * p.charge;
 }
 """
+)
 
 
 def test_struct_layout_and_declaration():
@@ -1258,7 +1262,7 @@ def debug_off():
     ],
 )
 def test_debug_from_env(value, expected):
-    from cunumpy.xp import _debug_from_env
+    from cunumpy._device import _debug_from_env
 
     assert _debug_from_env(value) is expected
 
@@ -1560,7 +1564,7 @@ def test_changed_shipped_header_changes_the_hash(tmp_path, monkeypatch):
     # after an upgrade of cunumpy
     import shutil
 
-    from cunumpy import cuda_kernel
+    from cunumpy import _cuda_kernel as cuda_kernel
 
     installed = tmp_path / "include"
     shutil.copytree(cuda_include_dir(), installed)
@@ -2167,7 +2171,7 @@ def test_n_threads_from_first_array(recorded):
 def test_shared_memory_above_the_default_is_opted_in(recorded, monkeypatch):
     kernel, raw = recorded
     monkeypatch.setattr(
-        xp.xp, "max_shared_memory_per_block", lambda opt_in=False: 100_000
+        device_module, "max_shared_memory_per_block", lambda opt_in=False: 100_000
     )
     x, y = FakeDeviceArray(np.float64), FakeDeviceArray(np.float64)
     kernel(1.0, x, y, 1, n_threads=1, shared_mem=40_000)  # below 48 KiB: no setup

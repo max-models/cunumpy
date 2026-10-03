@@ -8,7 +8,7 @@ the backends (:data:`BACKENDS`, :data:`requires_cupy`, the :func:`backend`
 fixture), :func:`device_function_kernel`, which wraps a ``__device__``
 function in an elementwise ``__global__`` kernel so that device helpers can be
 tested from Python without a hand-written test kernel, and
-:func:`emulate_cuda_kernel` (from :mod:`cunumpy.emulation`), which runs a CUDA
+:func:`emulate_cuda_kernel` (from the private module ``cunumpy._emulation``), which runs a CUDA
 kernel on the CPU, one thread after another, so that its arithmetic can be
 checked against the host kernel in CI without a GPU. Without a GPU, the CuPy
 code paths of a program (argument objects, conversions, backend branches) can
@@ -57,7 +57,7 @@ import array_api_compat
 import numpy as np
 
 from . import _fake_cupy
-from .cuda_kernel import (
+from ._cuda_kernel import (
     CudaKernel,
     CudaParameter,
     CudaStructArguments,
@@ -66,8 +66,8 @@ from .cuda_kernel import (
     _split_top_level,
     _strip_comments,
 )
-from .dispatch import Kernel
-from .emulation import emulate_cuda_kernel, emulation_compiler
+from ._dispatch import Kernel
+from ._emulation import emulate_cuda_kernel, emulation_compiler
 from .xp import cupy_available, get_backend, to_numpy, use_backend
 
 # the pytest objects are created on first access, see __getattr__
