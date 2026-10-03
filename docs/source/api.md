@@ -800,7 +800,20 @@ shape is given either by `n_threads` or by `grid`:
 * `grid`: number of blocks per dimension, instead of `n_threads`.
 * `block`: block shape for this call, instead of `block_size`.
 * `shared_mem`: dynamic shared memory per block in bytes, for
-  `extern __shared__` arrays.
+  `extern __shared__` arrays. Above 48 KiB (the limit every device has) the
+  compiled kernel's `max_dynamic_shared_size_bytes` is raised to `shared_mem`
+  once, up to the device's opt-in limit (`xp.max_shared_memory_per_block(
+  opt_in=True)`); a larger request raises `ValueError` before the launch.
+
+Without `n_threads` and `grid`, a launch uses `n_threads_from(args)` if the
+kernel has one (constructor argument and settable property): a function of the
+argument tuple, or `"first_array"` for the length of the first array argument
+(its first axis), i.e. one thread per marker:
+
+```python
+push = xp.CudaKernel.from_file("push_cuda.cu", n_threads_from="first_array")
+push(positions, velocities, e_field, dt)  # n_threads = positions.shape[0]
+```
 
 Nothing is launched if the grid has a zero dimension (e.g. `n_threads=0`).
 `kernel.launch_shape(n_threads=None, *, grid=None, block=None)` returns the
@@ -1653,7 +1666,7 @@ cunumpy is imported), and tell whether it is active. `requires_cupy` and
 `assert_kernels_agree` skip while it is. `install_fake_cupy()` raises if the
 real CuPy was imported already or cunumpy already checked for CuPy.
 
-### `emulate_cuda_kernel(kernel, *args, n_threads=None, grid=None, block=None, compiler=None, options=())`
+### `emulate_cuda_kernel(kernel, *args, n_threads=None, grid=None, block=None, compiler=None, options=(), shared_mem=0)`
 
 ```python
 x, y = rng.random(1000), np.zeros(1000)
@@ -1678,13 +1691,43 @@ launch. Like NVRTC by default, the compiler may fuse `a * b + c` into an FMA,
 so compare with NumPy using a tolerance of a few ulp, or pass
 `options=("-ffp-contract=off",)` for NumPy's rounding.
 
-Not emulated: concurrency (races and atomic ordering never show), block
-shared memory, `__syncthreads`, warp intrinsics, struct parameters and complex
-scalars. A kernel using shared memory, `__syncthreads`, `__syncwarp`, warp
-shuffles or votes raises `NotImplementedError` (serial threads would give
-wrong results); a kernel that does not compile, or crashes (an out-of-bounds
+Block shared memory and `__syncthreads` are emulated: `__shared__` variables
+are one copy per block (blocks run one after another), `extern __shared__`
+arrays point into a buffer of `shared_mem` bytes, and in a kernel that calls
+`__syncthreads` the threads of a block run as coroutines (POSIX `ucontext`,
+each with its own stack), so that every thread reaches a barrier before any
+thread continues past it. Per-block deposits, shared-memory reductions and
+tiled kernels work.
+
+Not emulated: concurrency between barriers (races and atomic ordering never
+show), warp intrinsics, struct parameters and complex scalars. A kernel, or a
+header it includes, using `__syncwarp`, warp shuffles or votes raises
+`NotImplementedError` (serial threads would give wrong results); a kernel that
+does not compile, or crashes (an out-of-bounds
 index with `-DCUNUMPY_BOUNDS_CHECK`, `__trap()`), raises `RuntimeError` with
 the compiler or program output.
+
+## `HostStaging`
+
+```python
+staging = xp.HostStaging(rho.shape, rho.dtype, buffers=2)
+copy = staging.copy(rho)  # returns at once; rho may be overwritten
+...
+if copy.ready():
+    h5file["rho"] = copy.result()  # a NumPy array
+```
+
+Copies device arrays to page-locked host buffers in the background, so output
+overlaps the next time steps. `copy(array)` snapshots the array on the device
+(on the current stream, after the kernels that wrote it) and copies the
+snapshot to the next of `buffers` pinned host buffers on its own stream. It
+waits only if that buffer's previous copy has not finished, so the program
+runs at most `buffers` copies ahead. The returned `StagedCopy` has `ready()`
+(never waits) and `result()` (waits, returns the host buffer, valid until the
+buffer is reused `buffers` copies later; a stale result raises
+`RuntimeError`). `staging.synchronize()` waits for all copies. Host arrays and
+the NumPy backend copy at once. Device copies are counted by
+`count_transfers()`. The arrays must have the staging shape and dtype.
 
 ## `DeviceMirror`
 
@@ -1746,6 +1789,39 @@ The indexed helpers (also for `float`) address C-contiguous arrays of shape
 `(n0, n1)` and `(n0, n1, n2)`. They wrap `atomicAdd`, a hardware instruction
 for `double` from compute capability 6.0 (sm_60) on; older devices use a
 compare-and-swap loop.
+
+### `cunumpy/random.cuh` and `philox_uniform`
+
+Counter-based random numbers (Philox4x32-10, as in Random123 and cuRAND): a
+pure function of a key and a counter, with no generator state, so each thread
+draws from `(seed, stream, counter)`, e.g. `(seed, particle id, step)`, and
+the host computes the same numbers:
+
+```c
+#include <cunumpy/random.cuh>
+
+cunumpy_u32x4 cunumpy_philox4x32_10(cunumpy_u32x4 ctr, unsigned int key0, unsigned int key1);
+double cunumpy_uniform(seed, stream, counter);              // [0, 1), 53 bits
+void   cunumpy_uniform2(seed, stream, counter, &u0, &u1);  // two from one call
+double cunumpy_normal(seed, stream, counter);               // Box-Muller
+void   cunumpy_normal2(seed, stream, counter, &z0, &z1);
+```
+
+(`seed`, `stream` and `counter` are `unsigned long long`.)
+
+```python
+ids = xp.arange(n, dtype=xp.uint64)
+u0, u1 = xp.philox_uniform2(seed, ids, step)  # == cunumpy_uniform2 in thread i
+z0, z1 = xp.philox_normal2(seed, ids, step)
+words = xp.philox4x32_10(counter_words, key0, key1)  # the raw generator
+```
+
+`xp.philox_uniform`, `philox_uniform2`, `philox_normal`, `philox_normal2` and
+`philox4x32_10` broadcast their arguments and return NumPy or CuPy arrays,
+matching the inputs. The uniform numbers equal the kernel's bit for bit; the
+normal numbers can differ in the last bits (`log`, `sqrt`, `sin`, `cos` on the
+GPU are not the host's). The generator passes the Random123 known-answer
+tests. Use a different `counter` for every random decision of a step.
 
 ### `cunumpy/reduce.cuh`
 

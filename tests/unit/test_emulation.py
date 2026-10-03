@@ -153,15 +153,150 @@ def test_arrays_are_checked():
 @pytest.mark.parametrize(
     ("body", "what"),
     [
-        ("__shared__ double s[32]; s[0] = 0;", "shared memory"),
-        ("__syncthreads();", "__syncthreads"),
+        ("__syncwarp();", "__syncwarp"),
         ("double v = __shfl_xor_sync(0xffffffff, 1.0, 1);", "warp shuffles"),
+        ("int v = __ballot_sync(0xffffffff, n > 0);", "warp votes"),
     ],
 )
 def test_unsupported_constructs_are_refused(body, what):
     kernel = CudaKernel(f'extern "C" __global__ void k(int n) {{ {body} }}', "k")
     with pytest.raises(NotImplementedError, match=what):
         emulate_cuda_kernel(kernel, 1, n_threads=1)
+
+
+def test_warp_shuffles_in_an_included_header_are_refused():
+    kernel = CudaKernel(
+        '#include "cunumpy/reduce.cuh"\n'
+        'extern "C" __global__ void k(double* out, int n) {'
+        "  double s = cunumpy_block_sum(1.0); if (threadIdx.x == 0) out[0] = s; }",
+        "k",
+    )
+    with pytest.raises(NotImplementedError, match="warp shuffles"):
+        emulate_cuda_kernel(kernel, np.zeros(1), 1, n_threads=32)
+
+
+TREE_SUM = r"""
+extern "C" __global__ void block_sums(const double* x, long long n, double* sums) {
+    __shared__ double partial[256];
+    const long long i = blockIdx.x * (long long)blockDim.x + threadIdx.x;
+    partial[threadIdx.x] = i < n ? x[i] : 0.0;
+    __syncthreads();
+    for (unsigned int s = blockDim.x / 2; s > 0; s /= 2) {
+        if (threadIdx.x < s) partial[threadIdx.x] += partial[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) sums[blockIdx.x] = partial[0];
+}
+"""
+
+
+def test_shared_memory_tree_reduction_with_barriers():
+    x = np.random.default_rng(2).random(1000)
+    sums = np.zeros(4)
+    kernel = CudaKernel(TREE_SUM, "block_sums", block_size=256)
+    emulate_cuda_kernel(kernel, x, x.size, sums, n_threads=x.size)
+    expected = [x[b * 256 : (b + 1) * 256].sum() for b in range(4)]
+    np.testing.assert_allclose(sums, expected, rtol=1e-12)
+
+
+BLOCK_DEPOSIT = r"""
+#include "cunumpy/atomic.cuh"
+extern "C" __global__
+void deposit(const double* positions, long long n, double* field, int nx) {
+    extern __shared__ double block_field[];
+    const long long i = blockIdx.x * (long long)blockDim.x + threadIdx.x;
+    for (int k = threadIdx.x; k < nx; k += blockDim.x) block_field[k] = 0.0;
+    __syncthreads();
+    if (i < n) {
+        int cell = (int)floor(positions[i] * nx);
+        if (cell < 0) cell = 0;
+        if (cell > nx - 1) cell = nx - 1;
+        cunumpy_atomic_add(&block_field[cell], 1.0);
+    }
+    __syncthreads();
+    for (int k = threadIdx.x; k < nx; k += blockDim.x)
+        cunumpy_atomic_add(&field[k], block_field[k]);
+}
+"""
+
+
+def test_dynamic_shared_memory_per_block_deposit():
+    positions = np.random.default_rng(3).random(5000)
+    field = np.zeros(37)
+    kernel = CudaKernel(BLOCK_DEPOSIT, "deposit", block_size=128)
+    emulate_cuda_kernel(
+        kernel,
+        positions,
+        positions.size,
+        field,
+        37,
+        n_threads=positions.size,
+        shared_mem=37 * 8,
+    )
+    np.testing.assert_array_equal(field, np.histogram(positions, 37, (0, 1))[0])
+
+
+REVERSE = r"""
+extern "C" __global__ void reverse_blocks(double* x) {
+    __shared__ double tile[64];
+    const long long i = blockIdx.x * (long long)blockDim.x + threadIdx.x;
+    tile[threadIdx.x] = x[i];
+    __syncthreads();  // every thread must have written before anyone reads
+    x[i] = tile[blockDim.x - 1 - threadIdx.x];
+}
+"""
+
+
+def test_barrier_orders_writes_before_reads():
+    x = np.arange(128.0)
+    emulate_cuda_kernel(
+        CudaKernel(REVERSE, "reverse_blocks", block_size=64), x, n_threads=128
+    )
+    expected = np.concatenate([np.arange(64.0)[::-1], np.arange(64.0, 128.0)[::-1]])
+    np.testing.assert_array_equal(x, expected)
+
+
+EARLY_EXIT = r"""
+extern "C" __global__ void early(double* x, int n) {
+    __shared__ double s[32];
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;  // leaves before the barrier
+    s[threadIdx.x] = 2.0 * x[i];
+    __syncthreads();
+    x[i] = s[threadIdx.x];
+}
+"""
+
+
+def test_threads_leaving_before_a_barrier_do_not_hang():
+    x = np.ones(40)
+    emulate_cuda_kernel(
+        CudaKernel(EARLY_EXIT, "early", block_size=32), x, 40, n_threads=40
+    )
+    assert x.tolist() == [2.0] * 40
+
+
+TRANSPOSE_TILE = r"""
+#include "cunumpy/array_view.cuh"
+extern "C" __global__ void transpose(Array2D<double> a, Array2D<double> out) {
+    __shared__ double tile[4][4];
+    const int i = blockIdx.y * blockDim.y + threadIdx.y;
+    const int j = blockIdx.x * blockDim.x + threadIdx.x;
+    tile[threadIdx.y][threadIdx.x] = a(i, j);
+    __syncthreads();
+    const int ti = blockIdx.x * blockDim.x + threadIdx.y;
+    const int tj = blockIdx.y * blockDim.y + threadIdx.x;
+    out(ti, tj) = tile[threadIdx.x][threadIdx.y];
+}
+"""
+
+
+def test_2d_blocks_with_shared_tiles():
+    a = np.arange(64.0).reshape(8, 8)
+    out = np.zeros((8, 8))
+    kernel = CudaKernel(TRANSPOSE_TILE, "transpose", block_size=(4, 4))
+    emulate_cuda_kernel(kernel, a, out, n_threads=(8, 8))
+    np.testing.assert_array_equal(out, a.T)
 
 
 def test_compile_errors_and_crashes_are_reported():

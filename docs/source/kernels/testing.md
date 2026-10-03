@@ -198,8 +198,10 @@ def test_gather_cuda_arithmetic():
 
 Arrays are passed as NumPy arrays (any strides) and written back; scalars are
 checked like in a launch. It catches wrong indices, clamping, periodic wrapping
-and weights, i.e. most porting bugs of gather, scatter and push kernels. It
-does not emulate concurrency, shared memory, `__syncthreads` or warp
+and weights, i.e. most porting bugs of gather, scatter and push kernels. Block
+shared memory and `__syncthreads` are emulated (pass `shared_mem=` for
+`extern __shared__` arrays), so per-block deposits and shared-memory reductions
+are covered too. It does not emulate concurrency between barriers or warp
 intrinsics; kernels using the latter are refused with `NotImplementedError`, so
 those still need a GPU run. The compiler may fuse multiply-adds as NVRTC does,
 so compare with a tolerance of a few ulp.

@@ -26,8 +26,16 @@ from .fusion import fuse
 from .kernel import CompiledHostKernel, KernelArguments, PyccelKernel, resolve_host_args
 from .mirror import DeviceMirror
 from .petsc import petsc_vec
+from .philox import (
+    philox4x32_10,
+    philox_normal,
+    philox_normal2,
+    philox_uniform,
+    philox_uniform2,
+)
 from .random_streams import RandomStreams, random_streams
 from .scipy_backend import scipy
+from .staging import HostStaging, StagedCopy
 from .transfers import (
     TransferCounter,
     TransferEvent,
@@ -123,12 +131,14 @@ __all__ = [
     "CudaStructArguments",
     "CudaStructValue",
     "DeviceMirror",
+    "HostStaging",
     "Kernel",
     "KernelArguments",
     "KernelCatalog",
     "PyccelKernel",
     "PyccelStructArguments",
     "RandomStreams",
+    "StagedCopy",
     "Timing",
     "TransferCounter",
     "TransferEvent",
@@ -166,6 +176,11 @@ __all__ = [
     "nvtx_range",
     "parse_cuda_signature",
     "petsc_vec",
+    "philox4x32_10",
+    "philox_normal",
+    "philox_normal2",
+    "philox_uniform",
+    "philox_uniform2",
     "pin_memory",
     "random_streams",
     "require_cuda_aware_mpi",

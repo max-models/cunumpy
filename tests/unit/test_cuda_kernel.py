@@ -2119,3 +2119,63 @@ def test_numpy_integer_scalars_are_checked_by_value():
     # integers into a double parameter keep working
     a, *_ = kernel.prepare_args(np.int64(3), x, y, 1)
     assert type(a) is np.float64 and a == 3.0
+
+
+# ---------------------------------------------------------------------------
+# launch conveniences: n_threads_from="first_array", shared memory opt-in
+# ---------------------------------------------------------------------------
+
+
+class RecordingRawKernel:
+    """Stands for a compiled cupy.RawKernel: records launches and attributes."""
+
+    def __init__(self):
+        self.launches = []
+        self.max_dynamic_shared_size_bytes = 48 * 1024
+
+    def __call__(self, grid, block, args, shared_mem=0):
+        self.launches.append((grid, block, shared_mem))
+
+
+@pytest.fixture
+def recorded(monkeypatch):
+    """A CudaKernel whose launches are recorded instead of run."""
+    kernel = CudaKernel(AXPY, "axpy", block_size=128)
+    raw = RecordingRawKernel()
+    monkeypatch.setattr(kernel, "compile", lambda: raw)
+    monkeypatch.setattr(kernel, "debug_active", lambda: False)
+    return kernel, raw
+
+
+def test_n_threads_from_first_array(recorded):
+    kernel, raw = recorded
+    kernel.n_threads_from = "first_array"
+    x = FakeDeviceArray(np.float64, shape=(1000,))
+    y = FakeDeviceArray(np.float64, shape=(1000,))
+    kernel(2.0, x, y, 1000)  # the scalar first argument is skipped
+    assert raw.launches == [((8,), (128,), 0)]
+    kernel(2.0, x, y, 1000, n_threads=10)  # explicit sizes still win
+    assert raw.launches[-1] == ((1,), (128,), 0)
+    with pytest.raises(TypeError, match="n_threads_from must be"):
+        kernel.n_threads_from = "rows"
+    as_option = CudaKernel(AXPY, "axpy", n_threads_from="first_array")
+    assert as_option.n_threads_from((1.0, x)) == 1000
+    with pytest.raises(TypeError, match="needs an array argument"):
+        as_option.n_threads_from((1.0, 2))
+
+
+def test_shared_memory_above_the_default_is_opted_in(recorded, monkeypatch):
+    kernel, raw = recorded
+    monkeypatch.setattr(
+        xp.xp, "max_shared_memory_per_block", lambda opt_in=False: 100_000
+    )
+    x, y = FakeDeviceArray(np.float64), FakeDeviceArray(np.float64)
+    kernel(1.0, x, y, 1, n_threads=1, shared_mem=40_000)  # below 48 KiB: no setup
+    assert raw.max_dynamic_shared_size_bytes == 48 * 1024
+    kernel(1.0, x, y, 1, n_threads=1, shared_mem=80_000)
+    assert raw.max_dynamic_shared_size_bytes == 80_000
+    kernel(1.0, x, y, 1, n_threads=1, shared_mem=60_000)  # already allowed
+    assert raw.max_dynamic_shared_size_bytes == 80_000
+    with pytest.raises(ValueError, match="exceeds the 100000 bytes"):
+        kernel(1.0, x, y, 1, n_threads=1, shared_mem=100_001)
+    assert [s for *_, s in raw.launches] == [40_000, 80_000, 60_000]

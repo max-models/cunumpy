@@ -1788,6 +1788,17 @@ class PyccelStructArguments(CudaStructArguments):
             self.pack()
 
 
+def _first_array_length(args: tuple[Any, ...]) -> int:
+    """``n_threads_from="first_array"``: the first axis of the first array argument."""
+    for arg in args:
+        shape = getattr(arg, "shape", None)
+        if shape is not None and len(shape) > 0 and hasattr(arg, "dtype"):
+            return int(shape[0])
+    raise TypeError(
+        "n_threads_from='first_array' needs an array argument; pass n_threads"
+    )
+
+
 def _as_shape(value: int | Sequence[int], what: str) -> tuple[int, ...]:
     shape = (value,) if isinstance(value, (int, np.integer)) else tuple(value)
     if not 1 <= len(shape) <= 3:
@@ -1902,11 +1913,13 @@ class CudaKernel:
         template_args: Sequence[Any] | None = None,
         check_signature: bool = True,
         debug: bool | None = None,
-        n_threads_from: Callable[[tuple[Any, ...]], Any] | None = None,
+        n_threads_from: Callable[[tuple[Any, ...]], Any] | str | None = None,
         check_finite: bool = False,
     ) -> None:
         self._block = self._check_block(_as_shape(block_size, "block_size"))
         self.n_threads_from = n_threads_from
+        # dynamic shared memory the compiled kernel is set up for (see __call__)
+        self._shared_mem_opt_in = 48 * 1024
         self._check_finite = bool(check_finite)
         self._debug = None if debug is None else bool(debug)
         self._source = source
@@ -2138,14 +2151,20 @@ class CudaKernel:
         `n_threads` nor `grid`, and returns `n_threads` (an integer or a
         tuple), e.g. ``lambda args: args[2].n_markers`` for a kernel whose
         third argument is a struct argument object with the marker count.
+        Set it to ``"first_array"`` for the most common case, one thread per
+        row: the length of the first array argument (its first axis).
         Settable, also on the ``cuda_kernel`` of a :class:`~cunumpy.Kernel`.
         """
         return self._n_threads_from
 
     @n_threads_from.setter
-    def n_threads_from(self, value: Callable[[tuple[Any, ...]], Any] | None) -> None:
+    def n_threads_from(
+        self, value: Callable[[tuple[Any, ...]], Any] | str | None
+    ) -> None:
+        if value == "first_array":
+            value = _first_array_length
         if value is not None and not callable(value):
-            raise TypeError("n_threads_from must be callable or None")
+            raise TypeError("n_threads_from must be callable, 'first_array' or None")
         self._n_threads_from = value
 
     @property
@@ -2347,6 +2366,8 @@ class CudaKernel:
             return
 
         kernel = self.compile()
+        if shared_mem > self._shared_mem_opt_in:
+            self._opt_in_shared_memory(kernel, shared_mem)
         debug = self.debug_active()
         with stream if stream is not None else nullcontext():
             kernel(grid_shape, block_shape, values, shared_mem=shared_mem)
@@ -2354,6 +2375,27 @@ class CudaKernel:
                 self._synchronize_after_launch(stream, grid_shape, block_shape)
             if self._check_finite:
                 self._check_finite_arrays(args)
+
+    def _opt_in_shared_memory(self, kernel: Any, shared_mem: int) -> None:
+        """Allow `shared_mem` bytes of dynamic shared memory above the default limit.
+
+        Up to :data:`~cunumpy.DEFAULT_SHARED_MEMORY_PER_BLOCK` (48 KiB) every
+        device launches without setup. Above it, newer GPUs need the kernel
+        attribute ``max_dynamic_shared_size_bytes``; it is set once (and again
+        for a larger request) up to the device's opt-in limit.
+        """
+        from .xp import DEFAULT_SHARED_MEMORY_PER_BLOCK, max_shared_memory_per_block
+
+        if shared_mem <= DEFAULT_SHARED_MEMORY_PER_BLOCK:
+            return
+        limit = max_shared_memory_per_block(opt_in=True)
+        if shared_mem > limit:
+            raise ValueError(
+                f"kernel {self.expression!r}: shared_mem={shared_mem} bytes exceeds "
+                f"the {limit} bytes a block may use on this device"
+            )
+        kernel.max_dynamic_shared_size_bytes = shared_mem
+        self._shared_mem_opt_in = shared_mem
 
     def _check_finite_arrays(self, args: tuple[Any, ...]) -> None:
         """Raise if a floating-point array among `args` holds NaN or inf."""

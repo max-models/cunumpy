@@ -69,8 +69,12 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
 | host kernels compiled at first call (your compile function), NumPy fallback | `from_package(..., host_suffix="_pyccel", compile_host=my_compile, host_fallback={...})` -> `xp.CompiledHostKernel` |
 | host arrays reach kernels while CuPy is active | `Kernel(..., dispatch="arrays")` / `from_package(..., dispatch="arrays")`: CUDA only for device arguments |
 | check host and CUDA kernels take the same parameters | `catalog.check_signatures()` (in a unit test) |
-| test a CUDA kernel's arithmetic without a GPU | `cunumpy.testing.emulate_cuda_kernel(kernel, *numpy_args, n_threads=n)` (C++ compiler; no shared memory/warp ops) |
+| test a CUDA kernel's arithmetic without a GPU | `cunumpy.testing.emulate_cuda_kernel(kernel, *numpy_args, n_threads=n)` (C++ compiler; shared memory and __syncthreads ok, no warp ops; `shared_mem=` for extern shared) |
 | shared-memory budget of a block | `xp.max_shared_memory_per_block()` (48 KiB without a GPU) |
+| random numbers inside a kernel, equal on the host | `#include <cunumpy/random.cuh>`: `cunumpy_uniform(seed, particle_id, step)`; host: `xp.philox_uniform(seed, ids, step)` |
+| one thread per marker without passing n_threads | `CudaKernel(..., n_threads_from="first_array")` |
+| copy device arrays to the host for output without stalling | `xp.HostStaging(shape, dtype)`: `c = staging.copy(a)` ... `c.result()` |
+| PIC recipes (compaction, sort by cell, MPI exchange, graphs) | docs guide "Particle codes" |
 | reproducible random numbers per MPI rank | `xp.random_streams.seed(seed, rank=rank)`, then `xp.random_streams.normal(...)` / `.generator()` |
 | group arrays/scalars into one kernel argument | `xp.CudaArguments` (device only), `xp.KernelArguments` (host object + device tuple), `xp.CudaStruct` (C struct), `xp.CudaStructArguments` (C struct as a class) |
 | CUDA struct from a Pyccel argument class | `xp.CudaStruct.from_signature(Cls.__init__, "Name")`, `xp.write_cuda_header(...)` |

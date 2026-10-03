@@ -20,13 +20,19 @@ parameters (``Array1D<T>`` to ``Array4D<T>``; any strides, they are passed as
 contiguous copies), Python or NumPy scalars for scalar parameters (cast and
 checked like in a launch). Arrays are written back into the given arrays.
 
-What it does not emulate: concurrency (threads run one after another, so atomics
-are plain additions and races never show), block shared memory and
-``__syncthreads`` (a kernel using them is refused, since serial threads would
-give wrong results), warp intrinsics (``__shfl_*``, ``__ballot_sync``, ...; not
-compiled), structs and ``CudaArguments`` objects (not supported), and
-``<cupy/complex.cuh>``. Use it for elementwise, gather, scatter and push
-kernels; use a GPU for the rest.
+Block shared memory and ``__syncthreads`` are emulated: ``__shared__``
+variables (and ``extern __shared__`` arrays, sized by ``shared_mem``) are one
+copy per block, and in a kernel that calls ``__syncthreads`` the threads of a
+block run as coroutines (POSIX ``ucontext``, each with its own stack): every
+thread runs to its next barrier before any thread continues past it, as on a
+GPU. Per-block deposits, shared-memory reductions and tiled kernels therefore
+work.
+
+What it does not emulate: concurrency between the barriers (threads run one
+after another, so atomics are plain additions and races never show), warp
+intrinsics (``__shfl_*``, ``__syncwarp``, ``__ballot_sync``, ...; a kernel or an
+included header using them is refused), structs and ``CudaArguments`` objects
+(not supported), and ``<cupy/complex.cuh>``. Use a GPU for those.
 
 Floating point: like NVRTC (``--fmad=true`` by default) the C++ compiler may
 fuse ``a * b + c`` into one fused multiply-add, so results can differ from
@@ -61,8 +67,6 @@ __all__ = ["emulate_cuda_kernel", "emulation_compiler"]
 
 # CUDA constructs that serial emulation would get wrong
 _UNSUPPORTED = {
-    r"__shared__": "block shared memory",
-    r"__syncthreads": "block synchronization (__syncthreads)",
     r"__syncwarp": "warp synchronization (__syncwarp)",
     r"__shfl\w*": "warp shuffles",
     r"__ballot_sync|__any_sync|__all_sync": "warp votes",
@@ -82,6 +86,10 @@ _STUBS = r"""
 #define __noinline__
 #define __restrict__ __restrict
 #define __launch_bounds__(...)
+// block shared memory: one copy for the block that runs (blocks run one after
+// another); `extern __shared__` arrays point into a buffer of shared_mem bytes
+#define __shared__ static
+static void* cunumpy_dynamic_shared = 0;
 struct cunumpy_dim3 { unsigned int x, y, z; };
 static cunumpy_dim3 threadIdx, blockIdx, blockDim, gridDim;
 static const int warpSize = 32;
@@ -119,9 +127,25 @@ static void cunumpy_write(const char* path, const void* data, size_t bytes) {
 // ---------------------------------------------------------------------------
 """
 
-_MAIN = r"""
+_COROUTINES = r"""
+// --- __syncthreads: the threads of a block are coroutines (ucontext); each
+// runs until the next barrier, then the scheduler resumes the next one ---
+#include <ucontext.h>
+struct cunumpy_thread { ucontext_t ctx; char* stack; int done; };
+static ucontext_t cunumpy_scheduler;
+static cunumpy_thread* cunumpy_threads = 0;
+static unsigned int cunumpy_current = 0;
+#define CUNUMPY_STACK_BYTES (256 * 1024)
+inline void __syncthreads() {
+    swapcontext(&cunumpy_threads[cunumpy_current].ctx, &cunumpy_scheduler);
+}
+"""
+
+_MAIN_SERIAL = r"""
+{globals}
 int main() {{
-{declarations}
+{inits}
+    cunumpy_dynamic_shared = calloc({shared_mem} + 16, 1);
     gridDim = {{{gx}u, {gy}u, {gz}u}};
     blockDim = {{{bx}u, {by}u, {bz}u}};
     for (unsigned int bz = 0; bz < gridDim.z; ++bz)
@@ -133,6 +157,53 @@ int main() {{
         blockIdx = {{bx, by, bz}};
         threadIdx = {{tx, ty, tz}};
         {call};
+    }}
+{writes}
+    return 0;
+}}
+"""
+
+_MAIN_COROUTINES = r"""
+{globals}
+static void cunumpy_entry() {{
+    {call};
+    cunumpy_threads[cunumpy_current].done = 1;
+}}
+int main() {{
+{inits}
+    cunumpy_dynamic_shared = calloc({shared_mem} + 16, 1);
+    gridDim = {{{gx}u, {gy}u, {gz}u}};
+    blockDim = {{{bx}u, {by}u, {bz}u}};
+    const unsigned int n = blockDim.x * blockDim.y * blockDim.z;
+    cunumpy_threads = (cunumpy_thread*)calloc(n, sizeof(cunumpy_thread));
+    for (unsigned int t = 0; t < n; ++t)
+        cunumpy_threads[t].stack = (char*)malloc(CUNUMPY_STACK_BYTES);
+    for (unsigned int bz = 0; bz < gridDim.z; ++bz)
+    for (unsigned int by = 0; by < gridDim.y; ++by)
+    for (unsigned int bx = 0; bx < gridDim.x; ++bx) {{
+        blockIdx = {{bx, by, bz}};
+        for (unsigned int t = 0; t < n; ++t) {{
+            cunumpy_thread* th = &cunumpy_threads[t];
+            getcontext(&th->ctx);
+            th->ctx.uc_stack.ss_sp = th->stack;
+            th->ctx.uc_stack.ss_size = CUNUMPY_STACK_BYTES;
+            th->ctx.uc_link = &cunumpy_scheduler;
+            makecontext(&th->ctx, (void (*)())cunumpy_entry, 0);
+            th->done = 0;
+        }}
+        // rounds: every thread runs to its next __syncthreads (or its end)
+        // before any thread continues past it
+        for (int running = 1; running;) {{
+            running = 0;
+            for (unsigned int t = 0; t < n; ++t) {{
+                if (cunumpy_threads[t].done) continue;
+                cunumpy_current = t;
+                threadIdx = {{t % blockDim.x, (t / blockDim.x) % blockDim.y,
+                              t / (blockDim.x * blockDim.y)}};
+                swapcontext(&cunumpy_scheduler, &cunumpy_threads[t].ctx);
+                if (!cunumpy_threads[t].done) running = 1;
+            }}
+        }}
     }}
 {writes}
     return 0;
@@ -161,8 +232,24 @@ def _scalar_literal(param: CudaParameter, index: int, value: Any) -> str:
     raise NotImplementedError(f"emulation does not support {param.ctype} scalars")
 
 
+def _code(kernel: CudaKernel) -> str:
+    """The kernel source and the headers it includes, without comments."""
+    texts = [kernel.source]
+    for header in kernel.included_headers:
+        try:
+            texts.append(Path(header).read_text(errors="replace"))
+        except OSError:
+            pass
+    return _strip_comments("\n".join(texts))
+
+
+_EXTERN_SHARED = re.compile(
+    r"extern\s+__shared__\s+(?:__align__\(\s*\d+\s*\)\s+)?([\w:<>\s]+?)\s+(\w+)\s*\[\s*\]\s*;"
+)
+
+
 def _check_supported(kernel: CudaKernel) -> None:
-    code = _strip_comments(kernel.source)
+    code = _code(kernel)
     for pattern, what in _UNSUPPORTED.items():
         if re.search(pattern, code):
             raise NotImplementedError(
@@ -179,6 +266,7 @@ def emulate_cuda_kernel(
     block: int | Sequence[int] | None = None,
     compiler: str | None = None,
     options: Sequence[str] = (),
+    shared_mem: int = 0,
 ) -> None:
     """Run `kernel` on the CPU, serially, as if it were launched with `args`.
 
@@ -196,12 +284,15 @@ def emulate_cuda_kernel(
     options : Sequence[str]
         Additional compiler options, e.g. ``("-DMY_FLAG=1",)``. ``-D`` options
         of the kernel are passed on as well.
+    shared_mem : int
+        Dynamic shared memory per block in bytes, for ``extern __shared__``
+        arrays, as in a launch.
 
     Raises
     ------
     NotImplementedError
-        If the kernel uses block shared memory, ``__syncthreads``, warp
-        intrinsics, struct parameters or complex scalars.
+        If the kernel (or a header it includes) uses warp intrinsics, or the
+        kernel has struct parameters or complex scalars.
     TypeError
         If an argument does not match its parameter (dtype, dimensions, a
         scalar that does not fit).
@@ -227,7 +318,7 @@ def emulate_cuda_kernel(
 
     with tempfile.TemporaryDirectory(prefix="cunumpy-emulation-") as tmp:
         tmp_path = Path(tmp)
-        declarations, call_args, writes, arrays = [], [], [], []
+        globals_, inits, call_args, writes, arrays = [], [], [], [], []
         for i, (param, value) in enumerate(zip(params, args)):
             name = f"cunumpy_arg{i}"
             if param.struct is not None:
@@ -259,8 +350,9 @@ def emulate_cuda_kernel(
                     if param.view_ndim is not None
                     else ctype
                 )
-                declarations.append(
-                    f"    {element}* {name} = ({element}*)malloc({max(buffer.nbytes, 1)});\n"
+                globals_.append(f"static {element}* {name};")
+                inits.append(
+                    f"    {name} = ({element}*)malloc({max(buffer.nbytes, 1)});\n"
                     f'    cunumpy_read("{path}", {name}, {buffer.nbytes});'
                 )
                 if param.view_ndim is not None:
@@ -268,8 +360,9 @@ def emulate_cuda_kernel(
                     strides = ", ".join(
                         f"{s // buffer.itemsize}LL" for s in buffer.strides
                     )
-                    declarations.append(
-                        f"    {ctype} {name}_view{{{name}, {{{shape}}}, {{{strides}}}}};"
+                    globals_.append(f"static {ctype} {name}_view;")
+                    inits.append(
+                        f"    {name}_view = {ctype}{{{name}, {{{shape}}}, {{{strides}}}}};"
                     )
                     call_args.append(f"{name}_view")
                 else:
@@ -280,9 +373,25 @@ def emulate_cuda_kernel(
             else:
                 call_args.append(_scalar_literal(param, i, value))
 
-        source = _STUBS + kernel.source.replace('extern "C"', "")
-        source += _MAIN.format(
-            declarations="\n".join(declarations),
+        if shared_mem < 0:
+            raise ValueError(f"shared_mem must be non-negative, got {shared_mem}")
+        kernel_source = kernel.source.replace('extern "C"', "")
+        kernel_source = _EXTERN_SHARED.sub(
+            r"\1* \2 = (\1*)cunumpy_dynamic_shared;", kernel_source
+        )
+        coroutines = "__syncthreads" in _code(kernel)
+        if coroutines:
+            # ucontext needs _XOPEN_SOURCE before any system header
+            source = "#define _XOPEN_SOURCE 700\n" + _STUBS + _COROUTINES
+            main = _MAIN_COROUTINES
+        else:
+            source = _STUBS + "inline void __syncthreads() {}\n"
+            main = _MAIN_SERIAL
+        source += kernel_source
+        source += main.format(
+            globals="\n".join(globals_),
+            inits="\n".join(inits),
+            shared_mem=int(shared_mem),
             gx=grid_shape[0],
             gy=grid_shape[1],
             gz=grid_shape[2],

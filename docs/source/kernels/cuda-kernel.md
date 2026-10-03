@@ -156,6 +156,7 @@ Pass extra include directories with `include_dirs=[...]` and NVRTC flags with
 | `<cunumpy/index.cuh>` | `CUNUMPY_THREAD_1D(i, n)`, `_2D`, `_3D`, `CUNUMPY_GRID_STRIDE_1D(i, n)` |
 | `<cunumpy/array_view.cuh>` | strided views `Array1D<T>` to `Array4D<T>` |
 | `<cunumpy/atomic.cuh>` | `cunumpy_atomic_add` and indexed 2D/3D variants, see [Accumulation kernels](accumulation.md) |
+| `<cunumpy/random.cuh>` | counter-based random numbers `cunumpy_uniform(seed, stream, counter)`, `cunumpy_normal2(...)`, equal to `xp.philox_uniform` on the host |
 
 `xp.cuda_include_dir()` returns their directory for use with other compilers.
 

@@ -28,9 +28,16 @@ from .kernel import CompiledHostKernel as CompiledHostKernel
 from .kernel import PyccelKernel as PyccelKernel
 from .mirror import DeviceMirror as DeviceMirror
 from .petsc import petsc_vec as petsc_vec
+from .philox import philox4x32_10 as philox4x32_10
+from .philox import philox_normal as philox_normal
+from .philox import philox_normal2 as philox_normal2
+from .philox import philox_uniform as philox_uniform
+from .philox import philox_uniform2 as philox_uniform2
 from .random_streams import RandomStreams as RandomStreams
 from .random_streams import random_streams as random_streams
 from .scipy_backend import scipy as scipy
+from .staging import HostStaging as HostStaging
+from .staging import StagedCopy as StagedCopy
 from .transfers import TransferCounter as TransferCounter
 from .transfers import TransferEvent as TransferEvent
 
