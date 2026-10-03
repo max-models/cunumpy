@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
@@ -11,43 +10,12 @@ from typing import Any
 import array_api_compat
 import array_api_compat.numpy as np
 
+from ._mpi_serial import _LOCAL_RANK_VARIABLES, local_rank  # noqa: F401 - re-exported
 from ._transfers import _ACTIVE as _COUNTERS
 from ._transfers import _describe, _record
 from .xp import array_backend, cupy_available, to_numpy
 
 _logger = logging.getLogger(__name__)
-
-
-# Node-local rank of the process, as exported by common MPI launchers. They are
-# set before ``MPI_Init``, so the device can be chosen before MPI starts.
-_LOCAL_RANK_VARIABLES = (
-    "OMPI_COMM_WORLD_LOCAL_RANK",  # Open MPI
-    "MV2_COMM_WORLD_LOCAL_RANK",  # MVAPICH2
-    "MPI_LOCALRANKID",  # Intel MPI, MPICH (Hydra)
-    "PMI_LOCAL_RANK",  # MPICH / PMI
-    "PALS_LOCAL_RANKID",  # Cray PALS
-    "SLURM_LOCALID",  # Slurm (srun)
-    "LOCAL_RANK",  # torchrun and others
-)
-
-
-def local_rank() -> int:
-    """Rank of this process within its node, from the MPI launcher's environment.
-
-    Reads the node-local rank that common launchers export (Open MPI, MVAPICH2,
-    Intel MPI/MPICH, PMI, Cray PALS, Slurm, ``LOCAL_RANK``). These variables are
-    set before ``MPI_Init``, so this works before MPI is initialized, and
-    without importing ``mpi4py``. Returns 0 if none is set (e.g. a serial run).
-    """
-    for variable in _LOCAL_RANK_VARIABLES:
-        value = os.environ.get(variable)
-        if value is None:
-            continue
-        try:
-            return int(value)
-        except ValueError:
-            continue
-    return 0
 
 
 def synchronize_for_mpi(*arrays: Any) -> None:

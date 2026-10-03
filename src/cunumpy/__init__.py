@@ -41,7 +41,19 @@ _MOVED = {
     **dict.fromkeys(kernels.__all__, "kernels"),
     **dict.fromkeys(rng.__all__, "rng"),
     **dict.fromkeys(algorithms.__all__, "algorithms"),
-    **dict.fromkeys(mpi.__all__, "mpi"),
+    # the names of cunumpy.mpi that were at the top level (not the later ones)
+    **dict.fromkeys(
+        (
+            "get_mpi_cuda_aware",
+            "local_rank",
+            "mpi_buffer",
+            "mpi_is_cuda_aware",
+            "require_cuda_aware_mpi",
+            "set_mpi_cuda_aware",
+            "synchronize_for_mpi",
+        ),
+        "mpi",
+    ),
     **dict.fromkeys(profiling.__all__, "profiling"),
     **dict.fromkeys(memory.__all__, "memory"),
     "petsc_vec": "petsc",
