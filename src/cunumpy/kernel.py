@@ -513,40 +513,181 @@ class PyccelKernel:
         return self._outputs
 
 
-#: Whether every CompiledHostKernel runs its fallback instead of compiling,
-#: set by ``CUNUMPY_HOST_FALLBACK=1`` or `force_host_fallback`.
-_FORCE_FALLBACK = os.environ.get("CUNUMPY_HOST_FALLBACK", "").strip().lower() in (
-    "1",
-    "true",
-    "yes",
+#: The host implementations a kernel folder can have, see `HostImplementations`.
+HOST_IMPLEMENTATIONS = ("pyccel", "numba", "numpy", "python")
+
+
+def _check_implementation(name: str | None) -> str | None:
+    if name is not None and name not in HOST_IMPLEMENTATIONS:
+        raise ValueError(
+            f"kernel implementation must be one of {HOST_IMPLEMENTATIONS} or None, "
+            f"got {name!r}"
+        )
+    return name
+
+
+_KERNEL_IMPLEMENTATION: str | None = _check_implementation(
+    os.environ.get("CUNUMPY_KERNEL_IMPLEMENTATION", "").strip().lower() or None
 )
 
 
-@contextmanager
-def force_host_fallback(enabled: bool = True) -> Iterator[None]:
-    """Run every :class:`CompiledHostKernel` as if its compilation had failed.
+def set_kernel_implementation(name: str | None) -> None:
+    """Choose the host implementation every kernel runs, like :func:`set_backend`.
 
-    Inside the block, a compiled host kernel calls its fallback (or the
-    uncompiled Python function, with a warning) without compiling, and
-    :attr:`CompiledHostKernel.compiled` is False; already compiled kernels are
-    kept for after the block. This tests the code path of a machine without the
-    compiler (e.g. without pyccel). The environment variable
-    ``CUNUMPY_HOST_FALLBACK=1`` (read when cunumpy is imported) does the same
-    for a whole run. Not thread-safe: the switch is global.
-
-    Parameters
-    ----------
-    enabled : bool
-        False switches it off inside the block, e.g. to compare with the
-        compiled version in a run with ``CUNUMPY_HOST_FALLBACK=1``.
+    ``"pyccel"``, ``"numba"``, ``"numpy"`` or ``"python"`` (the uncompiled
+    source of the pyccel version); None restores the default (see
+    :class:`HostImplementations`). A kernel without the chosen implementation,
+    or whose chosen implementation is unavailable (e.g. pyccel failed to
+    compile), raises instead of running another one. CUDA kernels are not
+    affected: device arrays always run the CUDA version. The environment
+    variable ``CUNUMPY_KERNEL_IMPLEMENTATION`` (read when cunumpy is imported)
+    sets it for a whole run.
     """
-    global _FORCE_FALLBACK
-    previous = _FORCE_FALLBACK
-    _FORCE_FALLBACK = enabled
+    global _KERNEL_IMPLEMENTATION
+    _KERNEL_IMPLEMENTATION = _check_implementation(name)
+
+
+def get_kernel_implementation() -> str | None:
+    """The host implementation set with :func:`set_kernel_implementation`, or None."""
+    return _KERNEL_IMPLEMENTATION
+
+
+@contextmanager
+def use_kernel_implementation(name: str | None) -> Iterator[None]:
+    """Temporarily choose the host implementation, like :func:`use_backend`.
+
+    For tests and benchmarks, e.g. ``with xp.use_kernel_implementation("numpy"):``
+    to run the code path of a machine without pyccel. The setting is global,
+    not per thread.
+    """
+    global _KERNEL_IMPLEMENTATION
+    previous = _KERNEL_IMPLEMENTATION
+    set_kernel_implementation(name)
     try:
         yield
     finally:
-        _FORCE_FALLBACK = previous
+        _KERNEL_IMPLEMENTATION = previous
+
+
+class HostImplementations:
+    """The host implementations of one kernel, run by name or by the default rule.
+
+    Each implementation is loaded on first use (a pyccel build, an import) and
+    may be unavailable (no compiler, numba not installed); a failed load is
+    remembered with its exception. A call runs the implementation chosen with
+    :func:`set_kernel_implementation`, which must exist and load, or else the
+    default: the first available of ``"pyccel"``, ``"numba"`` and ``"numpy"``,
+    and as a last resort ``"python"``, with a warning (correct, but slow).
+    Built by :meth:`Kernel.from_folder` from the files of a kernel folder.
+
+    Parameters
+    ----------
+    name : str
+        Name of the kernel.
+    loaders : Mapping[str, Callable[[], Callable]]
+        Per implementation name (one of ``HOST_IMPLEMENTATIONS``), a function
+        returning the implementation, or raising if it is unavailable.
+    """
+
+    def __init__(
+        self, name: str, loaders: Mapping[str, Callable[[], Callable[..., Any]]]
+    ) -> None:
+        unknown = set(loaders) - set(HOST_IMPLEMENTATIONS)
+        if unknown:
+            raise ValueError(
+                f"kernel {name!r}: unknown implementations {sorted(unknown)}, "
+                f"expected names from {HOST_IMPLEMENTATIONS}"
+            )
+        if "python" not in loaders:
+            raise ValueError(f"kernel {name!r}: the 'python' implementation is needed")
+        self.__name__ = name
+        self._loaders = dict(loaders)
+        self._loaded: dict[str, Callable[..., Any]] = {}
+        self.errors: dict[str, BaseException] = {}
+        self._default: str | None = None
+
+    def __repr__(self) -> str:
+        return f"HostImplementations({self.__name__!r}, {list(self.names)})"
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        """The implementations this kernel has, loaded or not."""
+        return tuple(name for name in HOST_IMPLEMENTATIONS if name in self._loaders)
+
+    @property
+    def python(self) -> Callable[..., Any]:
+        """The uncompiled Python function (for signatures and reference results)."""
+        return self.get("python")
+
+    def available(self, name: str) -> bool:
+        """Whether implementation `name` exists and loads (loads it now)."""
+        if name not in self._loaders:
+            return False
+        try:
+            self.get(name)
+        except Exception:  # noqa: BLE001 -- recorded in errors
+            return False
+        return True
+
+    def get(self, name: str) -> Callable[..., Any]:
+        """Implementation `name`, loaded on first use.
+
+        Raises
+        ------
+        LookupError
+            If the kernel has no such implementation, or it failed to load
+            (the load error is the cause).
+        """
+        function = self._loaded.get(name)
+        if function is not None:
+            return function
+        if name not in self._loaders:
+            raise LookupError(
+                f"kernel {self.__name__!r} has no {name!r} implementation "
+                f"(it has {', '.join(self.names)})"
+            )
+        if name in self.errors:
+            raise LookupError(
+                f"the {name!r} implementation of kernel {self.__name__!r} is "
+                f"unavailable: {self.errors[name]!r}"
+            ) from self.errors[name]
+        try:
+            function = self._loaders[name]()
+        except Exception as error:
+            self.errors[name] = error
+            raise LookupError(
+                f"the {name!r} implementation of kernel {self.__name__!r} is "
+                f"unavailable: {error!r}"
+            ) from error
+        self._loaded[name] = function
+        return function
+
+    def selected(self) -> str:
+        """The implementation a call runs now (loads the default on first use)."""
+        if _KERNEL_IMPLEMENTATION is not None:
+            return _KERNEL_IMPLEMENTATION
+        if self._default is None:
+            for name in ("pyccel", "numba", "numpy"):
+                if self.available(name):
+                    self._default = name
+                    break
+            else:
+                warnings.warn(
+                    f"Kernel {self.__name__!r}: no compiled or NumPy implementation "
+                    f"is available ({self.errors!r}); running the uncompiled "
+                    "Python version.",
+                    RuntimeWarning,
+                    stacklevel=3,
+                )
+                self._default = "python"
+        return self._default
+
+    def build(self) -> str:
+        """Load the default implementation now, e.g. compile at setup; its name."""
+        return self.selected()
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return self.get(self.selected())(*args, **kwargs)
 
 
 class CompiledHostKernel:
@@ -619,12 +760,7 @@ class CompiledHostKernel:
         return self._fallback
 
     def build(self) -> Callable[..., Any] | None:
-        """Compile now (once); the compiled function, or None if that failed.
-
-        None also inside :func:`force_host_fallback`, without compiling.
-        """
-        if _FORCE_FALLBACK:
-            return None
+        """Compile now (once); the compiled function, or None if that failed."""
         if not self._built:
             self._built = True
             try:

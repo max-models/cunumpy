@@ -24,9 +24,13 @@ from .cuda_kernel import write_cuda_header as write_cuda_header
 from .dispatch import Kernel as Kernel
 from .dispatch import KernelCatalog as KernelCatalog
 from .fusion import fuse as fuse
+from .kernel import HOST_IMPLEMENTATIONS as HOST_IMPLEMENTATIONS
 from .kernel import CompiledHostKernel as CompiledHostKernel
+from .kernel import HostImplementations as HostImplementations
 from .kernel import PyccelKernel as PyccelKernel
-from .kernel import force_host_fallback as force_host_fallback
+from .kernel import get_kernel_implementation as get_kernel_implementation
+from .kernel import set_kernel_implementation as set_kernel_implementation
+from .kernel import use_kernel_implementation as use_kernel_implementation
 from .mirror import DeviceMirror as DeviceMirror
 from .petsc import petsc_vec as petsc_vec
 from .philox import philox4x32_10 as philox4x32_10

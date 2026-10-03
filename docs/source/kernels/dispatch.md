@@ -130,17 +130,23 @@ as `from_package` (`from_package` calls it for every folder). The folder's
 `__init__.py` can then declare its kernel, and code imports the kernel from
 where it is written:
 
+```text
+my_sim/kernels/push/
+├── __init__.py          # kernel = xp.Kernel.from_folder(__name__, ...)
+├── push_pyccel.py       # "pyccel" (compiled with compile_host) and "python" (as is)
+├── push_numba.py        # "numba": def push(...) decorated with numba.njit
+├── push_numpy.py        # "numpy": vectorized
+└── push_cuda.cu         # the CUDA kernel
+```
+
 ```python
 # my_sim/kernels/push/__init__.py
 import cunumpy as xp
-
-from my_sim.kernels.push.push_numpy import push as _numpy_version
 
 kernel = xp.Kernel.from_folder(
     __name__,
     host_suffix="_pyccel",
     compile_host=compile_kernels,  # see below
-    fallback=_numpy_version,
     dispatch="arrays",
     n_threads_from="first_array",
 )
@@ -153,8 +159,32 @@ from my_sim.kernels.push import kernel as push
 push(positions, velocities, dt)  # CUDA for CuPy arrays, host kernel otherwise
 ```
 
-Per-kernel options (a fallback, `missing_cuda`, launch defaults) then sit next
-to the kernel instead of in mappings keyed by name.
+Per-kernel options (`missing_cuda`, launch defaults) then sit next to the
+kernel instead of in mappings keyed by name.
+
+### Several host implementations
+
+Every file of the folder is one implementation; only the host side has a
+choice. A call with host arrays runs the first available of `"pyccel"`,
+`"numba"` and `"numpy"` (an implementation is unavailable if it fails to
+compile or import), and the uncompiled `"python"` version, with a warning, if
+none is. Device arrays run the CUDA kernel. To choose, use the same pattern as
+for the array backend:
+
+```python
+xp.set_kernel_implementation("numpy")       # like xp.set_backend
+with xp.use_kernel_implementation("numba"):  # like xp.use_backend
+    push(positions, velocities, dt)
+xp.set_kernel_implementation(None)          # back to the default
+```
+
+or `CUNUMPY_KERNEL_IMPLEMENTATION=numpy` for a whole run (read at import, like
+`ARRAY_BACKEND`). A chosen implementation that a kernel does not have, or
+cannot load, raises `LookupError` instead of running another one: a benchmark
+of numba never silently measures NumPy. `kernel.implementations` lists the
+implementations, `kernel.selected()` names the one a call with host arrays runs
+now (`kernel.selected(device=True)` for device arrays), and
+`kernel.host_kernel.kernel.errors` holds why an implementation failed to load.
 
 ## Compiled Pyccel host kernels
 
@@ -183,11 +213,12 @@ catalog = xp.KernelCatalog.from_package(
 )
 ```
 
-Each host kernel is a `cunumpy.CompiledHostKernel`:
-`catalog["push"].host_kernel.kernel.compiled` reports whether the compiled
-version is available. To test the path of a machine without Pyccel, run the
-code inside `with xp.force_host_fallback():` (or set `CUNUMPY_HOST_FALLBACK=1`
-for a whole run): every compiled host kernel then runs its fallback. Note that `epyccel` compiles again on every call; a
+`host_fallback` becomes each kernel's `"numpy"` implementation (see "Several
+host implementations" above); `catalog["push"].host_kernel.kernel.available("pyccel")`
+reports whether the compiled version builds, and `catalog["push"].selected()`
+which version runs. To test the path of a machine without Pyccel, run the code
+inside `with xp.use_kernel_implementation("numpy"):` (or set
+`CUNUMPY_KERNEL_IMPLEMENTATION=numpy` for a whole run). Note that `epyccel` compiles again on every call; a
 code that compiles at run time usually keeps the builds in an on-disk cache
 keyed on the module source, so that only the first run after an edit compiles.
 

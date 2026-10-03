@@ -1494,18 +1494,50 @@ build a catalog by hand.
 ```python
 # my_sim/kernels/push/__init__.py
 kernel = xp.Kernel.from_folder(__name__, host_suffix="_pyccel", dispatch="arrays",
-                               compile_host=compile_kernels, fallback=push_numpy)
+                               compile_host=compile_kernels)
+kernel.implementations   # ("pyccel", "numpy", "python", "cuda")
+kernel.selected()        # "pyccel": what a call with host arrays runs now
 ```
 
 The kernel of one kernel folder `package` (its dotted name, `__name__` in its
-`__init__.py`): the function `<name>` of `<name><host_suffix>.py` is the host
-kernel, `<name><cuda_suffix>` in the folder, if present, the CUDA kernel. Takes
-the options of `KernelCatalog.from_package` for one kernel: `host_suffix`,
-`cuda_suffix`, `test_args_suffix`, `check_name_length`, `missing_cuda`,
-`host_options`, `include_dirs`, `dispatch`, `compile_host`, `fallback` (one
-callable, used with `compile_host`) and CUDA options such as `block_size` or
-`n_threads_from`. Raises `FileNotFoundError` if the folder has no host kernel
-module and `ModuleNotFoundError` if `package` is not a package.
+`__init__.py`). Each version of `<name>` in the folder is an implementation:
+`<name><host_suffix>.py` gives `"pyccel"` (compiled with `compile_host` on
+first use, as it is without one) and `"python"` (uncompiled), `<name>_numba.py`
+gives `"numba"`, `<name>_numpy.py` gives `"numpy"`, and `<name><cuda_suffix>` the
+CUDA kernel. `extra_implementations` adds host implementations that are not
+files, as loaders by name (`{"numpy": lambda: push_numpy}`). Takes the options of
+`KernelCatalog.from_package` for one kernel: `host_suffix`, `cuda_suffix`,
+`test_args_suffix`, `check_name_length`, `missing_cuda`, `host_options`,
+`include_dirs`, `dispatch`, `compile_host` and CUDA options such as
+`block_size` or `n_threads_from`. Raises `FileNotFoundError` if the folder has
+no host kernel module and `ModuleNotFoundError` if `package` is not a package.
+`kernel.selected(device=True)` names the implementation for device arguments.
+
+## `HostImplementations`, `set_kernel_implementation`
+
+```python
+host = xp.HostImplementations("push", {"pyccel": load_compiled, "numpy": lambda: push_numpy,
+                                       "python": lambda: push})
+host(*args)                              # the default implementation
+xp.set_kernel_implementation("numpy")    # every kernel: like xp.set_backend
+with xp.use_kernel_implementation("python"):   # like xp.use_backend
+    host(*args)
+```
+
+The host implementations of one kernel (names from `xp.HOST_IMPLEMENTATIONS`:
+`"pyccel"`, `"numba"`, `"numpy"`, `"python"`; `"python"` is required), each
+given as a loader that returns the function or raises if it is unavailable.
+Loaded on first use; `available(name)` loads and reports, `get(name)` returns it
+or raises `LookupError` (missing, or failed to load with the error as cause),
+`errors` maps names to load errors, `names` lists them, `python` is the
+uncompiled function, `build()` loads the default now. A call runs
+`selected()`: the implementation set with `set_kernel_implementation(name)` (or
+`use_kernel_implementation`, or the environment variable
+`CUNUMPY_KERNEL_IMPLEMENTATION` read at import), which raises if the kernel
+lacks it or cannot load it, else the default: the first available of pyccel,
+numba and NumPy, and else `"python"` with a `RuntimeWarning` (once).
+`get_kernel_implementation()` reads the setting; `None` is the default. The
+setting is global, not per thread, and applies to host calls only.
 
 ## `CompiledHostKernel`
 
@@ -1525,14 +1557,6 @@ builds and reports whether that worked (so that callers can choose another
 path), `kernel.error` is the exception of a failed build, `kernel.python` the
 uncompiled function, `kernel.fallback` the fallback and `kernel.build()`
 compiles now.
-
-`with xp.force_host_fallback():` makes every `CompiledHostKernel` run its
-fallback as if compilation had failed (`compiled` is False inside the block;
-already compiled versions are kept for after it), to test the path of a
-machine without the compiler; `force_host_fallback(False)` switches it off
-inside such a block. The environment variable `CUNUMPY_HOST_FALLBACK=1`, read
-when cunumpy is imported, does the same for a whole run. The switch is global,
-not per thread.
 
 ## Testing utilities
 

@@ -24,11 +24,15 @@ from .cuda_kernel import (
 from .dispatch import Kernel, KernelCatalog
 from .fusion import fuse
 from .kernel import (
+    HOST_IMPLEMENTATIONS,
     CompiledHostKernel,
+    HostImplementations,
     KernelArguments,
     PyccelKernel,
-    force_host_fallback,
+    get_kernel_implementation,
     resolve_host_args,
+    set_kernel_implementation,
+    use_kernel_implementation,
 )
 from .mirror import DeviceMirror
 from .petsc import petsc_vec
@@ -130,6 +134,7 @@ def require_version(minimum: str) -> None:
 __all__ = [
     "DEBUG_OPTIONS",
     "DEFAULT_SHARED_MEMORY_PER_BLOCK",
+    "HOST_IMPLEMENTATIONS",
     "CompiledHostKernel",
     "CudaArguments",
     "CudaKernel",
@@ -139,6 +144,7 @@ __all__ = [
     "CudaStructArguments",
     "CudaStructValue",
     "DeviceMirror",
+    "HostImplementations",
     "HostStaging",
     "Kernel",
     "KernelArguments",
@@ -165,13 +171,13 @@ __all__ = [
     "cupy_backend",
     "default_float_dtype",
     "device_count",
-    "force_host_fallback",
     "free_memory",
     "fuse",
     "get_array_backend",
     "get_array_module",
     "get_backend",
     "get_cuda_debug",
+    "get_kernel_implementation",
     "get_mpi_cuda_aware",
     "get_rng",
     "include_hash",
@@ -205,6 +211,7 @@ __all__ = [
     "set_cuda_debug",
     "set_device",
     "set_device_for_rank",
+    "set_kernel_implementation",
     "set_mpi_cuda_aware",
     "stream",
     "synchronize",
@@ -214,6 +221,7 @@ __all__ = [
     "to_cupy",
     "to_numpy",
     "use_backend",
+    "use_kernel_implementation",
     "write_cuda_header",
     "xp",
 ]

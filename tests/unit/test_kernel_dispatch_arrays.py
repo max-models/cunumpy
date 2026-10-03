@@ -1,5 +1,6 @@
 """Kernels chosen by where the arguments live, compiled host kernels, signature checks."""
 
+import importlib
 import sys
 import textwrap
 import warnings
@@ -13,6 +14,7 @@ from cunumpy import (
     CompiledHostKernel,
     CudaArguments,
     CudaKernel,
+    HostImplementations,
     Kernel,
     KernelArguments,
     KernelCatalog,
@@ -247,7 +249,8 @@ def test_from_package_with_compiled_hosts_and_array_dispatch(pyccel_style_packag
     )
     kernel = catalog["scale"]
     assert kernel.dispatch == "arrays"
-    assert isinstance(kernel.host_kernel.kernel, CompiledHostKernel)
+    assert isinstance(kernel.host_kernel.kernel, HostImplementations)
+    assert kernel.implementations == ("pyccel", "python", "cuda")
     catalog.check_signatures()  # x, factor, n on both sides
     x = np.ones(3)
     kernel(x, 2.0, 3)
@@ -299,7 +302,11 @@ def test_arrays_dispatch_on_gpu():
 
 @pytest.fixture
 def self_declaring_package(tmp_path, monkeypatch):
-    """`scale/__init__.py` declares its kernel with Kernel.from_folder."""
+    """`scale/__init__.py` declares its kernel with Kernel.from_folder.
+
+    The folder has a pyccel, a NumPy, a numba (whose import fails) and a CUDA
+    version of `scale`.
+    """
     root = tmp_path / "demo_folder_pkg"
     (root / "scale").mkdir(parents=True)
     (root / "__init__.py").write_text("")
@@ -309,55 +316,139 @@ def self_declaring_package(tmp_path, monkeypatch):
         "        x[i] *= factor\n"
     )
     (root / "scale" / "scale_numpy.py").write_text(
-        "def scale(x, factor, n):\n    x[:n] *= factor\n"
+        "CALLS = []\n\n"
+        "def scale(x, factor, n):\n"
+        "    CALLS.append(n)\n"
+        "    x[:n] *= factor\n"
+    )
+    (root / "scale" / "scale_numba.py").write_text(
+        "import a_jit_library_that_is_not_installed\n"
     )
     (root / "scale" / "scale_cuda.cu").write_text(SCALE_CUDA)
     (root / "scale" / "__init__.py").write_text(
-        "import cunumpy as xp\n"
-        "from demo_folder_pkg.scale.scale_numpy import scale as _numpy\n\n"
+        "import cunumpy as xp\n\n"
         "COMPILED = []\n\n"
         "def _compile(module):\n"
         "    COMPILED.append(module.__name__)\n"
         "    return module\n\n"
         "kernel = xp.Kernel.from_folder(\n"
         "    __name__, host_suffix='_pyccel', dispatch='arrays',\n"
-        "    compile_host=_compile, fallback=_numpy, n_threads_from='first_array',\n"
+        "    compile_host=_compile, n_threads_from='first_array',\n"
         ")\n"
     )
     monkeypatch.syspath_prepend(str(tmp_path))
-    yield "demo_folder_pkg"
+    yield importlib.import_module("demo_folder_pkg.scale")
     for module in [m for m in sys.modules if m.startswith("demo_folder_pkg")]:
         del sys.modules[module]
 
 
-def test_from_folder_in_the_folders_own_init(self_declaring_package):
-    import importlib
-
-    folder = importlib.import_module(f"{self_declaring_package}.scale")
+def test_from_folder_finds_every_implementation(self_declaring_package):
+    folder = self_declaring_package
     kernel = folder.kernel
     assert kernel.name == "scale" and kernel.dispatch == "arrays"
+    assert kernel.implementations == ("pyccel", "numba", "numpy", "python", "cuda")
     assert kernel.cuda_kernel.n_threads_from is not None
-    host = kernel.host_kernel.kernel
-    assert isinstance(host, CompiledHostKernel)
-    assert (
-        host.fallback
-        is sys.modules[f"{self_declaring_package}.scale.scale_numpy"].scale
-    )
-    kernel.check_signature()  # host, fallback and CUDA kernel: x, factor, n
+    kernel.check_signature()  # pyccel, NumPy and CUDA: x, factor, n; numba skipped
+    assert kernel.selected() == "pyccel"  # the compiled version by default
+    assert kernel.selected(device=True) == "cuda"
     x = np.ones(3)
     kernel(x, 2.0, 3)
     assert x.tolist() == [2.0] * 3
-    assert folder.COMPILED == [f"{self_declaring_package}.scale.scale_pyccel"]
+    assert folder.COMPILED == ["demo_folder_pkg.scale.scale_pyccel"]
     # the catalog of the parent package builds the same kernel
-    catalog = KernelCatalog.from_package(self_declaring_package, host_suffix="_pyccel")
-    assert catalog["scale"].host_parameters() == kernel.host_parameters()
+    catalog = KernelCatalog.from_package("demo_folder_pkg", host_suffix="_pyccel")
+    assert catalog["scale"].implementations == kernel.implementations
 
 
 def test_from_folder_needs_a_kernel_folder(self_declaring_package):
     with pytest.raises(FileNotFoundError, match="no host kernel scale_kernels.py"):
-        Kernel.from_folder(f"{self_declaring_package}.scale")  # default suffix
+        Kernel.from_folder("demo_folder_pkg.scale")  # default suffix
     with pytest.raises(ModuleNotFoundError, match="not a package"):
-        Kernel.from_folder(f"{self_declaring_package}.scale.scale_numpy")
+        Kernel.from_folder("demo_folder_pkg.scale.scale_numpy")
+
+
+def test_kernel_implementation_setting(self_declaring_package):
+    kernel = self_declaring_package.kernel
+    calls = importlib.import_module("demo_folder_pkg.scale.scale_numpy").CALLS
+    assert xp.get_kernel_implementation() is None
+    with xp.use_kernel_implementation("numpy"):
+        assert xp.get_kernel_implementation() == "numpy"
+        assert kernel.selected() == "numpy"
+        x = np.ones(2)
+        kernel(x, 3.0, 2)
+        assert x.tolist() == [3.0, 3.0] and calls == [2]
+        with xp.use_kernel_implementation("python"):
+            kernel(x, 2.0, 2)  # the uncompiled pyccel source
+        assert calls == [2] and x.tolist() == [6.0, 6.0]
+    assert xp.get_kernel_implementation() is None
+    assert self_declaring_package.COMPILED == []  # pyccel never needed
+    # a chosen implementation that cannot run raises instead of running another
+    xp.set_kernel_implementation("numba")
+    try:
+        with pytest.raises(LookupError, match="'numba' implementation .* unavailable"):
+            kernel(np.ones(1), 2.0, 1)
+    finally:
+        xp.set_kernel_implementation(None)
+    with pytest.raises(ValueError, match="kernel implementation must be one of"):
+        xp.set_kernel_implementation("fortran")
+
+
+def test_default_skips_unavailable_implementations():
+    def no_pyccel():
+        raise ImportError("pyccel missing")
+
+    used = []
+    with_numpy = HostImplementations(
+        "scale",
+        {
+            "pyccel": no_pyccel,
+            "numpy": lambda: used.append,
+            "python": lambda: scale,
+        },
+    )
+    assert with_numpy.selected() == "numpy" and not with_numpy.available("pyccel")
+    assert isinstance(with_numpy.errors["pyccel"], ImportError)
+    with_numpy("x")
+    assert used == ["x"]
+    only_python = HostImplementations(
+        "scale", {"pyccel": no_pyccel, "python": lambda: scale}
+    )
+    x = np.ones(2)
+    with pytest.warns(RuntimeWarning, match="uncompiled Python version"):
+        only_python(x, 2.0, 2)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        only_python(x, 2.0, 2)  # warned once
+    assert x.tolist() == [4.0, 4.0]
+    with pytest.raises(LookupError, match="has no 'numba' implementation"):
+        only_python.get("numba")
+    with pytest.raises(ValueError, match="unknown implementations"):
+        HostImplementations("scale", {"python": lambda: scale, "julia": lambda: scale})
+
+
+def test_kernel_implementation_environment_variable():
+    import os
+    import subprocess
+
+    code = "import cunumpy as xp; print(xp.get_kernel_implementation())"
+    env = {**os.environ, "CUNUMPY_KERNEL_IMPLEMENTATION": "numpy"}
+    printed = subprocess.run(
+        [sys.executable, "-c", code],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert printed.strip() == "numpy"
+    env["CUNUMPY_KERNEL_IMPLEMENTATION"] = "fortran"
+    failed = subprocess.run(
+        [sys.executable, "-c", code],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert failed.returncode != 0 and "kernel implementation must be" in failed.stderr
 
 
 def test_arrays_dispatch_calls_the_host_kernel_without_conversion(
@@ -383,55 +474,22 @@ def test_arrays_dispatch_calls_the_host_kernel_without_conversion(
         forced(x, 2.0, 2)
 
 
-def test_check_signature_covers_the_fallback():
-    module = _module("m", "def scale(x, factor, n):\n    x *= factor\n")
-
-    def fallback(x, n, factor):
+def test_check_signature_covers_every_host_implementation():
+    def swapped(x, n, factor):
         pass
 
-    kernel = Kernel(CompiledHostKernel(module, "scale", lambda m: m, fallback))
-    with pytest.raises(ValueError, match=r"its fallback \(x, n, factor\)"):
+    kernel = Kernel(
+        HostImplementations(
+            "scale", {"python": lambda: scale, "numpy": lambda: swapped}
+        ),
+        CudaKernel(SCALE_CUDA, "scale"),
+    )
+    with pytest.raises(ValueError, match=r"the numpy version \(x, n, factor\)"):
         kernel.check_signature()
-    Kernel(
-        CompiledHostKernel(module, "scale", lambda m: m, lambda x, factor, n: None)
-    ).check_signature()
-
-
-def test_force_host_fallback():
-    module = _module("m", "def double(x):\n    x *= 2\n")
-    compiled = []
-
-    def compiler(mod):
-        compiled.append(mod)
-        return mod
-
-    used = []
-    kernel = CompiledHostKernel(module, "double", compiler, fallback=used.append)
-    with xp.force_host_fallback():
-        assert not kernel.compiled
-        kernel("x")
-        with xp.force_host_fallback(False):
-            assert kernel.compiled  # compiles once, kept for later
-    assert used == ["x"] and compiled == [module]
-    with xp.force_host_fallback():
-        assert not kernel.compiled  # the compiled version is kept, not used
-    assert kernel.compiled and compiled == [module]
-
-
-def test_host_fallback_environment_variable():
-    import os
-    import subprocess
-
-    code = "import cunumpy.kernel as k; print(k._FORCE_FALLBACK)"
-    env = {**os.environ, "CUNUMPY_HOST_FALLBACK": "1"}
-    printed = subprocess.run(
-        [sys.executable, "-c", code],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    assert printed.strip() == "True"
+    module = _module("m", "def scale(x, factor, n):\n    x *= factor\n")
+    compiled = Kernel(CompiledHostKernel(module, "scale", lambda m: m, swapped))
+    with pytest.raises(ValueError, match=r"its fallback \(x, n, factor\)"):
+        compiled.check_signature()
 
 
 # ---------------------------------------------------------------------------
