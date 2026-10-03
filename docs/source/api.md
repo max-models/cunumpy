@@ -429,6 +429,48 @@ mapping differs:
 device_id = xp.cuda.set_device_for_rank(mpi_rank)
 ```
 
+### `mpi.get_mpi(use_mpi=None)`, `mpi.launched_under_mpi()`
+
+Importing `mpi4py.MPI` starts MPI (`MPI_Init`), which takes time and makes
+every collective cost something even on one process. `launched_under_mpi()`
+tells, from the environment that `mpirun`/`mpiexec`/`srun` set up and without
+importing mpi4py, whether the process belongs to an MPI job
+(`CUNUMPY_MPI=1`/`0` overrides it). `get_mpi()` returns `mpi4py.MPI` then, and
+otherwise the serial stand-in, so that the same code runs with and without
+MPI:
+
+```python
+MPI = xp.mpi.get_mpi()           # decided once per process
+comm = MPI.COMM_WORLD
+comm.Allreduce(MPI.IN_PLACE, rho, op=MPI.SUM)   # nothing to do on one process
+n_total = comm.allreduce(n_local)               # n_local itself
+if isinstance(MPI, xp.mpi.SerialMPI):
+    ...                                          # a serial run
+```
+
+`get_mpi(True)` imports mpi4py (`ImportError` if missing), `get_mpi(False)`
+returns the stand-in. Launched under MPI without mpi4py installed, `get_mpi()`
+warns (`RuntimeWarning`) and returns the stand-in.
+
+### `mpi.SerialMPI`, `mpi.SerialComm`
+
+The stand-in for `mpi4py.MPI` and its communicators of size 1.
+`SerialComm` returns (object methods) or copies (buffer methods) what one rank
+gets: `bcast`, `allreduce`, `reduce` and `scan` return their argument,
+`gather`/`allgather` return `[x]`, `scatter([x])` returns `x`;
+`Allreduce`/`Reduce`/`Allgather`/`Gather`/`Scatter`/`Alltoall`/`Scan` copy the
+send buffer into the receive buffer (nothing with `IN_PLACE`), the vector
+forms (`Allgatherv`, `Gatherv`, `Scatterv`) use the displacement of rank 0,
+`Bcast` and `Barrier` do nothing, and `sendrecv`/`Sendrecv` work to and from
+rank 0 or `PROC_NULL`. Buffers are NumPy or CuPy arrays, or mpi4py buffer
+specifications (`[array, MPI.DOUBLE]`). Non-blocking versions return completed
+requests. Any other method raises `AttributeError`, so a missing feature shows
+instead of doing nothing. `SerialMPI` has `COMM_WORLD`, `COMM_SELF`,
+`COMM_NULL` (false), `IN_PLACE`, the reduction operations, the common
+datatypes (`isinstance(MPI.DOUBLE, MPI.Datatype)` holds), `PROC_NULL`, `ROOT`,
+`ANY_SOURCE`, `UNDEFINED`, `Comm`/`Intracomm`, `Request`, `Prequest`, `Status`,
+`Wtime()` and `Is_initialized()` (False).
+
 ### `mpi.local_rank()`
 
 The rank of the process within its node, read from the environment variables

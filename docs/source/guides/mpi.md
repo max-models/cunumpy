@@ -51,6 +51,17 @@ rank and assumes ranks are numbered contiguously per node. Prefer
 
 Importing `mpi4py.MPI` initializes MPI by default. Do it after step 1.
 
+To run the same program serially without starting MPI, get the module from
+`xp.mpi.get_mpi()` instead of importing it: it returns `mpi4py.MPI` when the
+process was started by `mpirun`/`mpiexec`/`srun`, and otherwise a serial
+stand-in whose `COMM_WORLD` has size 1 (see the
+[API reference](../api.md)):
+
+```python
+MPI = xp.mpi.get_mpi()
+comm = MPI.COMM_WORLD
+```
+
 ### 3. Check that MPI is CUDA-aware
 
 Only an MPI library built with CUDA support can send and receive CuPy arrays
