@@ -72,55 +72,55 @@ def device_buffers(monkeypatch):
 
 def test_numpy_backend_returns_false_without_mpi(no_mpi4py):
     with xp.use_backend("numpy"):
-        assert xp.mpi_is_cuda_aware() is False
-        assert xp.mpi_is_cuda_aware(FakeComm()) is False
-        assert xp.require_cuda_aware_mpi() is None  # no-op, mpi4py not imported
+        assert xp.mpi.mpi_is_cuda_aware() is False
+        assert xp.mpi.mpi_is_cuda_aware(FakeComm()) is False
+        assert xp.mpi.require_cuda_aware_mpi() is None  # no-op, mpi4py not imported
 
 
 def test_unknown_method():
     with pytest.raises(ValueError, match="probe"):
-        xp.mpi_is_cuda_aware(FakeComm(), method="query")
+        xp.mpi.mpi_is_cuda_aware(FakeComm(), method="query")
 
 
 def test_probe_succeeds(device_buffers, fake_mpi):
     comm = FakeComm()
-    assert xp.mpi_is_cuda_aware(comm) is True
+    assert xp.mpi.mpi_is_cuda_aware(comm) is True
     assert comm.sendrecv_calls == [(0, 0)]  # size 1: to and from itself
     assert comm.allreduce_calls == [(True, "LAND")]
 
 
 def test_probe_uses_comm_world_by_default(device_buffers, fake_mpi):
-    assert xp.mpi_is_cuda_aware() is True
+    assert xp.mpi.mpi_is_cuda_aware() is True
     assert fake_mpi.sendrecv_calls == [(0, 0)]
 
 
 def test_probe_neighbours(device_buffers, fake_mpi):
     comm = FakeComm(rank=3, size=4)
-    assert xp.mpi_is_cuda_aware(comm) is True
+    assert xp.mpi.mpi_is_cuda_aware(comm) is True
     assert comm.sendrecv_calls == [(0, 2)]  # to the next rank, from the previous
 
 
 def test_probe_exception_gives_false(device_buffers, fake_mpi):
     comm = FakeComm(fail=RuntimeError("MPI_ERR_BUFFER"))
-    assert xp.mpi_is_cuda_aware(comm) is False
+    assert xp.mpi.mpi_is_cuda_aware(comm) is False
     assert comm.allreduce_calls == [(False, "LAND")]
 
 
 def test_probe_wrong_values_give_false(device_buffers, fake_mpi):
     comm = FakeComm(corrupt=True)
-    assert xp.mpi_is_cuda_aware(comm) is False
+    assert xp.mpi.mpi_is_cuda_aware(comm) is False
 
 
 def test_probe_other_rank_failed(device_buffers, fake_mpi):
     comm = FakeComm(allreduce_result=False)  # this rank ok, another one not
-    assert xp.mpi_is_cuda_aware(comm) is False
+    assert xp.mpi.mpi_is_cuda_aware(comm) is False
 
 
 def test_require_raises(device_buffers, fake_mpi):
     comm = FakeComm(fail=RuntimeError("MPI_ERR_BUFFER"))
     with pytest.raises(RuntimeError, match="CUDA-aware"):
-        xp.require_cuda_aware_mpi(comm)
-    xp.require_cuda_aware_mpi(FakeComm())  # succeeds silently
+        xp.mpi.require_cuda_aware_mpi(comm)
+    xp.mpi.require_cuda_aware_mpi(FakeComm())  # succeeds silently
 
 
 def test_probe_on_comm_world():
@@ -128,4 +128,4 @@ def test_probe_on_comm_world():
         pytest.skip("CuPy not installed or not functional")
     pytest.importorskip("mpi4py")
     with xp.use_backend("cupy"):
-        assert isinstance(xp.mpi_is_cuda_aware(), bool)
+        assert isinstance(xp.mpi.mpi_is_cuda_aware(), bool)

@@ -1,4 +1,4 @@
-"""Tests for `cunumpy.testing`.
+"""Tests for `cunumpy.kernel_testing`.
 
 The pytest markers, the array collection and comparison of `assert_kernels_agree`
 and the source generation of `device_function_kernel` run everywhere; running
@@ -14,17 +14,18 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
-import cunumpy.testing
-from cunumpy import CudaArguments, CudaKernel, Kernel, parse_cuda_signature
-from cunumpy.testing import backend  # noqa: F401 - the fixture is used by name
-from cunumpy.testing import (
+import cunumpy.kernel_testing
+from cunumpy.cuda import CudaArguments, CudaKernel, parse_cuda_signature
+from cunumpy.kernel_testing import (
     BACKENDS,
     _collect_arrays,
     _compare_results,
     assert_kernels_agree,
+    backend,  # noqa: F401 - the fixture is used by name
     device_function_kernel,
     requires_cupy,
 )
+from cunumpy.kernels import Kernel
 
 SCALE_CUDA = r"""
 extern "C" __global__ void scale(double* x, double factor, int n) {
@@ -55,11 +56,11 @@ def make_scale_args(backend_name, seed):
 
 
 def test_import_does_not_need_pytest():
-    """cunumpy.testing (and cunumpy) import without importing pytest."""
+    """cunumpy.kernel_testing (and cunumpy) import without importing pytest."""
     code = (
-        "import sys, cunumpy, cunumpy.testing\n"
+        "import sys, cunumpy, cunumpy.kernel_testing\n"
         "assert 'pytest' not in sys.modules\n"
-        "assert 'device_function_kernel' in dir(cunumpy.testing)\n"
+        "assert 'device_function_kernel' in dir(cunumpy.kernel_testing)\n"
     )
     # the same source tree as this test, whether or not cunumpy is installed
     source_root = Path(cunumpy.__file__).parents[1]
@@ -74,7 +75,7 @@ def test_backends_and_marker():
     assert requires_cupy.args == (not xp.cupy_available(),)
     assert requires_cupy.kwargs["reason"] == "CuPy/GPU not available"
     with pytest.raises(AttributeError):
-        _ = cunumpy.testing.no_such_thing
+        _ = cunumpy.kernel_testing.no_such_thing
 
 
 @pytest.mark.parametrize("backend_name", BACKENDS)
@@ -308,7 +309,7 @@ def test_device_function_kernel_on_gpu():
 
 def test_struct_arguments_are_compared_by_field_name():
     """A CudaStructArguments object (fields may be properties) gets the host names."""
-    from cunumpy.testing import _collect_arrays
+    from cunumpy.kernel_testing import _collect_arrays
 
     class Owner:
         def __init__(self):
@@ -321,7 +322,7 @@ def test_struct_arguments_are_compared_by_field_name():
             self.weights = owner.weights
             self.n = 3
 
-    class DeviceArguments(xp.CudaStructArguments):
+    class DeviceArguments(xp.cuda.CudaStructArguments):
         struct_name = "OwnerArgs"
         fields = (("markers", "Array2D<double>"), ("weights", "double*"), ("n", "int"))
 
@@ -347,7 +348,7 @@ def test_struct_arguments_are_compared_by_field_name():
     assert device["argument 1.markers"] is owner.markers
 
     struct = DeviceArguments.struct
-    value = xp.CudaStructValue(
+    value = xp.cuda.CudaStructValue(
         struct, np.zeros((), struct.dtype)[()], vars(owner) | {"n": 3}
     )
     assert sorted(_collect_arrays((value,))) == [

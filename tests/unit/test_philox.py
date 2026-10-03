@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
-from cunumpy import CudaKernel, cuda_include_dir
-from cunumpy.testing import emulate_cuda_kernel, emulation_compiler
+from cunumpy.cuda import CudaKernel, cuda_include_dir
+from cunumpy.kernel_testing import emulate_cuda_kernel, emulation_compiler
 
 # Known-answer vectors of Philox4x32-10 (Random123, kat_vectors)
 KAT = [
@@ -27,7 +27,7 @@ KAT = [
 
 @pytest.mark.parametrize(("counter", "key", "expected"), KAT)
 def test_known_answers(counter, key, expected):
-    out = xp.philox4x32_10(np.array(counter, dtype=np.uint32), *key)
+    out = xp.rng.philox4x32_10(np.array(counter, dtype=np.uint32), *key)
     assert out.dtype == np.uint32
     assert out.tolist() == list(expected)
 
@@ -35,41 +35,41 @@ def test_known_answers(counter, key, expected):
 def test_vectorized_over_counters():
     counters = np.array([k[0] for k in KAT], dtype=np.uint32)
     keys = np.array([k[1] for k in KAT], dtype=np.uint32)
-    out = xp.philox4x32_10(counters, keys[:, 0], keys[:, 1])
+    out = xp.rng.philox4x32_10(counters, keys[:, 0], keys[:, 1])
     assert out.tolist() == [list(k[2]) for k in KAT]
 
 
 def test_uniforms_and_normals():
     ids = np.arange(200_000, dtype=np.uint64)
-    u0, u1 = xp.philox_uniform2(42, ids, 7)
+    u0, u1 = xp.rng.philox_uniform2(42, ids, 7)
     assert u0.shape == u1.shape == (200_000,)
     assert u0.min() >= 0.0 and u0.max() < 1.0
     assert abs(u0.mean() - 0.5) < 3e-3 and abs(u1.var() - 1 / 12) < 1e-3
     assert abs(np.corrcoef(u0, u1)[0, 1]) < 1e-2
-    np.testing.assert_array_equal(xp.philox_uniform(42, ids, 7), u0)
-    z0, z1 = xp.philox_normal2(42, ids, 7)
+    np.testing.assert_array_equal(xp.rng.philox_uniform(42, ids, 7), u0)
+    z0, z1 = xp.rng.philox_normal2(42, ids, 7)
     assert abs(z0.mean()) < 1e-2 and abs(z1.std() - 1.0) < 1e-2
-    np.testing.assert_array_equal(xp.philox_normal(42, ids, 7), z0)
+    np.testing.assert_array_equal(xp.rng.philox_normal(42, ids, 7), z0)
 
 
 def test_streams_counters_and_seeds_differ():
-    base = xp.philox_uniform(1, 5, 9)
-    assert xp.philox_uniform(1, 5, 9) == base  # no state
-    assert xp.philox_uniform(1, 6, 9) != base
-    assert xp.philox_uniform(1, 5, 10) != base
-    assert xp.philox_uniform(2, 5, 9) != base
+    base = xp.rng.philox_uniform(1, 5, 9)
+    assert xp.rng.philox_uniform(1, 5, 9) == base  # no state
+    assert xp.rng.philox_uniform(1, 6, 9) != base
+    assert xp.rng.philox_uniform(1, 5, 10) != base
+    assert xp.rng.philox_uniform(2, 5, 9) != base
     # 64-bit stream and counter: the high words matter
-    assert xp.philox_uniform(1, 5 + 2**32, 9) != base
-    assert xp.philox_uniform(1, 5, 9 + 2**32) != base
-    assert xp.philox_uniform(1 + 2**32, 5, 9) != base
+    assert xp.rng.philox_uniform(1, 5 + 2**32, 9) != base
+    assert xp.rng.philox_uniform(1, 5, 9 + 2**32) != base
+    assert xp.rng.philox_uniform(1 + 2**32, 5, 9) != base
 
 
 def test_broadcasting():
-    u = xp.philox_uniform(
+    u = xp.rng.philox_uniform(
         np.uint64(3), np.arange(4, dtype=np.uint64)[:, None], np.arange(5)
     )
     assert u.shape == (4, 5)
-    assert u[2, 3] == xp.philox_uniform(3, 2, 3)
+    assert u[2, 3] == xp.rng.philox_uniform(3, 2, 3)
 
 
 def test_header_is_shipped():
@@ -96,8 +96,8 @@ def _device_samples(run, n=1000, seed=2**40 + 17, counter=2**33 + 5):
     run(CudaKernel(SAMPLE, "sample"), u0, u1, z0, z1, n, seed, counter, n_threads=n)
     return (
         (u0, u1, z0, z1),
-        xp.philox_uniform2(seed, np.arange(n, dtype=np.uint64), counter),
-        xp.philox_normal2(seed, np.arange(n, dtype=np.uint64), counter),
+        xp.rng.philox_uniform2(seed, np.arange(n, dtype=np.uint64), counter),
+        xp.rng.philox_normal2(seed, np.arange(n, dtype=np.uint64), counter),
     )
 
 
@@ -128,8 +128,8 @@ def test_header_matches_the_host_functions_on_gpu():
     np.testing.assert_allclose(z0, n0, rtol=1e-13, atol=1e-13)
     np.testing.assert_allclose(z1, n1, rtol=1e-13, atol=1e-13)
     # the device-side generator on device arrays, too
-    du0, _ = xp.philox_uniform2(7, cp.arange(10, dtype=cp.uint64), 1)
+    du0, _ = xp.rng.philox_uniform2(7, cp.arange(10, dtype=cp.uint64), 1)
     assert isinstance(du0, cp.ndarray)
     np.testing.assert_array_equal(
-        du0.get(), xp.philox_uniform2(7, np.arange(10, dtype=np.uint64), 1)[0]
+        du0.get(), xp.rng.philox_uniform2(7, np.arange(10, dtype=np.uint64), 1)[0]
     )

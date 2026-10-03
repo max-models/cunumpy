@@ -7,9 +7,9 @@ close in memory (better locality for gathers and neighbour loops), and the
 points of every node of a quadtree (2D) or octree (3D) on the same box are a
 contiguous range of the sorted array::
 
-    scales = xp.morton_scales(lower, upper, levels)
-    keys = xp.morton_keys(positions, lower, upper, levels)   # uint64, one per point
-    keys, order, positions, charges = xp.sort_by_key(keys, positions, charges)
+    scales = xp.algorithms.morton_scales(lower, upper, levels)
+    keys = xp.algorithms.morton_keys(positions, lower, upper, levels)   # uint64, one per point
+    keys, order, positions, charges = xp.algorithms.sort_by_key(keys, positions, charges)
     node = keys >> np.uint64(ndim * (levels - level))       # node index at `level`
 
 Bit layout: with ``levels`` bits per axis the key has ``ndim * levels`` bits;

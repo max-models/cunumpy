@@ -11,7 +11,7 @@ A condensed checklist. Each item links to the guide with the reasoning.
   `set_backend()`. Library code never calls `set_backend()`. ([Choosing a
   backend](guides/backends.md))
 * Read back `xp.get_backend()` after requesting CuPy; log it with
-  `xp.device_count()` and `xp.__version__`.
+  `xp.cuda.device_count()` and `xp.__version__`.
 * Use `use_backend()` for scoped switches (tests, CPU reference computations),
   never from several threads at once.
 * Functions that receive arrays follow them with `get_array_module()`; functions
@@ -64,7 +64,7 @@ A condensed checklist. Each item links to the guide with the reasoning.
   kernels](kernels/testing.md))
 * One `assert_kernels_agree` test over `catalog.parity_cases()`.
 * `emulate_cuda_kernel` tests, so CPU-only CI checks the CUDA arithmetic.
-* Seed `xp.random_streams` with `(seed, rank)` and draw only from it.
+* Seed `xp.rng.random_streams` with `(seed, rank)` and draw only from it.
 * Debug crashes with `CUNUMPY_CUDA_DEBUG=1`, then `compute-sanitizer`.
   ([Debugging](kernels/debugging.md))
 * Time with `timed_region()`, profile with `nvtx_range()` and `nsys`.

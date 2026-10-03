@@ -1,4 +1,4 @@
-"""Tests for `xp.fuse`: cupy.fuse for CuPy arrays, a plain call otherwise."""
+"""Tests for `xp.kernels.fuse`: cupy.fuse for CuPy arrays, a plain call otherwise."""
 
 import numpy as np
 import pytest
@@ -12,19 +12,19 @@ def pressure(rho, T, gamma):
 
 
 def test_host_arrays_call_the_function():
-    fused = xp.fuse(pressure)
+    fused = xp.kernels.fuse(pressure)
     rho, T = np.full(4, 2.0), np.zeros(4)
     np.testing.assert_array_equal(fused(rho, T, 3.0), pressure(rho, T, 3.0))
     assert fused.__name__ == "pressure" and fused.__wrapped__ is pressure
-    assert "fuse" in xp.__all__
+    assert "fuse" in xp.kernels.__all__
 
 
 def test_decorator_forms():
-    @xp.fuse
+    @xp.kernels.fuse
     def double(x):
         return 2.0 * x
 
-    @xp.fuse(kernel_name="triple_kernel")
+    @xp.kernels.fuse(kernel_name="triple_kernel")
     def triple(x):
         return 3.0 * x
 
@@ -54,7 +54,7 @@ def test_device_arrays_use_cupy_fuse_once(monkeypatch):
         fusion, "_is_device_array", lambda a: isinstance(a, FakeDeviceArray)
     )
 
-    @xp.fuse(kernel_name="p")
+    @xp.kernels.fuse(kernel_name="p")
     def p(rho, T, gamma=1.0):
         raise AssertionError("not called with device arrays")
 
@@ -75,7 +75,7 @@ def test_python_scalars_take_the_dtype_of_the_arrays(monkeypatch):
     )
     monkeypatch.setattr(fusion, "_is_device_array", lambda a: hasattr(a, "dtype"))
 
-    p = xp.fuse(pressure)
+    p = xp.kernels.fuse(pressure)
     p(np.ones(2), 0.5, 5.0 / 3.0)
     p(np.ones(2, dtype=np.float32), 0.5, gamma=2)
     p(np.ones(2, dtype=np.int64), True, 3)
@@ -90,7 +90,7 @@ def test_fuse_on_gpu():
         pytest.skip("CuPy not installed or not functional")
     import cupy as cp
 
-    fused = xp.fuse(pressure)
+    fused = xp.kernels.fuse(pressure)
     rho, T = cp.full(1000, 2.0), cp.linspace(0.0, 1.0, 1000)
     with xp.use_backend("cupy"):
         expected = pressure(rho, T, 5.0 / 3.0)

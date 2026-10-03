@@ -82,11 +82,11 @@ CuPy, so using NumPy dtypes for declarations is fine.
 
 ## Random numbers
 
-`xp.get_rng(seed)` returns a `Generator` of the active backend, so random data is
+`xp.rng.get_rng(seed)` returns a `Generator` of the active backend, so random data is
 generated where it is used:
 
 ```python
-rng = xp.get_rng(seed=42)
+rng = xp.rng.get_rng(seed=42)
 velocities = rng.normal(0.0, 1.0, size=(n_particles, 3))
 ```
 
@@ -149,13 +149,13 @@ def solve_banded(ab, b):
 
 ## Test on both backends
 
-`cunumpy.testing.BACKENDS` parametrizes a test over NumPy and CuPy, skipping the
+`cunumpy.kernel_testing.BACKENDS` parametrizes a test over NumPy and CuPy, skipping the
 CuPy case where there is no GPU, so the same test file runs on a laptop and in
 GPU CI:
 
 ```python
 import pytest
-from cunumpy.testing import BACKENDS
+from cunumpy.kernel_testing import BACKENDS
 
 import cunumpy as xp
 

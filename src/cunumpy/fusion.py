@@ -1,4 +1,4 @@
-"""``xp.fuse``: elementwise functions as one GPU kernel, plain calls on the host.
+"""``xp.kernels.fuse``: elementwise functions as one GPU kernel, plain calls on the host.
 
 A chain of elementwise operations (a pressure from density and temperature,
 fluxes and limiters of a fluid update, a Maxwellian at many velocities) runs
@@ -8,7 +8,7 @@ kernel. :func:`fuse` applies it when the function is called with CuPy arrays
 and calls the function as it is otherwise, so the same code runs on both
 backends::
 
-    @xp.fuse
+    @xp.kernels.fuse
     def pressure(rho, T, gamma):
         return (gamma - 1.0) * rho * T
 
@@ -73,7 +73,7 @@ def fuse(
 ) -> F | Callable[[F], F]:
     """Fuse an elementwise function into one kernel when called with CuPy arrays.
 
-    Usable as ``@xp.fuse`` or ``@xp.fuse(kernel_name="pressure")``.
+    Usable as ``@xp.kernels.fuse`` or ``@xp.kernels.fuse(kernel_name="pressure")``.
 
     Parameters
     ----------

@@ -1,4 +1,4 @@
-"""Tests for `cunumpy.Kernel` (host/CUDA pairs) and `cunumpy.KernelCatalog`.
+"""Tests for `cunumpy.kernels.Kernel` (host/CUDA pairs) and `cunumpy.kernels.KernelCatalog`.
 
 The host kernels here are plain Python functions (wrapped in `PyccelKernel`), so
 the NumPy-side tests run everywhere; the CuPy-side tests need a GPU.
@@ -14,8 +14,8 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
-from cunumpy import (
-    CudaKernel,
+from cunumpy.cuda import CudaKernel
+from cunumpy.kernels import (
     Kernel,
     KernelArguments,
     KernelCatalog,
@@ -34,7 +34,7 @@ extern "C" __global__ void scale(double* x, double factor, int n) {
 def _user_options(kernel):
     """`compile_options()` without cunumpy's own include directory."""
     return tuple(
-        o for o in kernel.compile_options() if o != f"-I{xp.cuda_include_dir()}"
+        o for o in kernel.compile_options() if o != f"-I{xp.cuda.cuda_include_dir()}"
     )
 
 
@@ -137,7 +137,7 @@ def kernel_package(tmp_path, monkeypatch):
     (root / "scale" / "scale_cuda.cu").write_text(SCALE_CUDA)
     (root / "not_a_kernel").mkdir()
     (root / "__init__.py").write_text(
-        "from cunumpy import KernelCatalog\n\n"
+        "from cunumpy.kernels import KernelCatalog\n\n"
         "catalog = KernelCatalog.from_package(__name__)\n"
     )
     monkeypatch.syspath_prepend(str(tmp_path))

@@ -1,10 +1,10 @@
-"""Tests for `cunumpy.testing.emulate_cuda_kernel`: CUDA kernels run on the CPU."""
+"""Tests for `cunumpy.kernel_testing.emulate_cuda_kernel`: CUDA kernels run on the CPU."""
 
 import numpy as np
 import pytest
 
-from cunumpy import CudaKernel
-from cunumpy.testing import emulate_cuda_kernel, emulation_compiler
+from cunumpy.cuda import CudaKernel
+from cunumpy.kernel_testing import emulate_cuda_kernel, emulation_compiler
 
 pytestmark = pytest.mark.skipif(
     emulation_compiler() is None, reason="no C++ compiler for the emulation"

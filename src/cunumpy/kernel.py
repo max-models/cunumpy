@@ -15,8 +15,8 @@ caller's responsibility.
 Argument objects that have a host and a device form implement the
 :class:`KernelArguments` protocol: ``__host_args__()`` returns what the host
 kernel receives in that position, ``__cuda_args__()`` what a
-:class:`~cunumpy.CudaKernel` receives. :class:`PyccelKernel` and
-:class:`~cunumpy.Kernel` resolve ``__host_args__()`` with
+:class:`~cunumpy.cuda.CudaKernel` receives. :class:`PyccelKernel` and
+:class:`~cunumpy.kernels.Kernel` resolve ``__host_args__()`` with
 :func:`resolve_host_args` before calling the host kernel.
 """
 
@@ -48,15 +48,15 @@ class KernelArguments:
     of a particle species, usually exists twice: as an object holding NumPy
     arrays for the host kernel (e.g. a Pyccel class) and as device arrays for
     the CUDA kernel. This protocol lets one object represent both, so that a
-    call to a :class:`~cunumpy.Kernel` never branches on the backend:
+    call to a :class:`~cunumpy.kernels.Kernel` never branches on the backend:
 
     * ``__host_args__()`` returns the single object that the host kernel
       receives in that position; :class:`PyccelKernel` and
-      :class:`~cunumpy.Kernel` resolve it (top-level positional and keyword
+      :class:`~cunumpy.kernels.Kernel` resolve it (top-level positional and keyword
       arguments only) before calling the host kernel;
     * ``__cuda_args__()`` returns the tuple of CUDA kernel arguments the object
-      stands for (the :class:`~cunumpy.CudaArguments` protocol);
-      :class:`~cunumpy.CudaKernel` flattens it into the kernel parameters.
+      stands for (the :class:`~cunumpy.cuda.CudaArguments` protocol);
+      :class:`~cunumpy.cuda.CudaKernel` flattens it into the kernel parameters.
 
     Subclassing is optional: any object whose *type* defines a callable
     ``__host_args__`` is resolved (an instance attribute of that name is not).
@@ -79,7 +79,7 @@ class KernelArguments:
     ...             self._kernel_args = ParticleArguments(self)
     ...         return self._kernel_args
     ...
-    >>> class ParticleArguments(xp.KernelArguments):
+    >>> class ParticleArguments(xp.kernels.KernelArguments):
     ...     def __init__(self, particles):
     ...         self._particles = particles
     ...         self._host = None
@@ -206,7 +206,7 @@ class PyccelKernel:
     Top-level arguments implementing :class:`KernelArguments` (a
     ``__host_args__()`` method on their type) are replaced by their host form
     before anything else, so the same argument objects can be passed to a
-    ``PyccelKernel`` and to a :class:`~cunumpy.CudaKernel`.
+    ``PyccelKernel`` and to a :class:`~cunumpy.cuda.CudaKernel`.
 
     Examples
     --------
@@ -556,7 +556,7 @@ def get_kernel_implementation() -> str | None:
 def use_kernel_implementation(name: str | None) -> Iterator[None]:
     """Temporarily choose the host implementation, like :func:`use_backend`.
 
-    For tests and benchmarks, e.g. ``with xp.use_kernel_implementation("numpy"):``
+    For tests and benchmarks, e.g. ``with xp.kernels.use_kernel_implementation("numpy"):``
     to run the code path of a machine without pyccel. The setting is global,
     not per thread.
     """

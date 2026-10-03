@@ -52,7 +52,7 @@ handy in conditionals:
 
 ```python
 if xp.cupy_backend:
-    xp.bind_local_device()
+    xp.cuda.bind_local_device()
 ```
 
 ## Switch temporarily
@@ -109,7 +109,7 @@ uses the second (see [Writing backend-agnostic code](portable-code.md)).
 * **Use `use_backend()` for scoped work.** It is exception-safe and makes the
   scope obvious; a bare `set_backend()` in the middle of a function changes
   the state for everything that runs afterwards.
-* **Log the effective backend.** Print `xp.get_backend()`, `xp.device_count()`
+* **Log the effective backend.** Print `xp.get_backend()`, `xp.cuda.device_count()`
   and `xp.__version__` in the run's output so results can be traced to the
   hardware they ran on.
 

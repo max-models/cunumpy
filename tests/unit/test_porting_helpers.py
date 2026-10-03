@@ -23,16 +23,11 @@ import pytest
 
 import cunumpy as xp
 import cunumpy.cuda_kernel as cuda_kernel_module
-import cunumpy.testing
-from cunumpy import (
-    CudaKernel,
-    CudaStruct,
-    Kernel,
-    KernelCatalog,
-    PyccelStructArguments,
-)
+import cunumpy.kernel_testing
+from cunumpy.cuda import CudaKernel, CudaStruct
 from cunumpy.dispatch import FORTRAN_NAME_LIMIT, _pyccel_stub_parameters
-from cunumpy.testing import check_parity, device_function_kernel, parity_cases
+from cunumpy.kernel_testing import check_parity, device_function_kernel, parity_cases
+from cunumpy.kernels import Kernel, KernelCatalog, PyccelStructArguments
 
 
 class FakeDeviceArray:
@@ -378,7 +373,7 @@ def test_check_parity_reads_the_module(helper_package, monkeypatch):
         calls["kernel"], calls["settings"] = kernel, settings
         return {"argument 0": np.zeros(1)}
 
-    monkeypatch.setattr(cunumpy.testing, "assert_kernels_agree", fake_agree)
+    monkeypatch.setattr(cunumpy.kernel_testing, "assert_kernels_agree", fake_agree)
     check_parity(catalog["scale"], atol=1e-14)
     assert calls["kernel"] is catalog["scale"]
     assert calls["settings"] == {"n_threads": 300, "rtol": 1e-10, "atol": 1e-14}
@@ -486,34 +481,42 @@ def test_device_function_kernel_struct_parameters():
 def test_segment_sum():
     keys = np.array([0, 2, 0, -1, 2])
     values = np.array([1.0, 2.0, 3.0, 100.0, 4.0])
-    np.testing.assert_array_equal(xp.segment_sum(values, keys, 4), [4.0, 0.0, 6.0, 0.0])
+    np.testing.assert_array_equal(
+        xp.algorithms.segment_sum(values, keys, 4), [4.0, 0.0, 6.0, 0.0]
+    )
     columns = np.stack([values, -values], axis=1)
-    out = xp.segment_sum(columns, keys, 3)
+    out = xp.algorithms.segment_sum(columns, keys, 3)
     np.testing.assert_array_equal(out, [[4.0, -4.0], [0.0, 0.0], [6.0, -6.0]])
-    assert xp.segment_sum(np.array([1, 2]), np.array([1, 1]), 2).dtype == np.float64
-    assert xp.segment_sum(values.astype(np.float32), keys, 3).dtype == np.float32
-    complex_sum = xp.segment_sum(values * (1 + 1j), keys, 3)
+    assert (
+        xp.algorithms.segment_sum(np.array([1, 2]), np.array([1, 1]), 2).dtype
+        == np.float64
+    )
+    assert (
+        xp.algorithms.segment_sum(values.astype(np.float32), keys, 3).dtype
+        == np.float32
+    )
+    complex_sum = xp.algorithms.segment_sum(values * (1 + 1j), keys, 3)
     np.testing.assert_allclose(complex_sum, [4 + 4j, 0, 6 + 6j])
     with pytest.raises(ValueError, match="smaller than n_segments"):
-        xp.segment_sum(values, keys, 2)
+        xp.algorithms.segment_sum(values, keys, 2)
     with pytest.raises(ValueError, match="one entry per value"):
-        xp.segment_sum(values, keys[:2], 3)
+        xp.algorithms.segment_sum(values, keys[:2], 3)
 
 
 def test_mpi_buffer_on_host_arrays():
     x = np.arange(3.0)
-    with xp.mpi_buffer(x) as buf:
+    with xp.mpi.mpi_buffer(x) as buf:
         assert buf is x
-    with xp.mpi_buffer(x, send=False, recv=True) as buf:
+    with xp.mpi.mpi_buffer(x, send=False, recv=True) as buf:
         assert buf is x
 
 
 def test_mpi_cuda_aware_setting():
-    xp.set_mpi_cuda_aware(None)
-    assert xp.get_mpi_cuda_aware() is None
-    xp.set_mpi_cuda_aware(True)
-    assert xp.get_mpi_cuda_aware() is True
-    xp.set_mpi_cuda_aware(None)
+    xp.mpi.set_mpi_cuda_aware(None)
+    assert xp.mpi.get_mpi_cuda_aware() is None
+    xp.mpi.set_mpi_cuda_aware(True)
+    assert xp.mpi.get_mpi_cuda_aware() is True
+    xp.mpi.set_mpi_cuda_aware(None)
 
 
 def test_require_version(monkeypatch):
@@ -535,8 +538,9 @@ import pickle
 import numpy as np
 import pytest
 import cunumpy as xp
-import cunumpy.testing as testing
-from cunumpy import CudaKernel, CudaStruct, KernelArguments
+import cunumpy.kernel_testing as testing
+from cunumpy.cuda import CudaKernel, CudaStruct
+from cunumpy.kernels import KernelArguments
 
 assert testing.fake_cupy_active()
 assert xp.cupy_available() and xp.get_backend() == "cupy", xp.get_backend()
@@ -570,15 +574,15 @@ assert testing.FAKE_SKIP_REASON in testing.requires_cupy.kwargs["reason"]
 d = xp.as_device_array([1.0, 2.0], dtype=np.float64)
 assert xp.is_gpu(d)
 with pytest.raises(RuntimeError, match="not known whether MPI"):
-    with xp.mpi_buffer(d):
+    with xp.mpi.mpi_buffer(d):
         pass
-with xp.count_transfers() as counter:
-    with xp.mpi_buffer(d, recv=True, cuda_aware=False) as buf:
+with xp.profiling.count_transfers() as counter:
+    with xp.mpi.mpi_buffer(d, recv=True, cuda_aware=False) as buf:
         assert isinstance(buf, np.ndarray) and buf.tolist() == [1.0, 2.0]
         buf[:] = [5.0, 6.0]
 assert xp.to_numpy(d).tolist() == [5.0, 6.0]
 assert sorted(e.kind for e in counter.events) == ["to_device", "to_host"]
-with xp.mpi_buffer(d, cuda_aware=True) as buf:
+with xp.mpi.mpi_buffer(d, cuda_aware=True) as buf:
     assert buf is d
 print("fake cupy OK")
 """
@@ -606,5 +610,5 @@ def test_fake_cupy_in_subprocess():
 def test_install_fake_cupy_refuses_a_real_cupy(monkeypatch):
     monkeypatch.setitem(sys.modules, "cupy", ModuleType("cupy"))
     with pytest.raises(RuntimeError, match="real CuPy is already imported"):
-        cunumpy.testing.install_fake_cupy()
-    assert not cunumpy.testing.fake_cupy_active()
+        cunumpy.kernel_testing.install_fake_cupy()
+    assert not cunumpy.kernel_testing.fake_cupy_active()

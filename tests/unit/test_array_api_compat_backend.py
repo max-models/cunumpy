@@ -163,7 +163,7 @@ def test_set_device_and_synchronize_work_with_wrapped_backend():
     import cupy as cp
 
     with xp.use_backend("cupy"):
-        xp.set_device(0)
+        xp.cuda.set_device(0)
         assert cp.cuda.Device().id == 0
 
         arr = xp.asarray([1, 2, 3])

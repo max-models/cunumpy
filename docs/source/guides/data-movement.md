@@ -63,7 +63,7 @@ time loop. `count_transfers()` records every copy made through CuNumpy in a
 block, with the file and line that caused it:
 
 ```python
-with xp.count_transfers() as counter:
+with xp.profiling.count_transfers() as counter:
     for _ in range(10):
         step(state, dt)
 
@@ -93,7 +93,7 @@ report:
 ```python
 def test_step_stays_on_device():
     state = make_state()
-    with xp.assert_no_transfers():
+    with xp.profiling.assert_no_transfers():
         step(state, dt)
 ```
 
@@ -139,12 +139,12 @@ pattern.
 ## Pinned memory
 
 Host-to-device copies from page-locked ("pinned") host memory are faster and
-can overlap with computation on a stream. `xp.pin_memory(host_array)` returns a
+can overlap with computation on a stream. `xp.cuda.pin_memory(host_array)` returns a
 pinned copy:
 
 ```python
-pinned = xp.pin_memory(np.load("snapshot.npy"))
-with xp.stream():
+pinned = xp.cuda.pin_memory(np.load("snapshot.npy"))
+with xp.cuda.stream():
     device = xp.to_cupy(pinned)
 ```
 

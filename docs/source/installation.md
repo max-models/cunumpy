@@ -30,7 +30,7 @@ use it:
 import cunumpy as xp
 
 print("CuPy usable:", xp.cupy_available())
-print("visible GPUs:", xp.device_count())
+print("visible GPUs:", xp.cuda.device_count())
 
 xp.set_backend("cupy")
 print("active backend:", xp.get_backend())  # 'cupy' if the GPU works
@@ -43,7 +43,7 @@ is requested. See [Troubleshooting](troubleshooting.md) for the usual causes.
 
 | Extra | Installs | Use it for |
 | --- | --- | --- |
-| `cunumpy[test]` | `pytest`, `coverage` | running the test suite, using `cunumpy.testing` |
+| `cunumpy[test]` | `pytest`, `coverage` | running the test suite, using `cunumpy.kernel_testing` |
 | `cunumpy[test-compiled]` | the above plus `pyccel` | tests that compile host kernels with Pyccel |
 | `cunumpy[docs]` | Sphinx, MyST, the book theme | building this documentation |
 | `cunumpy[dev]` | all of the above plus formatters | developing CuNumpy itself |
@@ -71,7 +71,7 @@ Tests that need a GPU are skipped automatically where CuPy is not functional.
 | `CUNUMPY_CUDA_DEBUG=1` | enable [CUDA debug mode](kernels/debugging.md) for all kernels |
 
 MPI launchers also export node-local rank variables (`OMPI_COMM_WORLD_LOCAL_RANK`,
-`SLURM_LOCALID`, ...), which `xp.local_rank()` reads to pick a GPU per process.
+`SLURM_LOCALID`, ...), which `xp.mpi.local_rank()` reads to pick a GPU per process.
 
 ## Build the documentation
 

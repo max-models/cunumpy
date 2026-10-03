@@ -43,14 +43,14 @@ def fake_nvtx(monkeypatch):
 
 def test_nvtx_range_is_noop_on_numpy():
     with xp.use_backend("numpy"):
-        with xp.nvtx_range("region") as r:
+        with xp.profiling.nvtx_range("region") as r:
             assert r.name == "region"
-        with xp.nvtx_range("colored", color=3):
+        with xp.profiling.nvtx_range("colored", color=3):
             pass
 
 
 def test_nvtx_range_as_decorator():
-    @xp.nvtx_range("decorated")
+    @xp.profiling.nvtx_range("decorated")
     def add(a, b):
         return a + b
 
@@ -60,23 +60,28 @@ def test_nvtx_range_as_decorator():
 
 
 def test_nvtx_range_repr():
-    assert repr(xp.nvtx_range("r", color=1)) == "nvtx_range(name='r', color=1)"
+    assert (
+        repr(xp.profiling.nvtx_range("r", color=1)) == "nvtx_range(name='r', color=1)"
+    )
 
 
 def test_timed_region_on_numpy():
-    with xp.use_backend("numpy"), xp.timed_region("sleep") as timing:
+    with xp.use_backend("numpy"), xp.profiling.timed_region("sleep") as timing:
         assert timing.name == "sleep"
         assert timing.elapsed is None
         time.sleep(0.02)
 
-    assert isinstance(timing, xp.Timing)
+    assert isinstance(timing, xp.profiling.Timing)
     assert timing.elapsed >= 0.02
     assert timing.elapsed < 5.0
     assert timing.synced is False
 
 
 def test_timed_region_without_sync_on_numpy():
-    with xp.use_backend("numpy"), xp.timed_region("no sync", sync=False) as timing:
+    with (
+        xp.use_backend("numpy"),
+        xp.profiling.timed_region("no sync", sync=False) as timing,
+    ):
         pass
     assert timing.elapsed >= 0.0
     assert timing.synced is False
@@ -86,7 +91,7 @@ def test_timed_region_records_time_on_exception():
     with (
         xp.use_backend("numpy"),
         pytest.raises(RuntimeError, match="boom"),
-        xp.timed_region("failing") as timing,
+        xp.profiling.timed_region("failing") as timing,
     ):
         raise RuntimeError("boom")
     assert timing.elapsed is not None
@@ -97,21 +102,21 @@ def test_timed_region_records_time_on_exception():
 
 
 def test_nvtx_range_pushes_and_pops(fake_nvtx):
-    with xp.nvtx_range("outer"):
+    with xp.profiling.nvtx_range("outer"):
         fake_nvtx.append(("body",))
     assert fake_nvtx == [("push", "outer", -1), ("body",), ("pop",)]
 
 
 def test_nvtx_range_color(fake_nvtx):
-    with xp.nvtx_range("colored", color=5):
+    with xp.profiling.nvtx_range("colored", color=5):
         pass
     assert fake_nvtx == [("push", "colored", 5), ("pop",)]
 
 
 def test_nvtx_range_nested_and_reentrant(fake_nvtx):
-    outer = xp.nvtx_range("outer")
+    outer = xp.profiling.nvtx_range("outer")
     with outer:
-        with xp.nvtx_range("inner"):
+        with xp.profiling.nvtx_range("inner"):
             pass
         with outer:  # same instance re-entered
             pass
@@ -126,13 +131,13 @@ def test_nvtx_range_nested_and_reentrant(fake_nvtx):
 
 
 def test_nvtx_range_pops_on_exception(fake_nvtx):
-    with pytest.raises(ValueError), xp.nvtx_range("failing"):
+    with pytest.raises(ValueError), xp.profiling.nvtx_range("failing"):
         raise ValueError
     assert fake_nvtx == [("push", "failing", -1), ("pop",)]
 
 
 def test_nvtx_range_decorator_pushes_and_pops(fake_nvtx):
-    @xp.nvtx_range("decorated")
+    @xp.profiling.nvtx_range("decorated")
     def work():
         fake_nvtx.append(("body",))
 
@@ -142,14 +147,14 @@ def test_nvtx_range_decorator_pushes_and_pops(fake_nvtx):
 
 
 def test_timed_region_pushes_nvtx_range_and_syncs(fake_nvtx):
-    with xp.timed_region("timed") as timing:
+    with xp.profiling.timed_region("timed") as timing:
         fake_nvtx.append(("body",))
     assert fake_nvtx == [("push", "timed", -1), ("body",), ("pop",)]
     assert timing.synced is True
     assert timing.elapsed >= 0.0
 
     del fake_nvtx[:]
-    with xp.timed_region("host only", sync=False) as timing:
+    with xp.profiling.timed_region("host only", sync=False) as timing:
         pass
     assert fake_nvtx == [("push", "host only", -1), ("pop",)]
     assert timing.synced is False
@@ -159,7 +164,7 @@ def test_nvtx_range_without_nvtx_module(monkeypatch):
     # CuPy backend but no NVTX (e.g. a build without it): still a no-op
     monkeypatch.setitem(sys.modules, "cupy.cuda.nvtx", None)  # import fails
     monkeypatch.setattr(xp_module.array_backend, "_backend", "cupy")
-    with xp.nvtx_range("no nvtx"):
+    with xp.profiling.nvtx_range("no nvtx"):
         pass
 
 
@@ -171,7 +176,7 @@ def test_nvtx_range_on_gpu():
     import cupy as cp
 
     with xp.use_backend("cupy"):
-        with xp.nvtx_range("gpu region", color=2):
+        with xp.profiling.nvtx_range("gpu region", color=2):
             x = cp.ones(1000)
             x += 1
         xp.synchronize()
@@ -198,7 +203,7 @@ def test_timed_region_on_gpu_includes_device_work():
         xp.synchronize()
         reference = time.perf_counter() - start
 
-        with xp.timed_region("work") as timing:
+        with xp.profiling.timed_region("work") as timing:
             work()
         assert timing.synced is True
         assert cp.cuda.get_current_stream().done

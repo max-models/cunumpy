@@ -4,7 +4,7 @@ This module is plain Python annotated with pyccel's array type hints, so it can
 be imported and run as-is, or compiled to C/Fortran with
 ``pyccel.epyccel(pyccel_kernels, language="c")``. The tests in
 `test_pyccel_kernel.py` compile it and drive the compiled kernels through
-:class:`cunumpy.PyccelKernel`.
+:class:`cunumpy.kernels.PyccelKernel`.
 """
 
 

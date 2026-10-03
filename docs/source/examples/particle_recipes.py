@@ -46,7 +46,7 @@ def sort_by_cell(positions, lower, cell_size, n_cells):
 
 def deposit_nearest_cell(cell, weights, n_cells):
     """Sum the weights per cell without atomics: the sort-then-reduce deposit."""
-    return xp.segment_sum(weights, cell, n_cells)
+    return xp.algorithms.segment_sum(weights, cell, n_cells)
 
 
 def pack_for_ranks(markers, destination, n_ranks):
@@ -65,7 +65,7 @@ def exchange(comm, markers, destination):
     """Send every marker to its destination rank (``MPI_Alltoallv``); return the received ones.
 
     Works for host and device arrays, with or without CUDA-aware MPI
-    (``xp.mpi_buffer`` stages device buffers through the host when needed).
+    (``xp.mpi.mpi_buffer`` stages device buffers through the host when needed).
     """
     n_ranks = comm.Get_size()
     width = markers.shape[1]
@@ -79,8 +79,8 @@ def exchange(comm, markers, destination):
         return np.concatenate([[0], np.cumsum(counts)[:-1]])
 
     with (
-        xp.mpi_buffer(sendbuf) as send,
-        xp.mpi_buffer(received, send=False, recv=True) as recv,
+        xp.mpi.mpi_buffer(sendbuf) as send,
+        xp.mpi.mpi_buffer(received, send=False, recv=True) as recv,
     ):
         comm.Alltoallv(
             [send, send_counts * width, displacements(send_counts) * width, None],
@@ -96,5 +96,5 @@ def thermal_velocities(seed, particle_ids, step, v_th):
     (up to the last bits of the math functions), whatever the order of the
     particles or the number of ranks.
     """
-    z0, z1 = xp.philox_normal2(seed, particle_ids, step)
+    z0, z1 = xp.rng.philox_normal2(seed, particle_ids, step)
     return v_th * z0, v_th * z1

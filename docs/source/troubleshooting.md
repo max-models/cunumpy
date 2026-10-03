@@ -26,14 +26,14 @@ or data loaded from disk without `to_cunumpy()`), or check inputs with
 `xp.assert_same_backend()` at function entry.
 
 **The GPU version is slower than the CPU version.** Usually transfers in the
-loop or host synchronization. Run a step inside `xp.count_transfers()` and read
+loop or host synchronization. Run a step inside `xp.profiling.count_transfers()` and read
 the report; look for `float()`, `.item()`, `print()` or `if` on device values;
 profile with `nsys` ([Timing and profiling](guides/profiling.md)). Also check
 that the problem is large enough: GPUs need many thousands of elements per
 operation to pay off.
 
 **GPU memory looks full although arrays were deleted.** CuPy's memory pool
-keeps freed blocks for reuse. `xp.free_memory()` returns them to the driver.
+keeps freed blocks for reuse. `xp.cuda.free_memory()` returns them to the driver.
 Memory that remains in use is referenced by live arrays.
 
 ## Kernels
@@ -95,14 +95,14 @@ load from CuPy's disk cache.
 
 ## MPI
 
-**All ranks use GPU 0.** Call `xp.bind_local_device()` before `from mpi4py
+**All ranks use GPU 0.** Call `xp.cuda.bind_local_device()` before `from mpi4py
 import MPI`.
 
 **Segfault in the first MPI call with a CuPy array.** The MPI library is not
-CUDA-aware. `xp.require_cuda_aware_mpi()` at start-up gives a clear message;
+CUDA-aware. `xp.mpi.require_cuda_aware_mpi()` at start-up gives a clear message;
 load a CUDA-aware MPI module or rebuild `mpi4py` against one.
 
 **Occasionally wrong data after an exchange.** A kernel was still writing the
-send buffer. Call `xp.synchronize_for_mpi(send, recv)` before the MPI call.
+send buffer. Call `xp.mpi.synchronize_for_mpi(send, recv)` before the MPI call.
 
 See [Multi-GPU programs with MPI](guides/mpi.md).

@@ -6,8 +6,8 @@ every (seed, stream, counter), exactly the doubles that ``cunumpy_uniform`` /
 numbers can be compared with its host version element by element::
 
     ids = xp.arange(n, dtype=xp.uint64)              # one stream per particle
-    u0, u1 = xp.philox_uniform2(seed, ids, step)      # what each GPU thread draws
-    z0, z1 = xp.philox_normal2(seed, ids, step)
+    u0, u1 = xp.rng.philox_uniform2(seed, ids, step)      # what each GPU thread draws
+    z0, z1 = xp.rng.philox_normal2(seed, ids, step)
 
 The numbers are a pure function of the key (``seed``, 64 bit) and the 128-bit
 counter (``counter`` and ``stream``, 64 bit each): no state, independent of the

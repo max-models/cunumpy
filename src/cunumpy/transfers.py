@@ -7,13 +7,13 @@ that goes through cunumpy while the block runs, together with the call site
 that caused it, so a test can verify that a time step does not transfer at
 all::
 
-    with xp.count_transfers() as counter:
+    with xp.profiling.count_transfers() as counter:
         propagator(dt)
     assert counter.total == 0, counter.report()
 
 or, equivalently::
 
-    with xp.assert_no_transfers():
+    with xp.profiling.assert_no_transfers():
         propagator(dt)
 
 Counted are
@@ -22,9 +22,9 @@ Counted are
   called with a device array;
 * ``to_device``: :func:`~cunumpy.to_cupy` (and :func:`~cunumpy.to_cunumpy`)
   called with anything that is not already a device array;
-* ``kernel_conversion``: a :class:`~cunumpy.PyccelKernel` call that copied
+* ``kernel_conversion``: a :class:`~cunumpy.kernels.PyccelKernel` call that copied
   device arrays to the host (and back), one event per call;
-* ``fallback``: a :class:`~cunumpy.Kernel` without CUDA kernel calling its host
+* ``fallback``: a :class:`~cunumpy.kernels.Kernel` without CUDA kernel calling its host
   kernel on the CuPy backend (``missing_cuda="fallback"``), one event per call.
 
 Limitations
@@ -196,8 +196,8 @@ def count_transfers() -> Generator[TransferCounter, None, None]:
 
     Yields a :class:`TransferCounter` that records every ``to_numpy``,
     ``to_cupy`` and ``to_cunumpy`` call that actually copies, every
-    :class:`~cunumpy.PyccelKernel` call that converts device arrays and every
-    :class:`~cunumpy.Kernel` fallback to the host kernel, with the call site of
+    :class:`~cunumpy.kernels.PyccelKernel` call that converts device arrays and every
+    :class:`~cunumpy.kernels.Kernel` fallback to the host kernel, with the call site of
     each. Nothing is counted for calls that do not copy, e.g. ``to_numpy`` of a
     NumPy array.
 
@@ -208,7 +208,7 @@ def count_transfers() -> Generator[TransferCounter, None, None]:
 
     Examples
     --------
-    >>> with xp.count_transfers() as counter:
+    >>> with xp.profiling.count_transfers() as counter:
     ...     propagator(dt)
     >>> assert counter.total == 0, counter.report()
     """
@@ -230,7 +230,7 @@ def assert_no_transfers() -> Generator[TransferCounter, None, None]:
 
     Examples
     --------
-    >>> with xp.assert_no_transfers():
+    >>> with xp.profiling.assert_no_transfers():
     ...     propagator(dt)
     """
     with count_transfers() as counter:

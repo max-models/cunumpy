@@ -25,7 +25,7 @@ await pyodide.runPythonAsync(`
         return values
 
     values = xp.array([1.0, 2.0, 3.0])
-    result = xp.PyccelKernel(scale)(values, 2.0)
+    result = xp.kernels.PyccelKernel(scale)(values, 2.0)
     assert result is values
     print(xp.to_numpy(result))  # [2. 4. 6.]
 `);

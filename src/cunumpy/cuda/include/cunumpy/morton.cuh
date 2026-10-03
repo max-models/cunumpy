@@ -25,7 +25,7 @@
 // so the keys are bit-identical. Positions must be finite.
 //
 // Plain integer and double arithmetic only, so the header also compiles as
-// C++ (see cunumpy.testing.emulate_cuda_kernel).
+// C++ (see cunumpy.kernel_testing.emulate_cuda_kernel).
 
 #ifndef CUNUMPY_MORTON_CUH
 #define CUNUMPY_MORTON_CUH

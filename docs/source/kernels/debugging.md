@@ -16,10 +16,10 @@ CUNUMPY_CUDA_DEBUG=1 python simulate.py            # whole process
 ```
 
 ```python
-xp.set_cuda_debug(True)          # globally, from now on
-with xp.cuda_debug():            # for a block
+xp.cuda.set_cuda_debug(True)          # globally, from now on
+with xp.cuda.cuda_debug():            # for a block
     ...
-xp.CudaKernel(src, "push", debug=True)   # one kernel, regardless of the global setting
+xp.cuda.CudaKernel(src, "push", debug=True)   # one kernel, regardless of the global setting
 ```
 
 In debug mode a `CudaKernel`:
@@ -36,8 +36,8 @@ In debug mode a `CudaKernel`:
   launched, so synchronize after `graph.launch()` to see them.
 
 ```python
-with xp.cuda_debug():
-    push = xp.CudaKernel(SOURCE, "push")
+with xp.cuda.cuda_debug():
+    push = xp.cuda.CudaKernel(SOURCE, "push")
     push(markers, dt, n, n_threads=n)
 # RuntimeError: CUDA error after launching kernel 'push' with grid (79,) and block (128,): ...
 ```

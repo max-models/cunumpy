@@ -1,4 +1,4 @@
-"""Tests for `cunumpy.PyccelKernel`.
+"""Tests for `cunumpy.kernels.PyccelKernel`.
 
 Two groups of tests live here:
 
@@ -19,7 +19,7 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
-from cunumpy import PyccelKernel
+from cunumpy.kernels import PyccelKernel
 
 KERNEL_SOURCE = Path(__file__).parent / "pyccel_kernels.py"
 

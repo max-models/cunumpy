@@ -20,7 +20,7 @@ unchanged.
 | `KernelCatalog` | all `Kernel`s of a package, found by folder convention | [Pairing host and CUDA kernels](dispatch.md) |
 | `CudaArguments`, `KernelArguments`, `CudaStruct` | pass a group of arrays and scalars as one argument | [Kernel arguments and structs](arguments.md) |
 | `DeviceMirror`, `cunumpy/atomic.cuh` | scatter-add into a buffer owned by a host library | [Accumulation kernels](accumulation.md) |
-| `cunumpy.testing` | check that host and CUDA kernels compute the same | [Testing kernels](testing.md) |
+| `cunumpy.kernel_testing` | check that host and CUDA kernels compute the same | [Testing kernels](testing.md) |
 
 ## Which one do I need?
 
