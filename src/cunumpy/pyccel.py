@@ -1,13 +1,26 @@
-"""Compile Pyccel kernel modules once, cache them on disk, use them as host kernels.
+"""Pyccel host kernels, compiled on first use and reused by later processes.
 
-``pyccel.epyccel`` recompiles on every call and gives each build a random
-module name. :func:`compile_cached` keys a build on the module source, the
-language, the Pyccel and Python versions and the platform, and stores it under
-``CUNUMPY_KERNEL_CACHE`` (default ``~/.cache/cunumpy/kernels``); later processes
-import the stored extension directly. A build is moved into the cache in one
-atomic rename, so concurrent processes (e.g. MPI ranks starting together) never
-see a partial build. If the cache is not writable (a CI container whose home
-belongs to another user), the build goes to the system temporary directory.
+Pyccel offers two ways to compile a kernel module:
+
+* ahead of time, with the ``pyccel`` command (``pyccel my_kernels.py``): the
+  extension module is written next to the source, and ``import my_kernels``
+  loads it instead of the ``.py`` file. This is the usual choice for a package
+  that compiles its kernels at install time. The extension is not tied to the
+  source: after an edit the old build is imported until ``pyccel`` is run again.
+* just in time, with ``pyccel.epyccel(module)``: the module is compiled when the
+  program asks for it. Every call builds again, under a new random module name
+  (in an ``__epyccel__`` folder, with file locks so that concurrent builds do not
+  collide); ``epyccel(..., comm=comm)`` lets one MPI rank build for all. Builds
+  are not reused by later processes.
+
+:func:`compile_cached` adds what the second way lacks for kernels compiled at
+run time: the build is keyed on the module source, the language, the Pyccel
+and Python versions and the platform, and stored under ``CUNUMPY_KERNEL_CACHE``
+(default ``~/.cache/cunumpy/kernels``), so later processes load it instead of
+compiling, and an edit or an upgrade builds again. With ``comm``, only the root
+rank compiles on a cache miss. If the cache is not writable (a CI container
+whose home belongs to another user), the build goes to the system temporary
+directory.
 
 :class:`CompiledHostKernel` is a host kernel compiled on its first call, with a
 fallback when compilation is not possible; it is what
@@ -87,7 +100,9 @@ def _load_extension(directory: Path, stem: str) -> ModuleType | None:
     return None
 
 
-def compile_cached(module: ModuleType, *, language: str = "c") -> ModuleType:
+def compile_cached(
+    module: ModuleType, *, language: str = "c", comm: Any = None, root: int = 0
+) -> ModuleType:
     """The Pyccel-compiled form of `module`, built on first use and cached on disk.
 
     Parameters
@@ -96,6 +111,16 @@ def compile_cached(module: ModuleType, *, language: str = "c") -> ModuleType:
         A module written in Pyccel's subset of Python.
     language : str
         Pyccel's target language, ``"c"`` or ``"fortran"``.
+    comm : mpi4py.MPI.Comm | None
+        With a communicator, the `root` rank looks up the cache and compiles on
+        a miss while the other ranks wait, then every rank loads the cached
+        build; a failed build raises on every rank. Collective: every rank of
+        `comm` must call it. The other ranks find the root's build if they see
+        the same cache directory (a shared file system); with node-local
+        caches they compile their own copy. Without a communicator, each
+        process looks up the cache itself (and compiles on a miss).
+    root : int
+        The rank of `comm` that compiles.
 
     Returns
     -------
@@ -110,8 +135,33 @@ def compile_cached(module: ModuleType, *, language: str = "c") -> ModuleType:
         If neither the cache nor the temporary directory is writable.
     Exception
         Whatever Pyccel raises if the module does not compile; callers decide
-        on a fallback (see :class:`CompiledHostKernel`).
+        on a fallback (see :class:`CompiledHostKernel`). With `comm`, ranks
+        other than `root` raise ``RuntimeError`` with the root's error.
     """
+    if comm is None:
+        return _compile_cached(module, language)
+    error = None
+    if comm.Get_rank() == root:
+        try:
+            extension = _compile_cached(module, language)
+        except Exception as exc:  # noqa: BLE001 -- broadcast, then raise on every rank
+            error = exc
+    # every rank learns the outcome before the others touch the cache, so a
+    # failed build cannot leave them waiting for a build that never comes
+    failure = comm.bcast(None if error is None else repr(error), root=root)
+    if comm.Get_rank() == root:
+        if error is not None:
+            raise error
+        return extension
+    if failure is not None:
+        raise RuntimeError(
+            f"Compiling {module.__name__} failed on rank {root}: {failure}"
+        )
+    return _compile_cached(module, language)
+
+
+def _compile_cached(module: ModuleType, language: str) -> ModuleType:
+    """:func:`compile_cached` in one process."""
     stem = module.__name__.rsplit(".", 1)[-1]
     name = f"{stem}-{_build_key(module, language)}"
     roots = [cache_root(), _fallback_root()]

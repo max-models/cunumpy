@@ -321,3 +321,78 @@ def test_arrays_dispatch_on_gpu():
         kernel(device, 3.0, 5, n_threads=5)
     assert host.tolist() == [2.0] * 5
     assert device.get().tolist() == [3.0] * 5
+
+
+class FakeComm:
+    """One rank of a communicator whose root already decided (`bcast` result)."""
+
+    def __init__(self, rank, root_outcome=None):
+        self.rank = rank
+        self.root_outcome = root_outcome
+        self.calls = []
+
+    def Get_rank(self):
+        return self.rank
+
+    def bcast(self, value, root=0):
+        self.calls.append(("bcast", value, root))
+        return value if self.rank == root else self.root_outcome
+
+
+def _kernel_module(tmp_path, monkeypatch, name):
+    package = tmp_path / name
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "axpy_kernel.py").write_text(
+        "def axpy(a: float, x: 'float[:]', y: 'float[:]'):\n"
+        "    for i in range(x.shape[0]):\n"
+        "        y[i] += a * x[i]\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    return importlib.import_module(f"{name}.axpy_kernel")
+
+
+def test_compile_cached_with_comm(tmp_path, monkeypatch):
+    """The root compiles; other ranks load its build from the shared cache."""
+    pytest.importorskip("pyccel")
+    import pyccel
+
+    from cunumpy import pyccel as cunumpy_pyccel
+
+    monkeypatch.setenv(cunumpy_pyccel.CACHE_ENV_VAR, str(tmp_path / "cache"))
+    module = _kernel_module(tmp_path, monkeypatch, "pkg_compile_comm")
+    try:
+        root = FakeComm(rank=0)
+        compiled = cunumpy_pyccel.compile_cached(module, comm=root)
+        assert root.calls == [("bcast", None, 0)]  # the outcome: no failure
+
+        def no_rebuild(*args, **kwargs):
+            raise AssertionError("a non-root rank compiled")
+
+        monkeypatch.setattr(pyccel, "epyccel", no_rebuild)
+        other = cunumpy_pyccel.compile_cached(module, comm=FakeComm(rank=1))
+        y = np.zeros(2)
+        other.axpy(2.0, np.ones(2), y)
+        compiled.axpy(1.0, np.ones(2), y)
+        assert y.tolist() == [3.0, 3.0]
+    finally:
+        for name in [m for m in sys.modules if m.startswith("pkg_compile_comm")]:
+            del sys.modules[name]
+
+
+def test_compile_cached_failure_reaches_every_rank(tmp_path, monkeypatch):
+    from cunumpy import pyccel as cunumpy_pyccel
+
+    def failing(module, language):
+        raise ValueError("does not compile")
+
+    monkeypatch.setattr(cunumpy_pyccel, "_compile_cached", failing)
+    module = SimpleNamespace(__name__="pkg.kernels")
+    root = FakeComm(rank=0)
+    with pytest.raises(ValueError, match="does not compile"):
+        cunumpy_pyccel.compile_cached(module, comm=root)
+    ((_, broadcast, _),) = root.calls
+    assert "does not compile" in broadcast
+    other = FakeComm(rank=2, root_outcome=broadcast)
+    with pytest.raises(RuntimeError, match="failed on rank 0: ValueError"):
+        cunumpy_pyccel.compile_cached(module, comm=other)

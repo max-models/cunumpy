@@ -1462,18 +1462,27 @@ build a catalog by hand.
 ```python
 from cunumpy.pyccel import compile_cached, CompiledHostKernel
 
-compiled = compile_cached(my_kernels_module, language="c")
+compiled = compile_cached(my_kernels_module, language="c", comm=MPI.COMM_WORLD)
 kernel = CompiledHostKernel(my_kernels_module, "push", compile_cached, fallback=push_numpy)
 ```
 
-`compile_cached(module, *, language="c")` returns the Pyccel-compiled form of
-a module, built on first use and cached under `CUNUMPY_KERNEL_CACHE` (default
-`~/.cache/cunumpy/kernels`). The cache key covers the module source, the
-language, the Pyccel and Python versions and the platform, so an edit or an
-upgrade rebuilds. A finished build is moved into the cache with one atomic
-rename, so concurrent processes (MPI ranks starting together) never load a
-partial build; if the cache is not writable the build goes to the temporary
-directory. Pyccel is imported only here, and remains optional.
+`compile_cached(module, *, language="c", comm=None, root=0)` returns the
+Pyccel-compiled form of a module, built on first use and cached under
+`CUNUMPY_KERNEL_CACHE` (default `~/.cache/cunumpy/kernels`). It is for kernels
+compiled at run time: `pyccel.epyccel` compiles again on every call (under a new
+random module name), so without a cache every process start pays for the
+build. The cache key covers the module source, the language, the Pyccel and
+Python versions and the platform, so an edit or an upgrade builds again. With
+`comm` (collective), only the `root` rank compiles on a cache miss; the others
+wait, then load the build (on a shared file system; with node-local caches they
+compile their own copy), and a failed build raises on every rank. If the cache
+is not writable, the build goes to the temporary directory. Pyccel is imported
+only here, and remains optional.
+
+Packages that compile their kernels at install time do not need it: the
+`pyccel` command (`pyccel my_kernels.py`) writes the extension next to the
+source, and a plain import loads it. Note that such an extension is not tied to
+the source; run `pyccel` again after editing.
 
 `CompiledHostKernel(module, name, compiler=compile_cached, fallback=None)` is a
 host kernel compiled on its first call. If compilation fails, it calls

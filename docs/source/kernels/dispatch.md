@@ -146,10 +146,31 @@ catalog = xp.KernelCatalog.from_package(
 ```
 
 The build is keyed on the source and the Pyccel version, so the first run
-after an edit or an upgrade compiles again; later runs and other MPI ranks load
-the cached build. A host kernel is a `cunumpy.pyccel.CompiledHostKernel`:
+after an edit or an upgrade compiles again and later runs load the cached
+build. A host kernel is a `cunumpy.pyccel.CompiledHostKernel`:
 `catalog["push"].host_kernel.kernel.compiled` reports whether the compiled
 version is available.
+
+With MPI, let one rank compile and the others load its build, and compile all
+kernels at setup on every rank: with a communicator the compilation is
+collective, and a kernel first called on only some ranks would leave them
+waiting for the others.
+
+```python
+import functools
+
+catalog = xp.KernelCatalog.from_package(
+    __name__,
+    host_suffix="_pyccel",
+    compile_host=functools.partial(compile_cached, comm=MPI.COMM_WORLD),
+)
+for kernel in catalog.values():  # collectively, at setup
+    kernel.host_kernel.kernel.build()
+```
+
+Packages that compile their kernels at install time with the `pyccel` command
+do not need `compile_host`: the compiled modules are imported like the Python
+ones.
 
 ## Choosing the kernel by where the arrays are
 
