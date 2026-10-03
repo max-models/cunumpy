@@ -41,6 +41,12 @@ need:
 Apply `order` to every per-marker array (positions, velocities, weights, ids),
 e.g. by keeping them as columns of one `(n, k)` array. A stable sort keeps the
 result independent of how the markers were ordered before.
+`xp.sort_by_key(keys, positions, velocities, weights)` does the argsort and
+the reordering of several arrays in one call.
+
+For a tree code, or for better locality in 2D and 3D, sort by Morton key
+(`xp.morton_keys`, see the API page) instead of by cell: the markers of every
+quadtree or octree node are then a contiguous range of the sorted arrays.
 
 ## Deposit without atomics: sort, then reduce
 

@@ -1039,6 +1039,47 @@ def segment_sum(values: Any, keys: Any, n_segments: int) -> Any:
     return out
 
 
+def sort_by_key(keys: Any, *arrays: Any) -> tuple[Any, ...]:
+    """Sort `keys` and reorder every array the same way, in one stable argsort.
+
+    The usual first step of a particle code on the GPU: sort the particles by
+    cell index or Morton key (:func:`cunumpy.morton_keys`), then work on
+    contiguous ranges. The sort is stable, so equal keys keep their order and
+    the result is reproducible::
+
+        keys, order, positions, charges = xp.sort_by_key(keys, positions, charges)
+
+    Parameters
+    ----------
+    keys : array, shape (n,)
+        The sort keys.
+    *arrays : arrays
+        Arrays with ``n`` rows, on the backend of `keys`, reordered along
+        axis 0.
+
+    Returns
+    -------
+    tuple
+        ``(sorted_keys, order, *sorted_arrays)``: ``order`` (int64) is the
+        permutation, ``sorted_keys = keys[order]``, and each sorted array is
+        ``array[order]`` (a new array).
+    """
+    if get_array_backend(keys) == "cupy":
+        import cupy as xpm  # its argsort is a stable radix sort
+    else:
+        xpm = np
+    keys = xpm.asarray(keys)
+    if keys.ndim != 1:
+        raise ValueError(f"keys must be 1D, got shape {keys.shape}")
+    for array in arrays:
+        if array.shape[:1] != keys.shape:
+            raise ValueError(
+                f"every array needs {keys.shape[0]} rows, got shape {array.shape}"
+            )
+    order = xpm.argsort(keys, kind="stable").astype(xpm.int64, copy=False)
+    return (keys[order], order, *(array[order] for array in arrays))
+
+
 def to_cunumpy(array: Any) -> Any:
     """Convert an array to the currently active backend.
 

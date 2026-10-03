@@ -189,6 +189,18 @@ separately); a negative key drops the value; keys must be smaller than
 `n_segments`. The result keeps a floating-point or complex dtype and is
 `float64` otherwise.
 
+### `sort_by_key(keys, *arrays)`
+
+Stable argsort of the 1D `keys` (CuPy's radix sort on the device), applied to
+every array along axis 0, in one call:
+
+```python
+keys, order, positions, charges = xp.sort_by_key(keys, positions, charges)
+```
+
+Returns `(keys[order], order, *(a[order] for a in arrays))`, `order` as
+`int64`. Equal keys keep their order, so the result is reproducible.
+
 ## Count transfers
 
 A transfer inside a time loop is the classic performance bug of a GPU port:
@@ -1891,6 +1903,42 @@ matching the inputs. The uniform numbers equal the kernel's bit for bit; the
 normal numbers can differ in the last bits (`log`, `sqrt`, `sin`, `cos` on the
 GPU are not the host's). The generator passes the Random123 known-answer
 tests. Use a different `counter` for every random decision of a step.
+
+### `cunumpy/morton.cuh` and `morton_keys`
+
+Morton (Z-order) keys: the bits of a point's integer cell coordinates,
+interleaved into one `uint64`. Sorted by key, nearby points are nearby in
+memory, and the points of every node of a quadtree (2D) or octree (3D) on the
+same box form a contiguous range, the starting point of tree builds on the
+GPU.
+
+```python
+keys = xp.morton_keys(positions, lower, upper, levels)  # (n, 2|3) -> (n,) uint64
+keys, order, positions = xp.sort_by_key(keys, positions)
+node = keys >> np.uint64(ndim * (levels - level))       # node index at `level`
+cells = xp.morton_decode(node, ndim)                    # its integer coordinates
+key = xp.morton_encode(ix, iy)                          # from integer cells
+scales = xp.morton_scales(lower, upper, levels)         # 2**levels / (upper - lower)
+```
+
+```c
+#include <cunumpy/morton.cuh>
+
+unsigned long long cunumpy_morton_key2(x, y, lower_x, lower_y, scale_x, scale_y, levels);
+unsigned long long cunumpy_morton_key3(x, y, z, lower_x, ..., scale_x, ..., levels);
+unsigned long long cunumpy_morton_encode2(ix, iy);   // and _encode3(ix, iy, iz)
+unsigned long long cunumpy_morton_cell(x, lower, scale, levels);
+unsigned long long cunumpy_morton_spread2(v);       // and _compact2, _spread3, _compact3
+```
+
+`levels` is the number of bits per axis, at most 32 in 2D and 21 in 3D
+(`xp.MAX_MORTON_LEVELS`). Axis 0 is the lowest bit of every group of `ndim`
+bits; the top group is the child of the root. The cell along an axis is
+`floor((x - lower) * scale)` clipped to `[0, 2**levels - 1]`: points on a cell
+boundary go to the upper cell, points outside the box to the nearest face, and
+`lower > upper` reverses the axis. Given the `morton_scales` of the host, the
+kernel functions return the host keys bit for bit. All host functions run on
+NumPy and CuPy arrays.
 
 ### `cunumpy/reduce.cuh`
 

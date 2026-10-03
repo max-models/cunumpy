@@ -75,6 +75,7 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
 | test a CUDA kernel's arithmetic without a GPU | `cunumpy.testing.emulate_cuda_kernel(kernel, *numpy_args, n_threads=n)` (C++ compiler; shared memory and __syncthreads ok, no warp ops; `shared_mem=` for extern shared) |
 | shared-memory budget of a block | `xp.max_shared_memory_per_block()` (48 KiB without a GPU) |
 | random numbers inside a kernel, equal on the host | `#include <cunumpy/random.cuh>`: `cunumpy_uniform(seed, particle_id, step)`; host: `xp.philox_uniform(seed, ids, step)` |
+| sort points along a Z-curve / quadtree or octree nodes as contiguous ranges | `keys = xp.morton_keys(pos, lower, upper, levels)`, `keys, order, pos = xp.sort_by_key(keys, pos)`; in a kernel `#include <cunumpy/morton.cuh>`: `cunumpy_morton_key2(x, y, x0, y0, sx, sy, levels)` with `xp.morton_scales(...)` |
 | one thread per marker without passing n_threads | `CudaKernel(..., n_threads_from="first_array")` |
 | copy device arrays to the host for output without stalling | `xp.HostStaging(shape, dtype)`: `c = staging.copy(a)` ... `c.result()` |
 | PIC recipes (compaction, sort by cell, MPI exchange, graphs) | docs guide "Particle codes" |
@@ -138,6 +139,7 @@ with xp.mpi_buffer(a) as buf: comm.Send(buf, ...)            # host array, CUDA-
 with xp.mpi_buffer(a, send=False, recv=True) as buf: ...     # array, or pinned staging copy
 xp.set_mpi_cuda_aware(True | False | None), xp.get_mpi_cuda_aware()
 xp.segment_sum(values, keys, n_segments)   # out[k] = sum(values[keys == k]); keys < 0 dropped
+keys, order, a, b = xp.sort_by_key(keys, a, b)   # stable argsort applied to every array
 xp.require_version("0.4.0")                # ImportError if cunumpy is older
 ```
 

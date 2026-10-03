@@ -32,6 +32,11 @@ from .kernel import get_kernel_implementation as get_kernel_implementation
 from .kernel import set_kernel_implementation as set_kernel_implementation
 from .kernel import use_kernel_implementation as use_kernel_implementation
 from .mirror import DeviceMirror as DeviceMirror
+from .morton import MAX_MORTON_LEVELS as MAX_MORTON_LEVELS
+from .morton import morton_decode as morton_decode
+from .morton import morton_encode as morton_encode
+from .morton import morton_keys as morton_keys
+from .morton import morton_scales as morton_scales
 from .petsc import petsc_vec as petsc_vec
 from .philox import philox4x32_10 as philox4x32_10
 from .philox import philox_normal as philox_normal
@@ -74,6 +79,7 @@ def mpi_buffer(
     array: Any, *, send: bool = ..., recv: bool = ..., cuda_aware: bool | None = ...
 ) -> Generator[Any]: ...
 def segment_sum(values: Any, keys: Any, n_segments: int) -> Any: ...
+def sort_by_key(keys: Any, *arrays: Any) -> tuple[Any, ...]: ...
 def as_kernel_array(value: Any, like: Any, dtype: Any = ...) -> Any: ...
 @contextmanager
 def kernel_output(out: Any, like: Any, dtype: Any = ...) -> Generator[Any]: ...
