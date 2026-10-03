@@ -23,7 +23,17 @@ from .cuda_kernel import (
 )
 from .dispatch import Kernel, KernelCatalog
 from .fusion import fuse
-from .kernel import CompiledHostKernel, KernelArguments, PyccelKernel, resolve_host_args
+from .kernel import (
+    HOST_IMPLEMENTATIONS,
+    CompiledHostKernel,
+    HostImplementations,
+    KernelArguments,
+    PyccelKernel,
+    get_kernel_implementation,
+    resolve_host_args,
+    set_kernel_implementation,
+    use_kernel_implementation,
+)
 from .mirror import DeviceMirror
 from .morton import (
     MAX_MORTON_LEVELS,
@@ -53,6 +63,7 @@ from .xp import (
     DEFAULT_SHARED_MEMORY_PER_BLOCK,
     Timing,
     as_device_array,
+    as_kernel_array,
     assert_same_backend,
     bind_local_device,
     cuda_debug,
@@ -68,6 +79,7 @@ from .xp import (
     get_rng,
     is_cpu,
     is_gpu,
+    kernel_output,
     local_rank,
     max_shared_memory_per_block,
     memory_info,
@@ -130,6 +142,7 @@ def require_version(minimum: str) -> None:
 __all__ = [
     "DEBUG_OPTIONS",
     "DEFAULT_SHARED_MEMORY_PER_BLOCK",
+    "HOST_IMPLEMENTATIONS",
     "MAX_MORTON_LEVELS",
     "CompiledHostKernel",
     "CudaArguments",
@@ -140,6 +153,7 @@ __all__ = [
     "CudaStructArguments",
     "CudaStructValue",
     "DeviceMirror",
+    "HostImplementations",
     "HostStaging",
     "Kernel",
     "KernelArguments",
@@ -153,6 +167,7 @@ __all__ = [
     "TransferEvent",
     "__version__",
     "as_device_array",
+    "as_kernel_array",
     "assert_no_transfers",
     "assert_same_backend",
     "bind_local_device",
@@ -171,11 +186,13 @@ __all__ = [
     "get_array_module",
     "get_backend",
     "get_cuda_debug",
+    "get_kernel_implementation",
     "get_mpi_cuda_aware",
     "get_rng",
     "include_hash",
     "is_cpu",
     "is_gpu",
+    "kernel_output",
     "local_rank",
     "max_shared_memory_per_block",
     "memory_info",
@@ -207,6 +224,7 @@ __all__ = [
     "set_cuda_debug",
     "set_device",
     "set_device_for_rank",
+    "set_kernel_implementation",
     "set_mpi_cuda_aware",
     "sort_by_key",
     "stream",
@@ -217,6 +235,7 @@ __all__ = [
     "to_cupy",
     "to_numpy",
     "use_backend",
+    "use_kernel_implementation",
     "write_cuda_header",
     "xp",
 ]

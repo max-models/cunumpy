@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import array_api_compat
 import array_api_compat.numpy as np
+import numpy as _numpy
 
 from .transfers import _ACTIVE as _COUNTERS
 from .transfers import _describe, _record
@@ -1110,6 +1111,50 @@ def get_array_module(array: Any) -> ModuleType:
 
         return cp
     return np
+
+
+def as_kernel_array(value: Any, like: Any, dtype: Any = None) -> Any:
+    """`value` as an array the kernel chosen for `like` takes.
+
+    On the device of `like` (a CuPy array if `like` is one, a NumPy array
+    otherwise), C-contiguous and with `dtype` (any dtype if None): `value`
+    itself when it already is such an array, else one copy, moved to the other
+    side if needed (counted by `count_transfers()`). For input arrays of a
+    :class:`Kernel` with ``dispatch="arrays"``, whose choice follows the arrays:
+    pass the main array (e.g. the grid) as `like`, and the kernel gets
+    arguments all on one side::
+
+        convert = functools.partial(xp.as_kernel_array, like=grid, dtype=float)
+        deposit(convert(positions), convert(weights), grid, ...)
+
+    For an array the kernel writes, use :func:`kernel_output`, which copies a
+    converted array back.
+    """
+    if is_gpu(like):
+        import cupy
+
+        if not is_gpu(value):
+            value = to_cupy(value)
+        return cupy.ascontiguousarray(value, dtype=dtype)
+    return _numpy.ascontiguousarray(to_numpy(value), dtype=dtype)
+
+
+@contextmanager
+def kernel_output(out: Any, like: Any, dtype: Any = None) -> Generator[Any]:
+    """The buffer a kernel chosen for `like` writes, copied back into `out` after it.
+
+    Yields `out` itself if :func:`as_kernel_array` takes it unchanged (then the
+    kernel writes into it directly), else a converted copy whose contents are
+    written into `out` when the block ends without an error (moved back to the
+    side of `out`)::
+
+        with xp.kernel_output(result, like=grid, dtype=float) as buffer:
+            gather(convert(positions), grid, buffer, ...)
+    """
+    buffer = as_kernel_array(out, like, dtype)
+    yield buffer
+    if buffer is not out:
+        out[...] = buffer if is_gpu(out) or not is_gpu(buffer) else to_numpy(buffer)
 
 
 def is_gpu(array: Any) -> bool:

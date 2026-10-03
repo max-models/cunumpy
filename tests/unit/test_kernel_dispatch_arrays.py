@@ -1,5 +1,6 @@
 """Kernels chosen by where the arguments live, compiled host kernels, signature checks."""
 
+import importlib
 import sys
 import textwrap
 import warnings
@@ -13,6 +14,7 @@ from cunumpy import (
     CompiledHostKernel,
     CudaArguments,
     CudaKernel,
+    HostImplementations,
     Kernel,
     KernelArguments,
     KernelCatalog,
@@ -247,7 +249,8 @@ def test_from_package_with_compiled_hosts_and_array_dispatch(pyccel_style_packag
     )
     kernel = catalog["scale"]
     assert kernel.dispatch == "arrays"
-    assert isinstance(kernel.host_kernel.kernel, CompiledHostKernel)
+    assert isinstance(kernel.host_kernel.kernel, HostImplementations)
+    assert kernel.implementations == ("pyccel", "python", "cuda")
     catalog.check_signatures()  # x, factor, n on both sides
     x = np.ones(3)
     kernel(x, 2.0, 3)
@@ -290,3 +293,248 @@ def test_arrays_dispatch_on_gpu():
         kernel(device, 3.0, 5, n_threads=5)
     assert host.tolist() == [2.0] * 5
     assert device.get().tolist() == [3.0] * 5
+
+
+# ---------------------------------------------------------------------------
+# one kernel folder, declared in its own __init__.py
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def self_declaring_package(tmp_path, monkeypatch):
+    """`scale/__init__.py` declares its kernel with Kernel.from_folder.
+
+    The folder has a pyccel, a NumPy, a numba (whose import fails) and a CUDA
+    version of `scale`.
+    """
+    root = tmp_path / "demo_folder_pkg"
+    (root / "scale").mkdir(parents=True)
+    (root / "__init__.py").write_text("")
+    (root / "scale" / "scale_pyccel.py").write_text(
+        "def scale(x: 'float[:]', factor: float, n: int):\n"
+        "    for i in range(n):\n"
+        "        x[i] *= factor\n"
+    )
+    (root / "scale" / "scale_numpy.py").write_text(
+        "CALLS = []\n\n"
+        "def scale(x, factor, n):\n"
+        "    CALLS.append(n)\n"
+        "    x[:n] *= factor\n"
+    )
+    (root / "scale" / "scale_numba.py").write_text(
+        "import a_jit_library_that_is_not_installed\n"
+    )
+    (root / "scale" / "scale_cuda.cu").write_text(SCALE_CUDA)
+    (root / "scale" / "__init__.py").write_text(
+        "import cunumpy as xp\n\n"
+        "COMPILED = []\n\n"
+        "def _compile(module):\n"
+        "    COMPILED.append(module.__name__)\n"
+        "    return module\n\n"
+        "kernel = xp.Kernel.from_folder(\n"
+        "    __name__, host_suffix='_pyccel', dispatch='arrays',\n"
+        "    compile_host=_compile, n_threads_from='first_array',\n"
+        ")\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    yield importlib.import_module("demo_folder_pkg.scale")
+    for module in [m for m in sys.modules if m.startswith("demo_folder_pkg")]:
+        del sys.modules[module]
+
+
+def test_from_folder_finds_every_implementation(self_declaring_package):
+    folder = self_declaring_package
+    kernel = folder.kernel
+    assert kernel.name == "scale" and kernel.dispatch == "arrays"
+    assert kernel.implementations == ("pyccel", "numba", "numpy", "python", "cuda")
+    assert kernel.cuda_kernel.n_threads_from is not None
+    kernel.check_signature()  # pyccel, NumPy and CUDA: x, factor, n; numba skipped
+    assert kernel.selected() == "pyccel"  # the compiled version by default
+    assert kernel.selected(device=True) == "cuda"
+    x = np.ones(3)
+    kernel(x, 2.0, 3)
+    assert x.tolist() == [2.0] * 3
+    assert folder.COMPILED == ["demo_folder_pkg.scale.scale_pyccel"]
+    # the catalog of the parent package builds the same kernel
+    catalog = KernelCatalog.from_package("demo_folder_pkg", host_suffix="_pyccel")
+    assert catalog["scale"].implementations == kernel.implementations
+
+
+def test_from_folder_needs_a_kernel_folder(self_declaring_package):
+    with pytest.raises(FileNotFoundError, match="no host kernel scale_kernels.py"):
+        Kernel.from_folder("demo_folder_pkg.scale")  # default suffix
+    with pytest.raises(ModuleNotFoundError, match="not a package"):
+        Kernel.from_folder("demo_folder_pkg.scale.scale_numpy")
+
+
+def test_kernel_implementation_setting(self_declaring_package):
+    kernel = self_declaring_package.kernel
+    calls = importlib.import_module("demo_folder_pkg.scale.scale_numpy").CALLS
+    assert xp.get_kernel_implementation() is None
+    with xp.use_kernel_implementation("numpy"):
+        assert xp.get_kernel_implementation() == "numpy"
+        assert kernel.selected() == "numpy"
+        x = np.ones(2)
+        kernel(x, 3.0, 2)
+        assert x.tolist() == [3.0, 3.0] and calls == [2]
+        with xp.use_kernel_implementation("python"):
+            kernel(x, 2.0, 2)  # the uncompiled pyccel source
+        assert calls == [2] and x.tolist() == [6.0, 6.0]
+    assert xp.get_kernel_implementation() is None
+    assert self_declaring_package.COMPILED == []  # pyccel never needed
+    # a chosen implementation that cannot run raises instead of running another
+    xp.set_kernel_implementation("numba")
+    try:
+        with pytest.raises(LookupError, match="'numba' implementation .* unavailable"):
+            kernel(np.ones(1), 2.0, 1)
+    finally:
+        xp.set_kernel_implementation(None)
+    with pytest.raises(ValueError, match="kernel implementation must be one of"):
+        xp.set_kernel_implementation("fortran")
+
+
+def test_default_skips_unavailable_implementations():
+    def no_pyccel():
+        raise ImportError("pyccel missing")
+
+    used = []
+    with_numpy = HostImplementations(
+        "scale",
+        {
+            "pyccel": no_pyccel,
+            "numpy": lambda: used.append,
+            "python": lambda: scale,
+        },
+    )
+    assert with_numpy.selected() == "numpy" and not with_numpy.available("pyccel")
+    assert isinstance(with_numpy.errors["pyccel"], ImportError)
+    with_numpy("x")
+    assert used == ["x"]
+    only_python = HostImplementations(
+        "scale", {"pyccel": no_pyccel, "python": lambda: scale}
+    )
+    x = np.ones(2)
+    with pytest.warns(RuntimeWarning, match="uncompiled Python version"):
+        only_python(x, 2.0, 2)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        only_python(x, 2.0, 2)  # warned once
+    assert x.tolist() == [4.0, 4.0]
+    with pytest.raises(LookupError, match="has no 'numba' implementation"):
+        only_python.get("numba")
+    with pytest.raises(ValueError, match="unknown implementations"):
+        HostImplementations("scale", {"python": lambda: scale, "julia": lambda: scale})
+
+
+def test_kernel_implementation_environment_variable():
+    import os
+    import subprocess
+
+    code = "import cunumpy as xp; print(xp.get_kernel_implementation())"
+    env = {**os.environ, "CUNUMPY_KERNEL_IMPLEMENTATION": "numpy"}
+    printed = subprocess.run(
+        [sys.executable, "-c", code],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert printed.strip() == "numpy"
+    env["CUNUMPY_KERNEL_IMPLEMENTATION"] = "fortran"
+    failed = subprocess.run(
+        [sys.executable, "-c", code],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert failed.returncode != 0 and "kernel implementation must be" in failed.stderr
+
+
+def test_arrays_dispatch_calls_the_host_kernel_without_conversion(
+    fake_gpu, monkeypatch
+):
+    # CuPy is active, but host arguments never go through PyccelKernel's
+    # device-to-host conversion: the choice already says they are host arrays
+    def no_conversion(self, args, kwargs):
+        raise AssertionError("conversion checked")
+
+    monkeypatch.setattr(xp.PyccelKernel, "_needs_conversion", no_conversion)
+    kernel = Kernel(scale, CudaKernel(SCALE_CUDA, "scale"), dispatch="arrays")
+    x = np.ones(2)
+    kernel(x, 2.0, 2)
+    assert x.tolist() == [2.0, 2.0]
+    # a host kernel that is told to convert keeps doing so
+    forced = Kernel(
+        xp.PyccelKernel(scale, use_cupy=True),
+        CudaKernel(SCALE_CUDA, "scale"),
+        dispatch="arrays",
+    )
+    with pytest.raises(AssertionError, match="conversion checked"):
+        forced(x, 2.0, 2)
+
+
+def test_check_signature_covers_every_host_implementation():
+    def swapped(x, n, factor):
+        pass
+
+    kernel = Kernel(
+        HostImplementations(
+            "scale", {"python": lambda: scale, "numpy": lambda: swapped}
+        ),
+        CudaKernel(SCALE_CUDA, "scale"),
+    )
+    with pytest.raises(ValueError, match=r"the numpy version \(x, n, factor\)"):
+        kernel.check_signature()
+    module = _module("m", "def scale(x, factor, n):\n    x *= factor\n")
+    compiled = Kernel(CompiledHostKernel(module, "scale", lambda m: m, swapped))
+    with pytest.raises(ValueError, match=r"its fallback \(x, n, factor\)"):
+        compiled.check_signature()
+
+
+# ---------------------------------------------------------------------------
+# kernel arguments on the side of the arrays
+# ---------------------------------------------------------------------------
+
+
+def test_as_kernel_array_on_the_host():
+    grid = np.zeros((4, 3))
+    fits = np.ones(5)
+    assert xp.as_kernel_array(fits, like=grid, dtype=float) is fits  # no copy
+    column = np.ones((5, 2))[:, 1]
+    converted = xp.as_kernel_array(column, like=grid, dtype=float)
+    assert converted.flags.c_contiguous and converted is not column
+    ints = xp.as_kernel_array([1, 2], like=grid, dtype=float)
+    assert ints.dtype == np.float64 and isinstance(ints, np.ndarray)
+
+
+def test_kernel_output_writes_into_its_target():
+    grid = np.zeros(3)
+    out = np.zeros(4)
+    with xp.kernel_output(out, like=grid, dtype=float) as buffer:
+        assert buffer is out  # written directly
+        buffer += 1.0
+    strided = np.zeros((4, 2))[:, 0]
+    with xp.kernel_output(strided, like=grid, dtype=float) as buffer:
+        assert buffer is not strided
+        buffer[...] = 7.0
+    assert strided.tolist() == [7.0] * 4
+    with pytest.raises(RuntimeError), xp.kernel_output(strided, like=grid) as buffer:
+        buffer[...] = 1.0
+        raise RuntimeError("kernel failed")
+    assert strided.tolist() == [7.0] * 4  # not copied back after an error
+
+
+def test_kernel_arrays_follow_a_device_grid():
+    if not xp.cupy_available():
+        pytest.skip("CuPy not installed or not functional")
+    import cupy as cp
+
+    grid = cp.zeros(3)
+    on_device = xp.as_kernel_array(np.ones(4), like=grid, dtype=float)
+    assert xp.is_gpu(on_device)
+    host_out = np.zeros(4)
+    with xp.kernel_output(host_out, like=grid, dtype=float) as buffer:
+        assert xp.is_gpu(buffer)
+        buffer[...] = 2.0
+    assert host_out.tolist() == [2.0] * 4

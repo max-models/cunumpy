@@ -300,6 +300,23 @@ class DeviceParticles(xp.CudaArguments):
         super().__init__(self.markers, self.degree, self.markers.shape[0])
 ```
 
+### `as_kernel_array(value, like, dtype=None)`, `kernel_output(out, like, dtype=None)`
+
+For the arguments of a `Kernel` with `dispatch="arrays"`, whose choice follows
+the arrays. `as_kernel_array` returns `value` on the side of `like` (a CuPy
+array if `like` is one, a NumPy array otherwise), C-contiguous and with `dtype`
+(any if `None`): `value` itself if it already is such an array, else one copy,
+moved across if needed (counted by `count_transfers()`). `kernel_output` is a
+context manager yielding the buffer for an array the kernel writes: `out`
+itself if `as_kernel_array` takes it unchanged, else a converted copy whose
+contents are written into `out` (on its own side) when the block ends without
+an error.
+
+```python
+with xp.kernel_output(result, like=field, dtype=float) as buffer:
+    gather(xp.as_kernel_array(positions, like=field, dtype=float), field, buffer)
+```
+
 ## Random numbers and dtype
 
 ### `get_rng(seed=None)`
@@ -1362,11 +1379,12 @@ array, or a device-only argument object: one with `__cuda_args__()` but no
 `__host_args__()`, such as a `CudaArguments` or a struct value), else the host
 kernel, whatever the backend. Use `"arrays"` in codes that hand host arrays to
 kernels while CuPy is active (diagnostics, MPI staging, CPU fallbacks): those
-calls then run the host kernel instead of failing in the CUDA argument checks.
+calls then run the host kernel instead of failing in the CUDA argument checks,
+calling the host function directly (no device-array conversion).
 `missing_cuda` applies to device arguments without a CUDA kernel.
 
-`kernel.check_signature()` checks that the host and CUDA kernels take the same
-parameters in the same order (the names of the Python host function, or of the
+`kernel.check_signature()` checks that the host and CUDA kernels (and the
+fallback of a `CompiledHostKernel`) take the same parameters in the same order (the names of the Python host function, or of the
 uncompiled Python version of a `CompiledHostKernel`, against the parsed
 `__global__` signature) and raises `ValueError` showing both lists otherwise.
 It does nothing without a CUDA kernel, with `check_signature=False`, or when
@@ -1483,6 +1501,56 @@ that have a CUDA kernel, for a parametrised parity test (see "Testing
 utilities"). `KernelCatalog(kernels)` and `catalog.register(kernel, name=None)`
 build a catalog by hand.
 
+## `Kernel.from_folder`
+
+```python
+# my_sim/kernels/push/__init__.py
+kernel = xp.Kernel.from_folder(__name__, host_suffix="_pyccel", dispatch="arrays",
+                               compile_host=compile_kernels)
+kernel.implementations   # ("pyccel", "numpy", "python", "cuda")
+kernel.selected()        # "pyccel": what a call with host arrays runs now
+```
+
+The kernel of one kernel folder `package` (its dotted name, `__name__` in its
+`__init__.py`). Each version of `<name>` in the folder is an implementation:
+`<name><host_suffix>.py` gives `"pyccel"` (compiled with `compile_host` on
+first use, as it is without one) and `"python"` (uncompiled), `<name>_numba.py`
+gives `"numba"`, `<name>_numpy.py` gives `"numpy"`, and `<name><cuda_suffix>` the
+CUDA kernel. `extra_implementations` adds host implementations that are not
+files, as loaders by name (`{"numpy": lambda: push_numpy}`). Takes the options of
+`KernelCatalog.from_package` for one kernel: `host_suffix`, `cuda_suffix`,
+`test_args_suffix`, `check_name_length`, `missing_cuda`, `host_options`,
+`include_dirs`, `dispatch`, `compile_host` and CUDA options such as
+`block_size` or `n_threads_from`. Raises `FileNotFoundError` if the folder has
+no host kernel module and `ModuleNotFoundError` if `package` is not a package.
+`kernel.selected(device=True)` names the implementation for device arguments.
+
+## `HostImplementations`, `set_kernel_implementation`
+
+```python
+host = xp.HostImplementations("push", {"pyccel": load_compiled, "numpy": lambda: push_numpy,
+                                       "python": lambda: push})
+host(*args)                              # the default implementation
+xp.set_kernel_implementation("numpy")    # every kernel: like xp.set_backend
+with xp.use_kernel_implementation("python"):   # like xp.use_backend
+    host(*args)
+```
+
+The host implementations of one kernel (names from `xp.HOST_IMPLEMENTATIONS`:
+`"pyccel"`, `"numba"`, `"numpy"`, `"python"`; `"python"` is required), each
+given as a loader that returns the function or raises if it is unavailable.
+Loaded on first use; `available(name)` loads and reports, `get(name)` returns it
+or raises `LookupError` (missing, or failed to load with the error as cause),
+`errors` maps names to load errors, `names` lists them, `python` is the
+uncompiled function, `build()` loads the default now. A call runs
+`selected()`: the implementation set with `set_kernel_implementation(name)` (or
+`use_kernel_implementation`, or the environment variable
+`CUNUMPY_KERNEL_IMPLEMENTATION` read at import), which raises if the kernel
+lacks it or cannot load it, else the default: the first available of pyccel,
+numba and NumPy, and else `"python"` with a `RuntimeWarning` (once).
+`get_kernel_implementation()` reads the setting; `None` is the default. The
+setting is global, not per thread, and applies to host calls only.
+
 ## `CompiledHostKernel`
 
 ```python
@@ -1499,7 +1567,8 @@ on-disk cache, or one that imports modules compiled ahead of time with the
 the uncompiled Python function with a `RuntimeWarning`. `kernel.compiled`
 builds and reports whether that worked (so that callers can choose another
 path), `kernel.error` is the exception of a failed build, `kernel.python` the
-uncompiled function and `kernel.build()` compiles now.
+uncompiled function, `kernel.fallback` the fallback and `kernel.build()`
+compiles now.
 
 ## Testing utilities
 
