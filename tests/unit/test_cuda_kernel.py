@@ -467,9 +467,7 @@ PARTICLES = CudaStruct(
     ],
 )
 
-PUSH_SOURCE = (
-    PARTICLES.declaration
-    + r"""
+PUSH_SOURCE = PARTICLES.declaration + r"""
 extern "C" __global__
 void push(Particles p, double dt, double* out, unsigned long long* size) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
@@ -480,7 +478,6 @@ void push(Particles p, double dt, double* out, unsigned long long* size) {
     if (i < p.n && p.alive[i]) p.x[i] += dt * p.charge;
 }
 """
-)
 
 
 def test_struct_layout_and_declaration():
@@ -2071,7 +2068,7 @@ void scale_4d(Array4D<double> a, double factor, int n) {}
 
 
 def test_array4d_parameters_pack_pointer_shape_and_strides():
-    (param, _, _) = parse_cuda_signature(VIEW_4D, "scale_4d")
+    param, _, _ = parse_cuda_signature(VIEW_4D, "scale_4d")
     assert param.view_ndim == 4 and param.ctype == "Array4D<double>"
     kernel = CudaKernel(VIEW_4D, "scale_4d")
     # every second component of a (2, 3, 4, 6) grid: a non-contiguous view
