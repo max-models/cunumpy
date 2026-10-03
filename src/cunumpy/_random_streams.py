@@ -45,7 +45,7 @@ _BACKEND_KEYS = {"numpy": 0, "cupy": 1}
 
 
 class RandomStreams:
-    """One seeded random generator per process and backend; see :mod:`cunumpy.random_streams`."""
+    """One seeded random generator per process and backend; see :mod:`cunumpy.rng`."""
 
     def __init__(self) -> None:
         self._sequence: np.random.SeedSequence | None = None
@@ -190,3 +190,17 @@ class RandomStreams:
 
 #: The random streams of this process.
 random_streams = RandomStreams()
+
+
+def get_rng(seed: int | None = None) -> Any:
+    """Return a random Generator matching the active backend.
+
+    NumPy and CuPy both provide `default_rng(seed)`, returning a
+    `Generator` with a largely-compatible distribution API, but picking the
+    right one requires branching on the backend -- this does that for you.
+    """
+    if get_backend() == "cupy":
+        import cupy as cp
+
+        return cp.random.default_rng(seed)
+    return np.random.default_rng(seed)

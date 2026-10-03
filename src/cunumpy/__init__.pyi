@@ -17,7 +17,7 @@ from . import petsc as petsc
 from . import profiling as profiling
 from . import rng as rng
 from . import xp as xp
-from .scipy_backend import scipy as scipy
+from ._scipy_backend import scipy as scipy
 
 def to_numpy(array: Any) -> np.ndarray: ...
 def to_cupy(array: Any) -> Any: ...

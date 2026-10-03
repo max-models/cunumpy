@@ -27,8 +27,7 @@ dependencies = [
 ]
 
 optional-dependencies.dev = [
-  "black[jupyter]",
-  "isort",
+  "ruff",
   "cunumpy[test-compiled,docs]",
 ]
 # https://medium.com/@pratikdomadiya123/build-project-documentation-quickly-with-the-sphinx-python-2a9732b66594
@@ -53,9 +52,9 @@ where = [ "src" ]
 [tool.setuptools.package-data]
 cunumpy = [ "py.typed", "*.pyi", "LLM_GUIDE.md", "cuda/include/cunumpy/*.cuh" ]
 
-[tool.isort]
-profile = "black"
-
 [tool.ruff]
 # agent worktrees and scratch scripts are local copies, not part of the project
 extend-exclude = [ ".claude" ]
+# formatting: `ruff format`; import sorting: the isort rules of `ruff check`
+lint.extend-select = [ "I" ]
+lint.isort.known-first-party = [ "cunumpy" ]

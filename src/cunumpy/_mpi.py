@@ -1,0 +1,313 @@
+"""MPI with NumPy or CuPy buffers (see :mod:`cunumpy.mpi`)."""
+
+from __future__ import annotations
+
+import logging
+import os
+from collections.abc import Generator
+from contextlib import contextmanager
+from typing import Any
+
+import array_api_compat
+import array_api_compat.numpy as np
+
+from ._transfers import _ACTIVE as _COUNTERS
+from ._transfers import _describe, _record
+from .xp import array_backend, cupy_available, to_numpy
+
+_logger = logging.getLogger(__name__)
+
+
+# Node-local rank of the process, as exported by common MPI launchers. They are
+# set before ``MPI_Init``, so the device can be chosen before MPI starts.
+_LOCAL_RANK_VARIABLES = (
+    "OMPI_COMM_WORLD_LOCAL_RANK",  # Open MPI
+    "MV2_COMM_WORLD_LOCAL_RANK",  # MVAPICH2
+    "MPI_LOCALRANKID",  # Intel MPI, MPICH (Hydra)
+    "PMI_LOCAL_RANK",  # MPICH / PMI
+    "PALS_LOCAL_RANKID",  # Cray PALS
+    "SLURM_LOCALID",  # Slurm (srun)
+    "LOCAL_RANK",  # torchrun and others
+)
+
+
+def local_rank() -> int:
+    """Rank of this process within its node, from the MPI launcher's environment.
+
+    Reads the node-local rank that common launchers export (Open MPI, MVAPICH2,
+    Intel MPI/MPICH, PMI, Cray PALS, Slurm, ``LOCAL_RANK``). These variables are
+    set before ``MPI_Init``, so this works before MPI is initialized, and
+    without importing ``mpi4py``. Returns 0 if none is set (e.g. a serial run).
+    """
+    for variable in _LOCAL_RANK_VARIABLES:
+        value = os.environ.get(variable)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except ValueError:
+            continue
+    return 0
+
+
+def synchronize_for_mpi(*arrays: Any) -> None:
+    """Wait for pending device work before MPI reads or writes `arrays`.
+
+    CuPy launches kernels asynchronously; MPI does not know about CUDA streams.
+    Passing a device buffer to MPI while a kernel is still writing it sends
+    whatever is in memory at that moment -- silently wrong data, no error. Call
+    this before every MPI call that uses device buffers. It synchronizes the
+    current stream only if at least one of `arrays` is a CuPy array, so host
+    buffers and the NumPy backend cost nothing. (After MPI returns, no
+    synchronization is needed: kernels launched later see the received data.)
+
+    Parameters
+    ----------
+    *arrays
+        The buffers about to be passed to MPI; ``None`` entries are ignored.
+    """
+    if not any(array_api_compat.is_cupy_array(a) for a in arrays if a is not None):
+        return
+
+    import cupy as cp
+
+    cp.cuda.get_current_stream().synchronize()
+
+
+# the result of the last mpi_is_cuda_aware() probe (or of set_mpi_cuda_aware()),
+# used by mpi_buffer(); None until one of them was called
+_MPI_CUDA_AWARE: bool | None = None
+
+
+def set_mpi_cuda_aware(value: bool | None) -> None:
+    """Tell `mpi_buffer()` whether MPI can take device buffers.
+
+    `mpi_is_cuda_aware()` records its result itself; call this instead when
+    the answer is known otherwise (e.g. from the cluster documentation, or to
+    force host staging for a test). ``None`` forgets the setting.
+    """
+    global _MPI_CUDA_AWARE
+    _MPI_CUDA_AWARE = None if value is None else bool(value)
+
+
+def get_mpi_cuda_aware() -> bool | None:
+    """The recorded answer of `mpi_is_cuda_aware()`/`set_mpi_cuda_aware()`, or None."""
+    return _MPI_CUDA_AWARE
+
+
+def _pinned_or_host_empty(shape: tuple[int, ...], dtype: Any) -> np.ndarray:
+    """A host buffer for staging, pinned when CuPy can allocate pinned memory."""
+    try:
+        import cupy as cp
+
+        nbytes = int(np.prod(shape, dtype=np.int64)) * np.dtype(dtype).itemsize
+        mem = cp.cuda.alloc_pinned_memory(max(nbytes, 1))
+        return np.frombuffer(mem, dtype, int(np.prod(shape, dtype=np.int64))).reshape(
+            shape
+        )
+    except Exception:  # noqa: BLE001 - no CuPy, no pinned memory, the fake CuPy, ...
+        return np.empty(shape, dtype=dtype)
+
+
+@contextmanager
+def mpi_buffer(
+    array: Any,
+    *,
+    send: bool = True,
+    recv: bool = False,
+    cuda_aware: bool | None = None,
+) -> Generator[Any, None, None]:
+    """The buffer to hand to MPI for `array`: the array itself, or a host copy.
+
+    One MPI call site for both backends and both kinds of MPI builds::
+
+        with xp.mpi.mpi_buffer(markers_out) as sendbuf, xp.mpi.mpi_buffer(
+            markers_in, send=False, recv=True
+        ) as recvbuf:
+            comm.Sendrecv(sendbuf, dest, recvbuf=recvbuf, source=source)
+
+    * A host array (NumPy backend, or a NumPy array on the CuPy backend) is
+      yielded unchanged.
+    * A device array with CUDA-aware MPI is yielded unchanged after
+      `synchronize_for_mpi()`, so MPI reads what the kernels wrote.
+    * A device array without CUDA-aware MPI is staged through a host buffer
+      (pinned memory when available): with `send`, the array is copied to the
+      host first (counted as a ``to_host`` transfer by `count_transfers()`);
+      with `recv`, the host buffer is copied back into the array when the
+      block ends (a ``to_device`` transfer). The device array itself is never
+      given to MPI.
+
+    Parameters
+    ----------
+    array
+        The buffer of the MPI call: a NumPy or CuPy array.
+    send : bool
+        Whether MPI reads the buffer (copy device to host before the block).
+    recv : bool
+        Whether MPI writes the buffer (copy host to device after the block).
+    cuda_aware : bool | None
+        Whether MPI can take device buffers. None uses the answer recorded by
+        `mpi_is_cuda_aware()` or `set_mpi_cuda_aware()`.
+
+    Raises
+    ------
+    RuntimeError
+        For a device array when `cuda_aware` is None and nothing was recorded:
+        call `mpi_is_cuda_aware(comm)` (collective) once at startup, or
+        `set_mpi_cuda_aware()`.
+    """
+    if not array_api_compat.is_cupy_array(array):
+        yield array
+        return
+    if cuda_aware is None:
+        cuda_aware = _MPI_CUDA_AWARE
+    if cuda_aware is None:
+        raise RuntimeError(
+            "mpi_buffer(): it is not known whether MPI can take device buffers; "
+            "call xp.mpi.mpi_is_cuda_aware(comm) once at startup (every rank), or "
+            "xp.mpi.set_mpi_cuda_aware(True/False), or pass cuda_aware="
+        )
+    if cuda_aware:
+        synchronize_for_mpi(array)
+        yield array
+        return
+    host = _pinned_or_host_empty(tuple(array.shape), array.dtype)
+    if send:
+        if _COUNTERS:
+            _record("to_host", f"mpi_buffer({_describe(array)}) staging for send")
+        synchronize_for_mpi(array)
+        host[...] = array.get()
+    yield host
+    if recv:
+        if _COUNTERS:
+            _record("to_device", f"mpi_buffer({_describe(array)}) staging for recv")
+        array.set(host)
+
+
+def _mpi_module() -> Any:
+    """Import and return ``mpi4py.MPI``, with a clear error if it is missing."""
+    try:
+        from mpi4py import MPI
+    except ImportError as e:
+        raise ImportError(
+            "mpi4py is required for the CUDA-aware MPI check: install it, or "
+            "pass a communicator explicitly."
+        ) from e
+    return MPI
+
+
+def _device_buffers_in_use() -> bool:
+    """Whether MPI calls of this process would carry device (CuPy) buffers."""
+    return array_backend.backend == "cupy" and cupy_available()
+
+
+def _mpi_probe_buffers(rank: int, n: int = 4) -> tuple[Any, Any]:
+    """Device send and receive buffers for the CUDA-aware MPI probe.
+
+    The send buffer of rank ``r`` holds ``r + arange(n)``, so the receiver can
+    verify that the values came from the expected source.
+    """
+    import cupy as cp
+
+    send = cp.arange(n, dtype=cp.float64) + rank
+    recv = cp.empty(n, dtype=cp.float64)
+    return send, recv
+
+
+def mpi_is_cuda_aware(comm: Any = None, *, method: str = "probe") -> bool:
+    """Check whether the MPI library can send and receive device buffers.
+
+    Passing CuPy arrays to MPI requires a CUDA-aware MPI build (e.g. Open MPI
+    with ``--with-cuda``); with a plain build the call segfaults or silently
+    sends garbage. This is a collective call: every rank of `comm` must call
+    it, and all ranks receive the same result.
+
+    Parameters
+    ----------
+    comm
+        The communicator to check; ``None`` means ``mpi4py.MPI.COMM_WORLD``
+        (``mpi4py`` is imported only then, and only on the CuPy backend).
+    method
+        Only ``"probe"`` is available: each rank sends a tiny device buffer to
+        rank ``(rank + 1) % size`` and receives from ``(rank - 1) % size`` with
+        ``Sendrecv`` (with one rank, to itself), checks the received values,
+        and the ranks agree with ``allreduce(op=LAND)``. Any exception in the
+        exchange, on any rank, gives ``False``. ``mpi4py`` does not expose the
+        library's own query (``MPIX_Query_cuda_support``), and the library
+        version string is not a reliable indicator, so no ``"query"`` method
+        is offered.
+
+    Returns
+    -------
+    bool
+        ``True`` if all ranks exchanged a device buffer successfully. ``False``
+        on the NumPy backend and without a functional CuPy, without touching
+        MPI: the question only makes sense with device buffers.
+
+    Notes
+    -----
+    Not every failure is an exception: an MPI library that is not CUDA-aware
+    may read the device address as a host address and crash the process. A
+    segfault inside this call therefore also means that the MPI build is not
+    CUDA-aware. Call it once at startup, after `bind_local_device()` and
+    ``MPI_Init``, before any communication of device buffers.
+    """
+    if method != "probe":
+        raise ValueError(
+            f"Unknown method {method!r}; only 'probe' is available (mpi4py does "
+            "not expose a reliable CUDA support query)."
+        )
+    if not _device_buffers_in_use():
+        return False
+
+    MPI = _mpi_module()
+    if comm is None:
+        comm = MPI.COMM_WORLD
+
+    rank = comm.rank
+    size = comm.size
+    dest = (rank + 1) % size
+    source = (rank - 1) % size
+
+    ok = False
+    try:
+        send, recv = _mpi_probe_buffers(rank)
+        synchronize_for_mpi(send, recv)
+        comm.Sendrecv(send, dest, recvbuf=recv, source=source)
+        expected = np.arange(send.size, dtype=np.float64) + source
+        ok = bool(np.array_equal(to_numpy(recv), expected))
+    except Exception as e:  # noqa: BLE001 - any failure means "not CUDA-aware"
+        _logger.debug("CUDA-aware MPI probe failed on rank %d: %r", rank, e)
+        ok = False
+
+    result = bool(comm.allreduce(ok, op=MPI.LAND))
+    set_mpi_cuda_aware(result)
+    return result
+
+
+def require_cuda_aware_mpi(comm: Any = None) -> None:
+    """Raise if device buffers cannot be passed to MPI (no-op on NumPy).
+
+    Runs `mpi_is_cuda_aware()` and raises `RuntimeError` with instructions
+    when it returns ``False`` on the CuPy backend. Collective: every rank of
+    `comm` must call it. On the NumPy backend, or without a functional CuPy,
+    it returns without touching MPI.
+
+    Parameters
+    ----------
+    comm
+        The communicator to check; ``None`` means ``mpi4py.MPI.COMM_WORLD``.
+    """
+    if not _device_buffers_in_use():
+        return
+    if mpi_is_cuda_aware(comm):
+        return
+    raise RuntimeError(
+        "The MPI library cannot send or receive device (CuPy) buffers: it is "
+        "not CUDA-aware. Use a CUDA-aware MPI build, e.g. Open MPI configured "
+        "with --with-cuda (and UCX built with CUDA), or MPICH with "
+        "--with-device=ch4:ucx on a CUDA-enabled UCX; on clusters, load the "
+        "CUDA-aware MPI module (its name differs per site) and rebuild mpi4py "
+        "against it. Alternatively, copy the buffers to the host with "
+        "xp.to_numpy() before every MPI call."
+    )

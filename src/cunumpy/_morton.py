@@ -27,7 +27,7 @@ from typing import Any
 
 import numpy as np
 
-from .philox import _module
+from ._philox import _module
 
 __all__ = [
     "MAX_MORTON_LEVELS",

@@ -1,22 +1,18 @@
 from __future__ import annotations
 
-import importlib
 import logging
 import os
-import time
 import warnings
-from collections.abc import Generator
-from contextlib import ContextDecorator, contextmanager
-from dataclasses import dataclass
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Literal
 
 import array_api_compat
 import array_api_compat.numpy as np
-import numpy as _numpy
 
-from .transfers import _ACTIVE as _COUNTERS
-from .transfers import _describe, _record
+from ._transfers import _ACTIVE as _COUNTERS
+from ._transfers import _describe, _record
 
 if os.environ.get("CUNUMPY_FAKE_CUPY", "").strip().lower() in ("1", "true", "yes"):
     # tests without a GPU: a strict host stand-in for CuPy, see cunumpy._fake_cupy
@@ -68,6 +64,7 @@ class ArrayBackend:
 
         self._backend: BackendType = "cupy" if backend.lower() == "cupy" else "numpy"
         self._xp: ModuleType = np  # Placeholder
+        self._listeners: list[Callable[[ModuleType], None]] = []
 
         # Import numpy/cupy
         self._xp = self._load_backend(self._backend, verbose)
@@ -100,22 +97,36 @@ class ArrayBackend:
     def xp(self) -> ModuleType:
         return self._xp
 
+    def add_listener(self, listener: Callable[[ModuleType], None]) -> None:
+        """Call `listener(module)` now and whenever the backend module changes."""
+        self._listeners.append(listener)
+        listener(self._xp)
+
+    def _set(self, backend: BackendType, module: ModuleType) -> None:
+        changed = module is not self._xp
+        self._backend = backend
+        self._xp = module
+        if changed:
+            for listener in self._listeners:
+                listener(module)
+
+    def set(self, backend: BackendType) -> None:
+        """Select `backend` (falls back to NumPy if CuPy is not functional)."""
+        if backend not in ("numpy", "cupy"):
+            raise ValueError("Array backend must be either 'numpy' or 'cupy'.")
+        module = self._load_backend(backend)  # sets self._backend to the effective one
+        self._set(self._backend, module)
+
     @contextmanager
     def use_backend(self, backend: BackendType) -> Generator[None, None, None]:
         """Temporarily change the backend."""
-        if backend not in ("numpy", "cupy"):
-            raise ValueError("Array backend must be either 'numpy' or 'cupy'.")
         old_backend = self._backend
         old_xp = self._xp
-
-        self._backend = backend
-        self._xp = self._load_backend(backend)
-
+        self.set(backend)
         try:
             yield
         finally:
-            self._backend = old_backend
-            self._xp = old_xp
+            self._set(old_backend, old_xp)
 
 
 array_backend = ArrayBackend(
@@ -133,10 +144,7 @@ def use_backend(backend: BackendType) -> Generator[None, None, None]:
 
 def set_backend(backend: BackendType) -> None:
     """Set the backend globally."""
-    if backend not in ("numpy", "cupy"):
-        raise ValueError("Array backend must be either 'numpy' or 'cupy'.")
-    array_backend._backend = backend
-    array_backend._xp = array_backend._load_backend(backend)
+    array_backend.set(backend)
 
 
 def get_backend() -> BackendType:
@@ -152,501 +160,6 @@ def _cupy_backend() -> bool:
 def _numpy_backend() -> bool:
     """Check if the active global backend is NumPy."""
     return array_backend.backend == "numpy"
-
-
-def set_device(device_id: int) -> None:
-    """Select the active CUDA device for the current process (no-op on NumPy)."""
-    if array_backend.backend == "cupy":
-        import cupy as cp
-
-        cp.cuda.Device(device_id).use()
-
-
-def device_count() -> int:
-    """Number of visible CUDA devices.
-
-    Returns 0 on the NumPy backend, or if CuPy/CUDA is not available.
-    Independent of the currently active backend -- this reports what
-    hardware is visible, not what `xp.xp` currently dispatches to.
-    """
-    if not cupy_available():
-        return 0
-
-    import cupy as cp
-
-    try:
-        return cp.cuda.runtime.getDeviceCount()
-    except Exception:  # noqa: BLE001 - tolerate any driver/runtime failure
-        return 0
-
-
-def set_device_for_rank(rank: int, devices_per_node: int | None = None) -> int:
-    """Select a CUDA device for an MPI rank, round-robin across the node.
-
-    Convenience for one-rank-per-GPU codes: computes
-    ``device_id = rank % devices_per_node`` and calls `set_device()` with
-    it. `devices_per_node` defaults to `device_count()`. Returns the
-    selected device id, or 0 as a no-op if there are no visible devices.
-
-    This assumes ranks map to devices in contiguous blocks per node (i.e.
-    local rank == ``rank % devices_per_node``); codes with a different
-    rank-to-device layout should call `set_device()` directly instead.
-    """
-    n = devices_per_node if devices_per_node is not None else device_count()
-    if n == 0:
-        return 0
-
-    device_id = rank % n
-    set_device(device_id)
-    return device_id
-
-
-# Node-local rank of the process, as exported by common MPI launchers. They are
-# set before ``MPI_Init``, so the device can be chosen before MPI starts.
-_LOCAL_RANK_VARIABLES = (
-    "OMPI_COMM_WORLD_LOCAL_RANK",  # Open MPI
-    "MV2_COMM_WORLD_LOCAL_RANK",  # MVAPICH2
-    "MPI_LOCALRANKID",  # Intel MPI, MPICH (Hydra)
-    "PMI_LOCAL_RANK",  # MPICH / PMI
-    "PALS_LOCAL_RANKID",  # Cray PALS
-    "SLURM_LOCALID",  # Slurm (srun)
-    "LOCAL_RANK",  # torchrun and others
-)
-
-
-def local_rank() -> int:
-    """Rank of this process within its node, from the MPI launcher's environment.
-
-    Reads the node-local rank that common launchers export (Open MPI, MVAPICH2,
-    Intel MPI/MPICH, PMI, Cray PALS, Slurm, ``LOCAL_RANK``). These variables are
-    set before ``MPI_Init``, so this works before MPI is initialized, and
-    without importing ``mpi4py``. Returns 0 if none is set (e.g. a serial run).
-    """
-    for variable in _LOCAL_RANK_VARIABLES:
-        value = os.environ.get(variable)
-        if value is None:
-            continue
-        try:
-            return int(value)
-        except ValueError:
-            continue
-    return 0
-
-
-def bind_local_device() -> int | None:
-    """Bind this process to one GPU of its node, by node-local rank.
-
-    Selects device ``local_rank() % device_count()`` and creates its CUDA
-    context. Call it before ``MPI_Init`` (i.e. before importing
-    ``mpi4py.MPI``), so that CUDA-aware MPI sees the right device. Without it,
-    every rank on a node would use device 0. If the launcher already restricts
-    each rank to its own device with ``CUDA_VISIBLE_DEVICES``, every process
-    sees a single device and selects it.
-
-    Returns
-    -------
-    int | None
-        The selected device id, or None on the NumPy backend or if no device
-        is available.
-    """
-    if array_backend.backend != "cupy":
-        return None
-    count = device_count()
-    if count == 0:
-        return None
-
-    import cupy as cp
-
-    device_id = local_rank() % count
-    cp.cuda.Device(device_id).use()
-    cp.cuda.Stream.null.synchronize()  # creates the CUDA context now
-    return device_id
-
-
-def synchronize_for_mpi(*arrays: Any) -> None:
-    """Wait for pending device work before MPI reads or writes `arrays`.
-
-    CuPy launches kernels asynchronously; MPI does not know about CUDA streams.
-    Passing a device buffer to MPI while a kernel is still writing it sends
-    whatever is in memory at that moment -- silently wrong data, no error. Call
-    this before every MPI call that uses device buffers. It synchronizes the
-    current stream only if at least one of `arrays` is a CuPy array, so host
-    buffers and the NumPy backend cost nothing. (After MPI returns, no
-    synchronization is needed: kernels launched later see the received data.)
-
-    Parameters
-    ----------
-    *arrays
-        The buffers about to be passed to MPI; ``None`` entries are ignored.
-    """
-    if not any(array_api_compat.is_cupy_array(a) for a in arrays if a is not None):
-        return
-
-    import cupy as cp
-
-    cp.cuda.get_current_stream().synchronize()
-
-
-# the result of the last mpi_is_cuda_aware() probe (or of set_mpi_cuda_aware()),
-# used by mpi_buffer(); None until one of them was called
-_MPI_CUDA_AWARE: bool | None = None
-
-
-def set_mpi_cuda_aware(value: bool | None) -> None:
-    """Tell `mpi_buffer()` whether MPI can take device buffers.
-
-    `mpi_is_cuda_aware()` records its result itself; call this instead when
-    the answer is known otherwise (e.g. from the cluster documentation, or to
-    force host staging for a test). ``None`` forgets the setting.
-    """
-    global _MPI_CUDA_AWARE
-    _MPI_CUDA_AWARE = None if value is None else bool(value)
-
-
-def get_mpi_cuda_aware() -> bool | None:
-    """The recorded answer of `mpi_is_cuda_aware()`/`set_mpi_cuda_aware()`, or None."""
-    return _MPI_CUDA_AWARE
-
-
-def _pinned_or_host_empty(shape: tuple[int, ...], dtype: Any) -> np.ndarray:
-    """A host buffer for staging, pinned when CuPy can allocate pinned memory."""
-    try:
-        import cupy as cp
-
-        nbytes = int(np.prod(shape, dtype=np.int64)) * np.dtype(dtype).itemsize
-        mem = cp.cuda.alloc_pinned_memory(max(nbytes, 1))
-        return np.frombuffer(mem, dtype, int(np.prod(shape, dtype=np.int64))).reshape(
-            shape
-        )
-    except Exception:  # noqa: BLE001 - no CuPy, no pinned memory, the fake CuPy, ...
-        return np.empty(shape, dtype=dtype)
-
-
-@contextmanager
-def mpi_buffer(
-    array: Any,
-    *,
-    send: bool = True,
-    recv: bool = False,
-    cuda_aware: bool | None = None,
-) -> Generator[Any, None, None]:
-    """The buffer to hand to MPI for `array`: the array itself, or a host copy.
-
-    One MPI call site for both backends and both kinds of MPI builds::
-
-        with xp.mpi.mpi_buffer(markers_out) as sendbuf, xp.mpi.mpi_buffer(
-            markers_in, send=False, recv=True
-        ) as recvbuf:
-            comm.Sendrecv(sendbuf, dest, recvbuf=recvbuf, source=source)
-
-    * A host array (NumPy backend, or a NumPy array on the CuPy backend) is
-      yielded unchanged.
-    * A device array with CUDA-aware MPI is yielded unchanged after
-      `synchronize_for_mpi()`, so MPI reads what the kernels wrote.
-    * A device array without CUDA-aware MPI is staged through a host buffer
-      (pinned memory when available): with `send`, the array is copied to the
-      host first (counted as a ``to_host`` transfer by `count_transfers()`);
-      with `recv`, the host buffer is copied back into the array when the
-      block ends (a ``to_device`` transfer). The device array itself is never
-      given to MPI.
-
-    Parameters
-    ----------
-    array
-        The buffer of the MPI call: a NumPy or CuPy array.
-    send : bool
-        Whether MPI reads the buffer (copy device to host before the block).
-    recv : bool
-        Whether MPI writes the buffer (copy host to device after the block).
-    cuda_aware : bool | None
-        Whether MPI can take device buffers. None uses the answer recorded by
-        `mpi_is_cuda_aware()` or `set_mpi_cuda_aware()`.
-
-    Raises
-    ------
-    RuntimeError
-        For a device array when `cuda_aware` is None and nothing was recorded:
-        call `mpi_is_cuda_aware(comm)` (collective) once at startup, or
-        `set_mpi_cuda_aware()`.
-    """
-    if not array_api_compat.is_cupy_array(array):
-        yield array
-        return
-    if cuda_aware is None:
-        cuda_aware = _MPI_CUDA_AWARE
-    if cuda_aware is None:
-        raise RuntimeError(
-            "mpi_buffer(): it is not known whether MPI can take device buffers; "
-            "call xp.mpi.mpi_is_cuda_aware(comm) once at startup (every rank), or "
-            "xp.mpi.set_mpi_cuda_aware(True/False), or pass cuda_aware="
-        )
-    if cuda_aware:
-        synchronize_for_mpi(array)
-        yield array
-        return
-    host = _pinned_or_host_empty(tuple(array.shape), array.dtype)
-    if send:
-        if _COUNTERS:
-            _record("to_host", f"mpi_buffer({_describe(array)}) staging for send")
-        synchronize_for_mpi(array)
-        host[...] = array.get()
-    yield host
-    if recv:
-        if _COUNTERS:
-            _record("to_device", f"mpi_buffer({_describe(array)}) staging for recv")
-        array.set(host)
-
-
-def _mpi_module() -> Any:
-    """Import and return ``mpi4py.MPI``, with a clear error if it is missing."""
-    try:
-        from mpi4py import MPI
-    except ImportError as e:
-        raise ImportError(
-            "mpi4py is required for the CUDA-aware MPI check: install it, or "
-            "pass a communicator explicitly."
-        ) from e
-    return MPI
-
-
-def _device_buffers_in_use() -> bool:
-    """Whether MPI calls of this process would carry device (CuPy) buffers."""
-    return array_backend.backend == "cupy" and cupy_available()
-
-
-def _mpi_probe_buffers(rank: int, n: int = 4) -> tuple[Any, Any]:
-    """Device send and receive buffers for the CUDA-aware MPI probe.
-
-    The send buffer of rank ``r`` holds ``r + arange(n)``, so the receiver can
-    verify that the values came from the expected source.
-    """
-    import cupy as cp
-
-    send = cp.arange(n, dtype=cp.float64) + rank
-    recv = cp.empty(n, dtype=cp.float64)
-    return send, recv
-
-
-def mpi_is_cuda_aware(comm: Any = None, *, method: str = "probe") -> bool:
-    """Check whether the MPI library can send and receive device buffers.
-
-    Passing CuPy arrays to MPI requires a CUDA-aware MPI build (e.g. Open MPI
-    with ``--with-cuda``); with a plain build the call segfaults or silently
-    sends garbage. This is a collective call: every rank of `comm` must call
-    it, and all ranks receive the same result.
-
-    Parameters
-    ----------
-    comm
-        The communicator to check; ``None`` means ``mpi4py.MPI.COMM_WORLD``
-        (``mpi4py`` is imported only then, and only on the CuPy backend).
-    method
-        Only ``"probe"`` is available: each rank sends a tiny device buffer to
-        rank ``(rank + 1) % size`` and receives from ``(rank - 1) % size`` with
-        ``Sendrecv`` (with one rank, to itself), checks the received values,
-        and the ranks agree with ``allreduce(op=LAND)``. Any exception in the
-        exchange, on any rank, gives ``False``. ``mpi4py`` does not expose the
-        library's own query (``MPIX_Query_cuda_support``), and the library
-        version string is not a reliable indicator, so no ``"query"`` method
-        is offered.
-
-    Returns
-    -------
-    bool
-        ``True`` if all ranks exchanged a device buffer successfully. ``False``
-        on the NumPy backend and without a functional CuPy, without touching
-        MPI: the question only makes sense with device buffers.
-
-    Notes
-    -----
-    Not every failure is an exception: an MPI library that is not CUDA-aware
-    may read the device address as a host address and crash the process. A
-    segfault inside this call therefore also means that the MPI build is not
-    CUDA-aware. Call it once at startup, after `bind_local_device()` and
-    ``MPI_Init``, before any communication of device buffers.
-    """
-    if method != "probe":
-        raise ValueError(
-            f"Unknown method {method!r}; only 'probe' is available (mpi4py does "
-            "not expose a reliable CUDA support query)."
-        )
-    if not _device_buffers_in_use():
-        return False
-
-    MPI = _mpi_module()
-    if comm is None:
-        comm = MPI.COMM_WORLD
-
-    rank = comm.rank
-    size = comm.size
-    dest = (rank + 1) % size
-    source = (rank - 1) % size
-
-    ok = False
-    try:
-        send, recv = _mpi_probe_buffers(rank)
-        synchronize_for_mpi(send, recv)
-        comm.Sendrecv(send, dest, recvbuf=recv, source=source)
-        expected = np.arange(send.size, dtype=np.float64) + source
-        ok = bool(np.array_equal(to_numpy(recv), expected))
-    except Exception as e:  # noqa: BLE001 - any failure means "not CUDA-aware"
-        _logger.debug("CUDA-aware MPI probe failed on rank %d: %r", rank, e)
-        ok = False
-
-    result = bool(comm.allreduce(ok, op=MPI.LAND))
-    set_mpi_cuda_aware(result)
-    return result
-
-
-def require_cuda_aware_mpi(comm: Any = None) -> None:
-    """Raise if device buffers cannot be passed to MPI (no-op on NumPy).
-
-    Runs `mpi_is_cuda_aware()` and raises `RuntimeError` with instructions
-    when it returns ``False`` on the CuPy backend. Collective: every rank of
-    `comm` must call it. On the NumPy backend, or without a functional CuPy,
-    it returns without touching MPI.
-
-    Parameters
-    ----------
-    comm
-        The communicator to check; ``None`` means ``mpi4py.MPI.COMM_WORLD``.
-    """
-    if not _device_buffers_in_use():
-        return
-    if mpi_is_cuda_aware(comm):
-        return
-    raise RuntimeError(
-        "The MPI library cannot send or receive device (CuPy) buffers: it is "
-        "not CUDA-aware. Use a CUDA-aware MPI build, e.g. Open MPI configured "
-        "with --with-cuda (and UCX built with CUDA), or MPICH with "
-        "--with-device=ch4:ucx on a CUDA-enabled UCX; on clusters, load the "
-        "CUDA-aware MPI module (its name differs per site) and rebuild mpi4py "
-        "against it. Alternatively, copy the buffers to the host with "
-        "xp.to_numpy() before every MPI call."
-    )
-
-
-def memory_info() -> tuple[int, int] | None:
-    """Return `(free, total)` bytes of memory on the active CUDA device.
-
-    Returns `None` on the NumPy backend. Queries the CUDA runtime directly,
-    so it reflects the whole device rather than just CuPy's memory pool.
-    """
-    if array_backend.backend != "cupy":
-        return None
-
-    import cupy as cp
-
-    return cp.cuda.runtime.memGetInfo()
-
-
-#: Dynamic shared memory per block that every CUDA device provides without an
-#: opt-in (48 KiB); also the answer of :func:`max_shared_memory_per_block`
-#: without a GPU.
-DEFAULT_SHARED_MEMORY_PER_BLOCK = 48 * 1024
-
-
-def max_shared_memory_per_block(
-    device: int | None = None, *, opt_in: bool = False
-) -> int:
-    """Bytes of shared memory a block of a CUDA kernel may use on `device`.
-
-    Use it to decide whether a per-block buffer (e.g. a copy of a small grid
-    for a deposit) fits, instead of a hard-coded limit.
-
-    Parameters
-    ----------
-    device : int | None
-        CUDA device id; the current device by default.
-    opt_in : bool
-        The larger limit a kernel can opt in to on newer GPUs (e.g. 99 or 227
-        KiB). Using more than the default 48 KiB needs the kernel attribute
-        ``max_dynamic_shared_size_bytes`` set on the compiled ``cupy.RawKernel``
-        (``kernel.compile()``).
-
-    Returns
-    -------
-    int
-        The limit in bytes; :data:`DEFAULT_SHARED_MEMORY_PER_BLOCK` if CuPy is
-        not available (so that code choosing a GPU strategy runs everywhere).
-    """
-    if not cupy_available():
-        return DEFAULT_SHARED_MEMORY_PER_BLOCK
-    import cupy as cp
-
-    dev = cp.cuda.Device() if device is None else cp.cuda.Device(device)
-    key = "MaxSharedMemoryPerBlockOptin" if opt_in else "MaxSharedMemoryPerBlock"
-    return int(dev.attributes.get(key, DEFAULT_SHARED_MEMORY_PER_BLOCK))
-
-
-def free_memory() -> None:
-    """Release all free blocks held by CuPy's memory pools (no-op on NumPy).
-
-    CuPy caches freed device (and pinned host) memory in pools rather than
-    returning it to the driver/OS immediately, which can look like a leak
-    in long-running processes. Call this to give it back.
-    """
-    if array_backend.backend == "cupy":
-        import cupy as cp
-
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.get_default_pinned_memory_pool().free_all_blocks()
-
-
-def pin_memory(array: Any) -> Any:
-    """Copy a host array into pinned (page-locked) CUDA host memory.
-
-    Pinned memory transfers to/from the GPU faster than regular pageable
-    memory, since the driver can DMA it directly. `array` must already be
-    on the host (use `to_numpy()` first if it may be on the GPU). Raises
-    `ImportError` if CuPy is not available.
-    """
-    if not cupy_available():
-        raise ImportError("CuPy is not available or not functional.")
-
-    import cupy as cp
-
-    array = np.asarray(array)
-    mem = cp.cuda.alloc_pinned_memory(array.nbytes)
-    pinned = np.frombuffer(mem, array.dtype, array.size).reshape(array.shape)
-    pinned[...] = array
-    return pinned
-
-
-@contextmanager
-def stream() -> Generator[Any, None, None]:
-    """Context manager for a CUDA stream, to overlap transfers and compute.
-
-    On the CuPy backend, operations issued inside the block are enqueued on
-    a new, non-blocking stream rather than the default one. Call
-    `xp.synchronize()` (or the yielded stream's own `.synchronize()`) before
-    reading results computed inside the block. No-op on the NumPy backend,
-    where it yields `None`.
-    """
-    if array_backend.backend == "cupy":
-        import cupy as cp
-
-        with cp.cuda.Stream(non_blocking=True) as s:
-            yield s
-    else:
-        yield None
-
-
-def get_rng(seed: int | None = None) -> Any:
-    """Return a random Generator matching the active backend.
-
-    NumPy and CuPy both provide `default_rng(seed)`, returning a
-    `Generator` with a largely-compatible distribution API, but picking the
-    right one requires branching on the backend -- this does that for you.
-    """
-    if array_backend.backend == "cupy":
-        import cupy as cp
-
-        return cp.random.default_rng(seed)
-
-    import numpy as numpy_raw
-
-    return numpy_raw.random.default_rng(seed)
 
 
 def default_float_dtype() -> Any:
@@ -677,198 +190,6 @@ def synchronize() -> None:
                 RuntimeWarning,
                 stacklevel=2,
             )
-
-
-def _nvtx_module() -> ModuleType | None:
-    """Return ``cupy.cuda.nvtx`` on the CuPy backend, else None.
-
-    None is also returned when NVTX is not available in this CuPy build, so
-    callers can degrade to a no-op instead of failing.
-    """
-    if array_backend.backend != "cupy":
-        return None
-    try:
-        return importlib.import_module("cupy.cuda.nvtx")
-    except Exception:  # noqa: BLE001 - tolerate any missing/broken NVTX
-        return None
-
-
-class nvtx_range(ContextDecorator):
-    """Mark a code region as an NVTX range, visible in ``nsys`` and Nsight.
-
-    On the CuPy backend the block is wrapped in ``cupy.cuda.nvtx.RangePush``
-    / ``RangePop``, so the region appears on the profiler timeline next to
-    the kernels it launches. On the NumPy backend, or if NVTX is not
-    available, it is a no-op. The range is popped when the block raises.
-
-    It can also be used as a decorator, and the same instance can be nested
-    or re-entered (e.g. on a recursive function).
-
-    Parameters
-    ----------
-    name : str
-        Name shown in the profiler.
-    color : int, optional
-        Index into NVTX's colour table (``id_color`` of ``RangePush``).
-        ``None`` uses the default colour.
-
-    Examples
-    --------
-    >>> with xp.profiling.nvtx_range("push markers"):
-    ...     kernel(markers, dt, n_threads=n)
-
-    >>> @xp.profiling.nvtx_range("accumulate")
-    ... def accumulate(...):
-    ...     ...
-    """
-
-    def __init__(self, name: str, color: int | None = None) -> None:
-        self.name = str(name)
-        self.color = color
-        self._stack: list[ModuleType | None] = []
-
-    def __enter__(self):
-        nvtx = _nvtx_module()
-        if nvtx is not None:
-            if self.color is None:
-                nvtx.RangePush(self.name)
-            else:
-                nvtx.RangePush(self.name, id_color=int(self.color))
-        self._stack.append(nvtx)
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        nvtx = self._stack.pop()
-        if nvtx is not None:
-            nvtx.RangePop()
-
-    def __repr__(self) -> str:
-        return f"nvtx_range(name={self.name!r}, color={self.color!r})"
-
-
-@dataclass
-class Timing:
-    """Result of a `timed_region()` block.
-
-    Attributes
-    ----------
-    name : str
-        Name of the region.
-    elapsed : float | None
-        Wall-clock seconds spent in the block; ``None`` until the block
-        exits.
-    synced : bool
-        Whether the device was synchronized before the clock was read, i.e.
-        whether `elapsed` includes the queued device work.
-    """
-
-    name: str
-    elapsed: float | None = None
-    synced: bool = False
-
-
-@contextmanager
-def timed_region(name: str, *, sync: bool = True) -> Generator[Timing, None, None]:
-    """Time a code region, including the device work it queues.
-
-    CUDA kernels run asynchronously: a wall-clock timer around a launch
-    measures the launch, not the kernel. On the CuPy backend this context
-    manager synchronizes the device on entry (so earlier queued work is not
-    charged to the region) and, if `sync` is true, again on exit before the
-    clock is read, so the measured time includes the kernels launched in
-    the block. It also pushes an `nvtx_range()` of the same name, so the
-    region shows in ``nsys``. On the NumPy backend it only times the block.
-    The time is recorded when the block raises as well.
-
-    Parameters
-    ----------
-    name : str
-        Name of the region (also the NVTX range name).
-    sync : bool, default True
-        Synchronize the device before reading the clock on exit. With
-        ``False`` the time is the host time only, as for a plain timer.
-
-    Yields
-    ------
-    Timing
-        `elapsed` is set (in seconds, from ``time.perf_counter``) when the
-        block exits; `synced` tells whether the device was synchronized.
-
-    Examples
-    --------
-    >>> with xp.profiling.timed_region("push markers") as timing:
-    ...     kernel(markers, dt, n_threads=n)
-    >>> print(f"{timing.name}: {timing.elapsed:.3f} s (synced={timing.synced})")
-    """
-    timing = Timing(name=str(name))
-    on_gpu = array_backend.backend == "cupy"
-    with nvtx_range(timing.name):
-        if sync and on_gpu:
-            synchronize()
-        start = time.perf_counter()
-        try:
-            yield timing
-        finally:
-            if sync and on_gpu:
-                synchronize()
-                timing.synced = True
-            timing.elapsed = time.perf_counter() - start
-
-
-# CUDA debug mode: `CudaKernel` compiles with line information and bounds
-# checks, and synchronizes after every launch so that asynchronous CUDA errors
-# are raised at the kernel that caused them.
-_CUDA_DEBUG_TRUE = ("1", "true", "yes", "on")
-
-
-def _debug_from_env(value: str | None) -> bool:
-    """Whether the value of ``CUNUMPY_CUDA_DEBUG`` enables the debug mode.
-
-    ``"1"``, ``"true"``, ``"yes"`` and ``"on"`` (any case, surrounding
-    whitespace ignored) enable it; anything else, including unset, does not.
-    """
-    if value is None:
-        return False
-    return value.strip().lower() in _CUDA_DEBUG_TRUE
-
-
-_cuda_debug: bool = _debug_from_env(os.getenv("CUNUMPY_CUDA_DEBUG"))
-
-
-def set_cuda_debug(enabled: bool) -> None:
-    """Enable or disable the CUDA debug mode globally.
-
-    In debug mode, `CudaKernel`s created with ``debug=None`` (the default)
-    compile with ``-lineinfo`` and ``-DCUNUMPY_BOUNDS_CHECK``, and synchronize
-    the stream after every launch, re-raising an asynchronous CUDA error as a
-    ``RuntimeError`` naming the kernel that caused it. The setting is read at
-    every launch, so it also applies to kernels created earlier; only their
-    compile options are fixed once they are compiled (call ``compile()`` again
-    or create the kernels after enabling debug mode). Initialised from the
-    environment variable ``CUNUMPY_CUDA_DEBUG`` (``1``, ``true``, ``yes`` or
-    ``on``) at import.
-    """
-    global _cuda_debug
-    _cuda_debug = bool(enabled)
-
-
-def get_cuda_debug() -> bool:
-    """Whether the CUDA debug mode is enabled globally, see `set_cuda_debug`."""
-    return _cuda_debug
-
-
-@contextmanager
-def cuda_debug(enabled: bool = True) -> Generator[None, None, None]:
-    """Temporarily enable (or disable) the CUDA debug mode.
-
-    Restores the previous setting on exit, see `set_cuda_debug`.
-    """
-    previous = _cuda_debug
-    set_cuda_debug(enabled)
-    try:
-        yield
-    finally:
-        set_cuda_debug(previous)
 
 
 def _to_numpy(array: Any) -> np.ndarray:
@@ -984,102 +305,6 @@ def as_device_array(
     return result
 
 
-def segment_sum(values: Any, keys: Any, n_segments: int) -> Any:
-    """Sum `values` per key: ``out[k] = sum(values[i] for keys[i] == k)``.
-
-    The reduction step of a sort-then-reduce accumulation (particles binned to
-    cells, contributions summed per cell), on either backend, with
-    ``bincount`` under the hood. For a 2D `values` the columns are summed
-    separately (one bincount per column).
-
-    Parameters
-    ----------
-    values : array
-        Shape ``(n,)`` or ``(n, m)``, on the backend of `keys`.
-    keys : array
-        Integer segment of every value, shape ``(n,)``; a negative key drops
-        the value (e.g. a particle outside the grid).
-    n_segments : int
-        Number of segments; keys must be smaller than it.
-
-    Returns
-    -------
-    array
-        Shape ``(n_segments,)`` or ``(n_segments, m)``, dtype of `values` for
-        floating-point and complex values, ``float64`` otherwise.
-    """
-    xpm = get_array_module(keys)
-    keys = xpm.asarray(keys)
-    values = xpm.asarray(values)
-    if keys.ndim != 1 or values.shape[:1] != keys.shape:
-        raise ValueError(
-            f"keys must be 1D with one entry per value, got keys {keys.shape} and "
-            f"values {values.shape}"
-        )
-    if values.ndim not in (1, 2):
-        raise ValueError(f"values must be 1D or 2D, got shape {values.shape}")
-    if bool((keys >= n_segments).any()):
-        raise ValueError(f"keys must be smaller than n_segments={n_segments}")
-    valid = keys >= 0
-    if not bool(valid.all()):
-        keys = keys[valid]
-        values = values[valid]
-    out_dtype = values.dtype if values.dtype.kind in "fc" else np.dtype(np.float64)
-    if values.ndim == 1:
-        if values.dtype.kind == "c":
-            real = xpm.bincount(keys, weights=values.real, minlength=n_segments)
-            imag = xpm.bincount(keys, weights=values.imag, minlength=n_segments)
-            return (real + 1j * imag).astype(out_dtype, copy=False)
-        return xpm.bincount(keys, weights=values, minlength=n_segments).astype(
-            out_dtype, copy=False
-        )
-    out = xpm.empty((n_segments, values.shape[1]), dtype=out_dtype)
-    for j in range(values.shape[1]):
-        out[:, j] = segment_sum(values[:, j], keys, n_segments)
-    return out
-
-
-def sort_by_key(keys: Any, *arrays: Any) -> tuple[Any, ...]:
-    """Sort `keys` and reorder every array the same way, in one stable argsort.
-
-    The usual first step of a particle code on the GPU: sort the particles by
-    cell index or Morton key (:func:`cunumpy.algorithms.morton_keys`), then work on
-    contiguous ranges. The sort is stable, so equal keys keep their order and
-    the result is reproducible::
-
-        keys, order, positions, charges = xp.algorithms.sort_by_key(keys, positions, charges)
-
-    Parameters
-    ----------
-    keys : array, shape (n,)
-        The sort keys.
-    *arrays : arrays
-        Arrays with ``n`` rows, on the backend of `keys`, reordered along
-        axis 0.
-
-    Returns
-    -------
-    tuple
-        ``(sorted_keys, order, *sorted_arrays)``: ``order`` (int64) is the
-        permutation, ``sorted_keys = keys[order]``, and each sorted array is
-        ``array[order]`` (a new array).
-    """
-    if get_array_backend(keys) == "cupy":
-        import cupy as xpm  # its argsort is a stable radix sort
-    else:
-        xpm = np
-    keys = xpm.asarray(keys)
-    if keys.ndim != 1:
-        raise ValueError(f"keys must be 1D, got shape {keys.shape}")
-    for array in arrays:
-        if array.shape[:1] != keys.shape:
-            raise ValueError(
-                f"every array needs {keys.shape[0]} rows, got shape {array.shape}"
-            )
-    order = xpm.argsort(keys, kind="stable").astype(xpm.int64, copy=False)
-    return (keys[order], order, *(array[order] for array in arrays))
-
-
 def to_cunumpy(array: Any) -> Any:
     """Convert an array to the currently active backend.
 
@@ -1111,50 +336,6 @@ def get_array_module(array: Any) -> ModuleType:
 
         return cp
     return np
-
-
-def as_kernel_array(value: Any, like: Any, dtype: Any = None) -> Any:
-    """`value` as an array the kernel chosen for `like` takes.
-
-    On the device of `like` (a CuPy array if `like` is one, a NumPy array
-    otherwise), C-contiguous and with `dtype` (any dtype if None): `value`
-    itself when it already is such an array, else one copy, moved to the other
-    side if needed (counted by `count_transfers()`). For input arrays of a
-    :class:`Kernel` with ``dispatch="arrays"``, whose choice follows the arrays:
-    pass the main array (e.g. the grid) as `like`, and the kernel gets
-    arguments all on one side::
-
-        convert = functools.partial(xp.kernels.as_kernel_array, like=grid, dtype=float)
-        deposit(convert(positions), convert(weights), grid, ...)
-
-    For an array the kernel writes, use :func:`kernel_output`, which copies a
-    converted array back.
-    """
-    if is_gpu(like):
-        import cupy
-
-        if not is_gpu(value):
-            value = to_cupy(value)
-        return cupy.ascontiguousarray(value, dtype=dtype)
-    return _numpy.ascontiguousarray(to_numpy(value), dtype=dtype)
-
-
-@contextmanager
-def kernel_output(out: Any, like: Any, dtype: Any = None) -> Generator[Any]:
-    """The buffer a kernel chosen for `like` writes, copied back into `out` after it.
-
-    Yields `out` itself if :func:`as_kernel_array` takes it unchanged (then the
-    kernel writes into it directly), else a converted copy whose contents are
-    written into `out` when the block ends without an error (moved back to the
-    side of `out`)::
-
-        with xp.kernels.kernel_output(result, like=grid, dtype=float) as buffer:
-            gather(convert(positions), grid, buffer, ...)
-    """
-    buffer = as_kernel_array(out, like, dtype)
-    yield buffer
-    if buffer is not out:
-        out[...] = buffer if is_gpu(out) or not is_gpu(buffer) else to_numpy(buffer)
 
 
 def is_gpu(array: Any) -> bool:

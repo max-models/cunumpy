@@ -14,8 +14,10 @@ total = xp.sum(values)
 ```
 
 At runtime, NumPy-like attributes such as `array`, `sum`, `fft`, and `linalg`
-are forwarded to the currently selected `array-api-compat` NumPy or CuPy
-module. CuNumpy does not wrap every operation individually. The available
+are those of the currently selected `array-api-compat` NumPy or CuPy module.
+They are copied into the `cunumpy` namespace and replaced when the backend
+changes, so `xp.sum` costs the same as `numpy.sum` (a switch between NumPy and
+CuPy takes some tens of microseconds; avoid switching inside a hot loop). CuNumpy does not wrap every operation individually. The available
 operations and some details can therefore vary with the installed NumPy and
 CuPy versions. In normal use, access those operations through the top-level
 `cunumpy` namespace, commonly imported as `xp`.

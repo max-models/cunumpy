@@ -2,8 +2,8 @@
 
 Without a GPU there are no real device arrays, so most tests simulate one:
 either by monkeypatching `cunumpy.xp.get_array_backend` (for `to_numpy` and
-`to_cupy`), the conversion hooks of `cunumpy.kernel` (for `PyccelKernel`), or
-`cunumpy.dispatch.get_backend` (for the `Kernel` fallback). The tests marked
+`to_cupy`), the conversion hooks of `cunumpy._kernel` (for `PyccelKernel`), or
+`cunumpy._dispatch.get_backend` (for the `Kernel` fallback). The tests marked
 with a GPU requirement exercise the real transfers.
 """
 
@@ -13,9 +13,9 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
-from cunumpy import dispatch as dispatch_module
-from cunumpy import kernel as kernel_module
-from cunumpy import transfers as transfers_module
+from cunumpy import _dispatch as dispatch_module
+from cunumpy import _kernel as kernel_module
+from cunumpy import _transfers as transfers_module
 from cunumpy import xp as xp_module
 from cunumpy.kernels import Kernel, PyccelKernel
 from cunumpy.profiling import TransferCounter, TransferEvent

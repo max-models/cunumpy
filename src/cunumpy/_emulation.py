@@ -55,7 +55,7 @@ from typing import Any
 
 import numpy as np
 
-from .cuda_kernel import (
+from ._cuda_kernel import (
     CudaKernel,
     CudaParameter,
     _scalar_checker,

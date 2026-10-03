@@ -76,8 +76,7 @@ class DeviceMirror:
     def __repr__(self) -> str:
         where = "host" if self._device is None else "device"
         return (
-            f"DeviceMirror(shape={self._shape}, dtype={self._dtype}, "
-            f"buffer={where!r})"
+            f"DeviceMirror(shape={self._shape}, dtype={self._dtype}, buffer={where!r})"
         )
 
     @property

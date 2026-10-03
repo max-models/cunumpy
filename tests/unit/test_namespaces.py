@@ -1,6 +1,7 @@
 """Tests for the submodule layout of cunumpy (0.5) and the deprecated top-level names."""
 
 import importlib
+import os
 import subprocess
 import sys
 import warnings
@@ -52,7 +53,7 @@ def test_moved_names_warn_and_resolve(name):
 
 
 def test_numpy_names_do_not_warn():
-    with warnings.catch_warnings():
+    with warnings.catch_warnings(), xp.use_backend("numpy"):
         warnings.simplefilter("error")
         assert xp.zeros(2).shape == (2,)
         assert xp.random is not None
@@ -67,7 +68,8 @@ def test_unknown_name_raises():
 def test_kernel_testing_keeps_numpy_testing():
     import cunumpy.kernel_testing  # noqa: F401
 
-    assert xp.testing.assert_allclose is not None
+    with xp.use_backend("numpy"):
+        assert xp.testing is np.testing
 
 
 def test_testing_alias_is_deprecated():
@@ -87,3 +89,51 @@ def test_testing_alias_is_deprecated():
         "cunumpy.kernel_testing.assert_kernels_agree\n"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_backend_names_are_plain_attributes():
+    # copied into the namespace: no module __getattr__ call per access
+    assert vars(xp)["zeros"] is xp.xp.xp.zeros
+    assert "zeros" in dir(xp)
+    with xp.use_backend("numpy"):
+        assert vars(xp)["testing"] is np.testing
+
+
+def test_backend_names_never_hide_cunumpy_names():
+    assert xp.cuda is importlib.import_module("cunumpy.cuda")
+    assert xp.scipy is importlib.import_module("cunumpy._scipy_backend").scipy
+    for name in xp._MOVED:
+        assert name not in vars(xp), name
+
+
+def test_switching_the_backend_replaces_the_names():
+    # the fake CuPy of cunumpy._fake_cupy stands in for a GPU, in a fresh process
+    code = (
+        "import cunumpy as xp\n"
+        "numpy_zeros = xp.zeros\n"
+        "with xp.use_backend('cupy'):\n"
+        "    assert xp.get_backend() == 'cupy'\n"
+        "    assert xp.zeros is xp.xp.xp.zeros is not numpy_zeros\n"
+        "    assert type(xp.zeros(2)).__module__.startswith('cupy')\n"
+        "assert xp.zeros is numpy_zeros\n"
+        "xp.set_backend('cupy')\n"
+        "assert type(xp.arange(3)).__module__.startswith('cupy')\n"
+        "xp.set_backend('numpy')\n"
+        "assert type(xp.arange(3)).__module__ == 'numpy'\n"
+    )
+    env = {**os.environ, "CUNUMPY_FAKE_CUPY": "1", "ARRAY_BACKEND": "numpy"}
+    subprocess.run([sys.executable, "-c", code], check=True, env=env)
+
+
+def test_listener_runs_only_when_the_module_changes():
+    calls = []
+    xp.xp.array_backend.add_listener(calls.append)
+    try:
+        assert calls == [xp.xp.xp]  # called once when added
+        active = xp.get_backend()
+        with xp.use_backend(active):
+            pass
+        xp.set_backend(active)
+        assert len(calls) == 1
+    finally:
+        xp.xp.array_backend._listeners.remove(calls.append)

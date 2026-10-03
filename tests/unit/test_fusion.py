@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
-from cunumpy import fusion
+from cunumpy import _fusion as fusion
 
 
 def pressure(rho, T, gamma):

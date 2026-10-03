@@ -9,6 +9,7 @@ from types import ModuleType
 import pytest
 
 import cunumpy as xp
+from cunumpy import _profiling as profiling_module
 from cunumpy import xp as xp_module
 
 
@@ -34,7 +35,7 @@ def fake_nvtx(monkeypatch):
     monkeypatch.setitem(sys.modules, "cupy.cuda.nvtx", nvtx)
     monkeypatch.setattr(xp_module.array_backend, "_backend", "cupy")
     # `synchronize()` imports cupy on this backend; make it a no-op instead.
-    monkeypatch.setattr(xp_module, "synchronize", lambda: None)
+    monkeypatch.setattr(profiling_module, "synchronize", lambda: None)
     return calls
 
 
