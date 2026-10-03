@@ -27,6 +27,14 @@ NumPy and CuPy are not interchangeable for every function or object. A
 function that needs to follow an input array's location should use
 `get_array_module(array)` instead of assuming the global backend matches it.
 
+## Version
+
+### `require_version(minimum)`
+
+Raises `ImportError` if the installed cunumpy is older than `minimum`
+(`xp.require_version("0.4.0")`). Only the numeric parts are compared; nothing
+is checked when the version is unknown (not installed as a package).
+
 ## Backend selection
 
 ### `set_backend(backend)`
@@ -172,6 +180,15 @@ assert xp.get_array_backend(normalized) == xp.get_backend()
 Each conversion returns a suitable array; it does not change the active
 backend or mutate the source.
 
+### `segment_sum(values, keys, n_segments)`
+
+`out[k] = sum(values[i] for keys[i] == k)` on the backend of `keys`, with
+`bincount` under the hood: the reduction step of a sort-then-reduce
+accumulation. `values` has shape `(n,)` or `(n, m)` (columns summed
+separately); a negative key drops the value; keys must be smaller than
+`n_segments`. The result keeps a floating-point or complex dtype and is
+`float64` otherwise.
+
 ## Count transfers
 
 A transfer inside a time loop is the classic performance bug of a GPU port:
@@ -284,6 +301,33 @@ samples = rng.uniform(size=100)
 
 The generator APIs are similar, but seeds do not guarantee identical random
 sequences across NumPy and CuPy.
+
+### `random_streams`
+
+```python
+xp.random_streams.seed(42, rank=comm.Get_rank(), bit_generator="PCG64")
+v = xp.random_streams.normal(0.0, v_th, (n, 3))
+rng = xp.random_streams.generator()           # numpy or cupy Generator
+own = xp.random_streams.make_generator(seed)  # a component's own generator
+```
+
+One seeded random generator per process and backend, for reproducible MPI
+runs: after `seed(value, rank)` every draw of the process comes from the stream
+`(value, rank)` (a NumPy `SeedSequence` with the rank as spawn key), so the same
+seed and number of ranks give the same results and the ranks' streams are
+independent. `seed(None)` (or no seed) seeds from the operating system.
+`bit_generator` selects the NumPy bit generator (`MT19937`, `PCG64`,
+`PCG64DXSM`, `Philox`, `SFC64`); the CuPy generator uses CuPy's default.
+`seed` also seeds NumPy's global state (and CuPy's on the CuPy backend) for code
+that calls `np.random.*` directly.
+
+`generator(backend=None)` returns the process generator of a backend (the
+active one by default), created on first use. `make_generator(seed=None,
+backend=None)` returns a separate generator for a component with a seed of its
+own, and the process generator otherwise. `random`, `standard_normal`,
+`normal` and `uniform` draw from the process generator (or `rng=`); `normal`
+and `uniform` fall back to `standard_normal` and `random` for CuPy generators
+without those methods. `xp.RandomStreams()` makes an independent instance.
 
 ### `default_float_dtype()`
 
@@ -418,6 +462,22 @@ comm.Sendrecv(send_buffer, dest, recvbuf=recv_buffer, source=source)
 No synchronization is needed after MPI returns: kernels launched afterwards see
 the received data.
 
+### `mpi_buffer(array, *, send=True, recv=False, cuda_aware=None)`
+
+Context manager yielding the buffer to pass to MPI for `array`: a host array
+unchanged; a device array unchanged (after `synchronize_for_mpi`) when MPI is
+CUDA-aware; otherwise a pinned host staging buffer, filled from the device
+before the block (`send`) and copied back after it (`recv`), both counted by
+`count_transfers()`. `cuda_aware=None` uses the answer recorded by
+`mpi_is_cuda_aware()` or `set_mpi_cuda_aware()`; without one, a device array
+raises `RuntimeError`.
+
+### `set_mpi_cuda_aware(value)`, `get_mpi_cuda_aware()`
+
+Record (or read) whether MPI can take device buffers, for `mpi_buffer()`.
+`mpi_is_cuda_aware()` records its own result; set it by hand when the answer
+is known otherwise, or `None` to forget it.
+
 ### `memory_info()`
 
 Returns `(free_bytes, total_bytes)` reported by the CUDA runtime for the
@@ -431,10 +491,19 @@ It is a no-op on NumPy. It does not release blocks still referenced by live
 arrays. CuPy normally caches freed allocations for reuse, so cached memory
 does not necessarily indicate a leak.
 
+### `max_shared_memory_per_block(device=None, *, opt_in=False)`
+
+The bytes of shared memory a block may use on the current (or given) device,
+from the device attributes, e.g. to decide whether a per-block copy of a grid
+fits. `opt_in=True` gives the larger limit of newer GPUs, which a kernel uses
+only after setting `max_dynamic_shared_size_bytes` on its compiled
+`cupy.RawKernel`. Without CuPy it returns `DEFAULT_SHARED_MEMORY_PER_BLOCK`
+(48 KiB, which every CUDA device provides).
+
 ### `cuda_include_dir()`
 
 Returns the directory (as `str`) of the CUDA headers shipped with CuNumpy,
-`cunumpy/array_view.cuh`, `cunumpy/atomic.cuh` and `cunumpy/index.cuh`. `CudaKernel` adds it to its NVRTC options as
+`cunumpy/array_view.cuh`, `cunumpy/atomic.cuh`, `cunumpy/index.cuh` and `cunumpy/reduce.cuh`. `CudaKernel` adds it to its NVRTC options as
 `-I<dir>` automatically (and only once), so kernel sources can write
 `#include <cunumpy/atomic.cuh>` without configuration. Use it to pass the
 same headers to other compilers.
@@ -694,19 +763,24 @@ kernel.compile_options()  # options + ('-DCUNUMPY_INCLUDE_HASH=0x3f9a...',)
   `#include "name"`, recursively, each once in order of first inclusion. A
   name is looked up relative to the including file (`source_dir` for the
   kernel source, the header's own directory for nested includes), then in
-  `include_dirs` in order, like NVRTC does. System headers in angle brackets
-  and includes that cannot be found are ignored (NVRTC reports the latter).
-  Recomputed at every access, so it follows the files on disk.
+  `include_dirs` in order, then in cunumpy's header directory, like NVRTC
+  does. cunumpy's shipped headers are tracked also when included in angle
+  brackets (`#include <cunumpy/reduce.cuh>`), so upgrading cunumpy with a
+  changed header recompiles the kernels that use it. Other angle-bracket
+  (system) headers and includes that cannot be found are ignored (NVRTC
+  reports the latter). Recomputed at every access, so it follows the files on
+  disk.
 * `compile_options()`: the options passed to CuPy at compile time: `options`
   plus `-DCUNUMPY_INCLUDE_HASH=0x<hash>` if the source includes any header,
   where the hash covers the contents of `included_headers` (not their paths).
   A changed header gives another define, hence another cache entry. Sources
-  without quoted includes never touch the file system.
+  without includes never touch the file system.
 
 The two building blocks are available on their own:
 
-* `xp.resolve_includes(source, include_dirs=(), *, base_dir=None)`: the
-  resolved header paths of a source, as a list.
+* `xp.resolve_includes(source, include_dirs=(), *, base_dir=None,
+  angle_dirs=())`: the resolved header paths of a source, as a list;
+  `angle_dirs` are searched last and also for `#include <name>`.
 * `xp.include_hash(paths)`: the first 16 hex digits of the SHA-256 digest of
   the contents of the files, in order.
 
@@ -726,7 +800,20 @@ shape is given either by `n_threads` or by `grid`:
 * `grid`: number of blocks per dimension, instead of `n_threads`.
 * `block`: block shape for this call, instead of `block_size`.
 * `shared_mem`: dynamic shared memory per block in bytes, for
-  `extern __shared__` arrays.
+  `extern __shared__` arrays. Above 48 KiB (the limit every device has) the
+  compiled kernel's `max_dynamic_shared_size_bytes` is raised to `shared_mem`
+  once, up to the device's opt-in limit (`xp.max_shared_memory_per_block(
+  opt_in=True)`); a larger request raises `ValueError` before the launch.
+
+Without `n_threads` and `grid`, a launch uses `n_threads_from(args)` if the
+kernel has one (constructor argument and settable property): a function of the
+argument tuple, or `"first_array"` for the length of the first array argument
+(its first axis), i.e. one thread per marker:
+
+```python
+push = xp.CudaKernel.from_file("push_cuda.cu", n_threads_from="first_array")
+push(positions, velocities, e_field, dt)  # n_threads = positions.shape[0]
+```
 
 Nothing is launched if the grid has a zero dimension (e.g. `n_threads=0`).
 `kernel.launch_shape(n_threads=None, *, grid=None, block=None)` returns the
@@ -778,7 +865,9 @@ The arguments are prepared by `kernel.prepare_args(*args)`:
     and integer parameters; anything else raises `TypeError`;
   * NumPy scalars are passed as they are if their dtype matches, cast if the
     cast is safe (e.g. `np.float32` into `double`), and raise `TypeError`
-    otherwise (e.g. `np.float64` into `float`).
+    otherwise (e.g. `np.float64` into `float`). NumPy integer scalars are
+    checked by value, like Python ints: `np.int64(5)` fits an `int`
+    parameter, `np.int64(2**31)` raises `OverflowError`.
 
 This matters because `cupy.RawKernel` reads each argument with the size
 declared in the signature and does not check types: an integer passed to a
@@ -819,8 +908,9 @@ cunumpy ships CUDA headers that every `CudaKernel` finds automatically;
 `xp.cuda_include_dir()` returns their directory (a `str`) for other compilers
 (`-I<dir>`).
 
-`cunumpy/array_view.cuh` defines the strided views `Array1D<T>`, `Array2D<T>`
-and `Array3D<T>`: `T* data`, `long long shape[ndim]`, `long long
+`cunumpy/array_view.cuh` defines the strided views `Array1D<T>` to
+`Array4D<T>` (4D e.g. for a 3D grid of vector components `(nx, ny, nz,
+ncomp)`): `T* data`, `long long shape[ndim]`, `long long
 strides[ndim]` (in elements, not bytes), `operator()(i, j, ...)` returning a
 reference to the element, and `size()`. A kernel indexes `a(i, j)` like the
 pyccel kernel it is ported from indexes `a[i, j]`, without hand-passed sizes.
@@ -956,7 +1046,7 @@ changes one definition instead of every kernel signature.
 
 `CudaStruct(name, fields)` takes the fields as `(name, C type)` pairs; scalar
 fields, pointers to the scalar types above (or `void*`), and array views
-`Array1D<T>` to `Array3D<T>` of those scalar types (see "CUDA headers and
+`Array1D<T>` to `Array4D<T>` of those scalar types (see "CUDA headers and
 array views") are supported.
 
 * `declaration`: the C definition of the struct, to put in the CUDA source
@@ -967,6 +1057,15 @@ array views") are supported.
 * `fields`: the parsed fields (`CudaParameter` tuples).
 * `check_source(source)`: raises `ValueError` if `source` defines the struct
   with other fields; a kernel created with `structs=[...]` does this check.
+* `verify_layout(include=None, *, include_dirs=(), options=())` (needs CuPy):
+  compiles and runs a one-thread kernel that reports `sizeof`, `alignof` and
+  every field offset as the CUDA compiler lays the struct out, and raises
+  `ValueError` listing the differences from `dtype`. Returns the measured
+  layout as a dict. With `include` (a header file name or `#include` line,
+  found in `include_dirs`) the struct is defined by that header instead of
+  `declaration`, which checks a hand-written or generated header. Call it once
+  per struct in a GPU test, and on every new platform (e.g. ROCm).
+  `layout_source(include=None)` returns the kernel source.
 * Calling the struct with keyword arguments, one per field, packs the values:
   pointer fields take C-contiguous CuPy arrays of the declared dtype (never
   copied), array view fields take CuPy arrays of the declared dtype and number
@@ -1007,6 +1106,18 @@ scalar types such as `np.float32` -> `float`, and an array `"float[:, :]"` ->
 `scalar_names` adds or changes mappings from annotation scalar names to C
 types, e.g. `{"float": "float"}` for single precision. A parameter without
 annotation, or with an annotation that cannot be mapped, raises `ValueError`.
+
+### Structs from a pyccel source file
+
+`CudaStruct.from_pyccel_class(source, class_name, name=None, *, int_type="long long",
+scalar_names=None, exclude=(), attribute_names=True)` builds a struct from the
+annotated `__init__` of a class in a `.py` file (or a source string), parsed
+with `ast` and never imported, for classes whose module is compiled by pyccel.
+Fields are named after the attributes the parameters are stored in
+(`self.<attribute> = <parameter>`; `attribute_names=False` keeps the parameter
+names), parameters in `exclude` are skipped, and the mappings are those of
+`from_signature`. Raises `ValueError` if the class or its `__init__` is missing
+or an annotation cannot be mapped.
 
 ### Generating headers
 
@@ -1061,8 +1172,14 @@ built once per subclass when the class is defined and is the class attribute
 
 * `pack()` packs the field attributes, with the checks of `CudaStruct`
   (C-contiguous CuPy arrays of the declared dtype, range-checked scalars). A
-  field without an attribute raises `AttributeError`. Call it again after
-  replacing an array attribute: the packed struct holds device addresses.
+  field without an attribute raises `AttributeError`.
+* The packed struct always matches the current attributes: at every use
+  (`packed`, `__cuda_args__()`, so at every launch) the device address, shape
+  and strides of each array field and the value of each scalar field are
+  compared with what was packed, and the struct is packed again if anything
+  changed. Fields may be properties that read an owner's current arrays, so a
+  resized array is picked up at the next launch. Calling `pack()` again is
+  never needed.
 * `packed` is the packed struct (`numpy.void`); `__cuda_args__()` returns
   `(packed,)`, so a `CudaKernel` receives the struct.
 * Copies (`copy.copy`, `copy.deepcopy`) and unpickled objects are packed again
@@ -1070,6 +1187,25 @@ built once per subclass when the class is defined and is the class attribute
 * A subclass that sets neither `struct_name` nor `fields` is an intermediate
   base class (its instances cannot be packed); setting only one raises
   `TypeError`. Subclasses of a complete class inherit its struct.
+
+## `PyccelStructArguments`
+
+`CudaStructArguments` with a host form (the `KernelArguments` protocol). Class
+attributes, besides `struct_name` and `fields`:
+
+* `host_class`: the class of the host argument object, e.g. the
+  pyccel-compiled class (which cannot inherit from anything).
+* `host_fields`: the attributes passed to `host_class(...)`, positionally and
+  in this order; by default the struct fields.
+* `host_copies`: whether `__host_args__()` may build the host object from host
+  copies of device arrays (default `False`: it raises on the CuPy backend).
+  Copies are counted by `count_transfers()`; results are not copied back.
+
+`__host_args__()` builds `host_class(*host_fields)` once, and again when one of
+the attributes was replaced (array identity or address, scalar value).
+`__cuda_args__()` is the packed struct. `has_device_arrays()` tells whether the
+array fields are device arrays; objects holding host arrays are copied and
+pickled without packing, and the host object is never pickled.
 
 ## `CudaArguments`
 
@@ -1174,6 +1310,7 @@ xp.Kernel(
     missing_cuda="raise",
     cuda_path=None,
     host_options=None,
+    dispatch="backend",
 )
 ```
 
@@ -1206,8 +1343,38 @@ arrays inside application objects, and `outputs` limits the copies back to the
 device. Passing `host_options` together with a `PyccelKernel` raises
 `ValueError`; configure that `PyccelKernel` directly.
 
+`dispatch` decides which kernel a call runs. `"backend"` (default): the CUDA
+kernel on the CuPy backend, the host kernel on the NumPy backend.
+`"arrays"`: the CUDA kernel if any top-level argument lives on the GPU (a CuPy
+array, or a device-only argument object: one with `__cuda_args__()` but no
+`__host_args__()`, such as a `CudaArguments` or a struct value), else the host
+kernel, whatever the backend. Use `"arrays"` in codes that hand host arrays to
+kernels while CuPy is active (diagnostics, MPI staging, CPU fallbacks): those
+calls then run the host kernel instead of failing in the CUDA argument checks.
+`missing_cuda` applies to device arguments without a CUDA kernel.
+
+`kernel.check_signature()` checks that the host and CUDA kernels take the same
+parameters in the same order (the names of the Python host function, or of the
+uncompiled Python version of a `CompiledHostKernel`, against the parsed
+`__global__` signature) and raises `ValueError` showing both lists otherwise.
+It does nothing without a CUDA kernel, with `check_signature=False`, or when
+the host kernel has no Python signature (a compiled function).
+`kernel.host_parameters()` returns the host names, or None.
+
 Properties: `name`, `host_kernel`, `cuda_kernel`, `has_cuda`, `missing_cuda`,
-`cuda_path`.
+`cuda_path`, `dispatch`.
+
+### Test arguments and compiled host kernels
+
+* `Kernel(..., test_args="pkg.push.push_test_args")`,
+  `Kernel.test_args_module` and `Kernel.test_args` (the module, imported on
+  first access): the test-arguments module of the kernel, set by
+  `KernelCatalog.from_package()`; see `check_parity` below.
+* `Kernel.host_parameters()` falls back to the `__pyccel__/<module>.pyi` stub
+  for a pyccel-compiled host function, so `check_signature()` works for
+  compiled kernels.
+* `Kernel.__call__` needs no `n_threads` when the CUDA kernel has
+  `n_threads_from`.
 
 ## `KernelCatalog`
 
@@ -1220,6 +1387,9 @@ catalog = xp.KernelCatalog.from_package(
     missing_cuda="raise",
     host_options=None,
     include_dirs=None,
+    dispatch="backend",
+    compile_host=None,
+    host_fallback=None,
     **cuda_options,
 )
 kernel = catalog["push"]
@@ -1252,8 +1422,35 @@ my_kernels/
   `my_pkg.kernels` can `#include "my_pkg/common.cuh"`. Headers found this
   way take part in the compile cache key, see "Included headers and the
   compile cache" under `CudaKernel`.
+* `dispatch`: passed on to every `Kernel` (`"backend"` or `"arrays"`).
+* `compile_host`: your function that compiles a host kernel module (cunumpy
+  does not compile anything itself), e.g. a wrapper around `pyccel.epyccel`
+  with a cache. Each host kernel is then a `CompiledHostKernel` (below),
+  compiled on its first call. Without it, the plain Python functions are
+  called.
+* `host_fallback`: for kernels whose compilation fails, a callable with the
+  same arguments (e.g. a vectorized NumPy version), given as a mapping from
+  names or a function of the name. Without one, a failed compilation runs the
+  uncompiled Python function, with a warning.
 * `cuda_options`: passed on to `CudaKernel.from_file`, e.g. `block_size` or
   `structs`.
+
+A Pyccel package with the layout `<name>/<name>_pyccel.py` and
+`<name>/<name>_cuda.cu`, compiled host kernels and dispatch by argument:
+
+```python
+catalog = xp.KernelCatalog.from_package(
+    __name__,
+    host_suffix="_pyccel",
+    dispatch="arrays",
+    compile_host=my_pkg.compile_kernels,  # e.g. pyccel.epyccel with a cache
+    host_fallback=NUMPY_VERSIONS,  # {"gather": gather_numpy, ...}
+)
+```
+
+`catalog.check_signatures()` runs `check_signature()` on every kernel and
+raises one `ValueError` listing every kernel whose host and CUDA parameters
+differ; call it in a unit test of a ported package.
 
 `catalog.without_cuda` lists the kernels still to port, `catalog.with_cuda`
 the ported ones. `catalog.summary()` (also `str(catalog)`) is one line on the
@@ -1274,6 +1471,24 @@ that have a CUDA kernel, for a parametrised parity test (see "Testing
 utilities"). `KernelCatalog(kernels)` and `catalog.register(kernel, name=None)`
 build a catalog by hand.
 
+## `CompiledHostKernel`
+
+```python
+kernel = xp.CompiledHostKernel(my_kernels_module, "push", compiler, fallback=push_numpy)
+kernel(*args)
+```
+
+A host kernel compiled on its first call, for `KernelCatalog.from_package(...,
+compile_host=...)` or by hand. cunumpy does not compile anything itself:
+`compiler(module)` is your function returning the compiled form of the module
+(with the same function names), e.g. a wrapper around `pyccel.epyccel` with an
+on-disk cache, or one that imports modules compiled ahead of time with the
+`pyccel` command. If compilation fails, the kernel calls `fallback`, or else
+the uncompiled Python function with a `RuntimeWarning`. `kernel.compiled`
+builds and reports whether that worked (so that callers can choose another
+path), `kernel.error` is the exception of a failed build, `kernel.python` the
+uncompiled function and `kernel.build()` compiles now.
+
 ## Testing utilities
 
 ```python
@@ -1281,6 +1496,7 @@ from cunumpy.testing import (
     BACKENDS,
     assert_kernels_agree,
     device_function_kernel,
+    emulate_cuda_kernel,
     requires_cupy,
 )
 ```
@@ -1431,6 +1647,88 @@ pointer return type, an unsupported parameter type, or a parameter named like
 `out_param` or `n_threads_param` raises `ValueError` (rename the generated
 parameter in that case).
 
+### `parity_cases(catalog)`, `check_parity(kernel, **overrides)`
+
+`parity_cases(catalog)` returns one `pytest.param(kernel, id=name)` per kernel
+of `catalog.parity_cases()`; a kernel without a test-arguments module is
+marked `skip` with a reason naming the missing `<name>_test_args.py`.
+`check_parity(kernel)` runs `assert_kernels_agree` with the module's
+`make_args` and the settings of `TEST_ARGS_SETTINGS` (`N_THREADS`, `GRID`,
+`BLOCK`, `RTOL`, `ATOL`, `N_CALLS`, `OUTPUTS`, `SEED`), overridden by keyword
+arguments. Raises `ValueError` without a module and `TypeError` without a
+callable `make_args`.
+
+### `install_fake_cupy()`, `fake_cupy_active()`
+
+Install the fake CuPy of `cunumpy._fake_cupy` (a strict host stand-in for CuPy
+for machines without a GPU; also installed by `CUNUMPY_FAKE_CUPY=1` when
+cunumpy is imported), and tell whether it is active. `requires_cupy` and
+`assert_kernels_agree` skip while it is. `install_fake_cupy()` raises if the
+real CuPy was imported already or cunumpy already checked for CuPy.
+
+### `emulate_cuda_kernel(kernel, *args, n_threads=None, grid=None, block=None, compiler=None, options=(), shared_mem=0)`
+
+```python
+x, y = rng.random(1000), np.zeros(1000)
+emulate_cuda_kernel(axpy, 2.0, x, y, 1000, n_threads=1000)
+np.testing.assert_allclose(y, 2.0 * x, rtol=1e-15)
+```
+
+Runs a `CudaKernel` on the CPU, serially, as if it were launched with `args`,
+so that CI without a GPU can compare a kernel with its host version. The
+kernel source is compiled as C++ (C++17, `CXX` or `c++`; see
+`emulation_compiler()`) with the CUDA built-ins replaced: `threadIdx`,
+`blockIdx`, `blockDim`, `gridDim`, atomics (`atomicAdd`, `atomicMin`, ...,
+plain operations), `__ldg`, `rsqrt`, `__trap` (aborts). The shipped headers
+and the kernel's include directories and `-D` options apply. Then the kernel is
+called once per thread, for every block and thread index of the launch shape.
+
+Arguments follow the signature, with NumPy arrays in place of CuPy arrays:
+pointer and view parameters (`Array1D<T>` to `Array4D<T>`) take arrays of the
+declared dtype (and ndim), passed as contiguous copies, so any strides work,
+and written back into the given arrays; scalars are checked and cast like in a
+launch. Like NVRTC by default, the compiler may fuse `a * b + c` into an FMA,
+so compare with NumPy using a tolerance of a few ulp, or pass
+`options=("-ffp-contract=off",)` for NumPy's rounding.
+
+Block shared memory and `__syncthreads` are emulated: `__shared__` variables
+are one copy per block (blocks run one after another), `extern __shared__`
+arrays point into a buffer of `shared_mem` bytes, and in a kernel that calls
+`__syncthreads` the threads of a block run as coroutines (POSIX `ucontext`,
+each with its own stack), so that every thread reaches a barrier before any
+thread continues past it. Per-block deposits, shared-memory reductions and
+tiled kernels work.
+
+Not emulated: concurrency between barriers (races and atomic ordering never
+show), warp intrinsics, struct parameters and complex scalars. A kernel, or a
+header it includes, using `__syncwarp`, warp shuffles or votes raises
+`NotImplementedError` (serial threads would give wrong results); a kernel that
+does not compile, or crashes (an out-of-bounds
+index with `-DCUNUMPY_BOUNDS_CHECK`, `__trap()`), raises `RuntimeError` with
+the compiler or program output.
+
+## `HostStaging`
+
+```python
+staging = xp.HostStaging(rho.shape, rho.dtype, buffers=2)
+copy = staging.copy(rho)  # returns at once; rho may be overwritten
+...
+if copy.ready():
+    h5file["rho"] = copy.result()  # a NumPy array
+```
+
+Copies device arrays to page-locked host buffers in the background, so output
+overlaps the next time steps. `copy(array)` snapshots the array on the device
+(on the current stream, after the kernels that wrote it) and copies the
+snapshot to the next of `buffers` pinned host buffers on its own stream. It
+waits only if that buffer's previous copy has not finished, so the program
+runs at most `buffers` copies ahead. The returned `StagedCopy` has `ready()`
+(never waits) and `result()` (waits, returns the host buffer, valid until the
+buffer is reused `buffers` copies later; a stale result raises
+`RuntimeError`). `staging.synchronize()` waits for all copies. Host arrays and
+the NumPy backend copy at once. Device copies are counted by
+`count_transfers()`. The arrays must have the staging shape and dtype.
+
 ## `DeviceMirror`
 
 ```python
@@ -1491,6 +1789,143 @@ The indexed helpers (also for `float`) address C-contiguous arrays of shape
 `(n0, n1)` and `(n0, n1, n2)`. They wrap `atomicAdd`, a hardware instruction
 for `double` from compute capability 6.0 (sm_60) on; older devices use a
 compare-and-swap loop.
+
+### `cunumpy/random.cuh` and `philox_uniform`
+
+Counter-based random numbers (Philox4x32-10, as in Random123 and cuRAND): a
+pure function of a key and a counter, with no generator state, so each thread
+draws from `(seed, stream, counter)`, e.g. `(seed, particle id, step)`, and
+the host computes the same numbers:
+
+```c
+#include <cunumpy/random.cuh>
+
+cunumpy_u32x4 cunumpy_philox4x32_10(cunumpy_u32x4 ctr, unsigned int key0, unsigned int key1);
+double cunumpy_uniform(seed, stream, counter);              // [0, 1), 53 bits
+void   cunumpy_uniform2(seed, stream, counter, &u0, &u1);  // two from one call
+double cunumpy_normal(seed, stream, counter);               // Box-Muller
+void   cunumpy_normal2(seed, stream, counter, &z0, &z1);
+```
+
+(`seed`, `stream` and `counter` are `unsigned long long`.)
+
+```python
+ids = xp.arange(n, dtype=xp.uint64)
+u0, u1 = xp.philox_uniform2(seed, ids, step)  # == cunumpy_uniform2 in thread i
+z0, z1 = xp.philox_normal2(seed, ids, step)
+words = xp.philox4x32_10(counter_words, key0, key1)  # the raw generator
+```
+
+`xp.philox_uniform`, `philox_uniform2`, `philox_normal`, `philox_normal2` and
+`philox4x32_10` broadcast their arguments and return NumPy or CuPy arrays,
+matching the inputs. The uniform numbers equal the kernel's bit for bit; the
+normal numbers can differ in the last bits (`log`, `sqrt`, `sin`, `cos` on the
+GPU are not the host's). The generator passes the Random123 known-answer
+tests. Use a different `counter` for every random decision of a step.
+
+### `cunumpy/reduce.cuh`
+
+Warp- and block-level reductions for hand-written kernels: in-kernel
+diagnostics (energy, momentum, total charge, the maximum velocity for a CFL
+check) and combining values in a block before one atomic write.
+
+```c
+#include <cunumpy/reduce.cuh>
+
+T cunumpy_warp_sum(T v);   T cunumpy_warp_min(T v);   T cunumpy_warp_max(T v);
+T cunumpy_block_sum(T v);  T cunumpy_block_min(T v);  T cunumpy_block_max(T v);
+void cunumpy_block_sum_to(T* out, T v);  // *out += block sum, one atomic per block
+int cunumpy_block_thread();   // linear thread index in a 1D-3D block
+int cunumpy_block_threads();  // threads per block
+```
+
+`T` is `int`, `unsigned`, `long long`, `unsigned long long`, `float` or
+`double` (`block_sum_to`: `double`, `float`, `int`, `unsigned long long`). Every
+thread gets the result. Rules: every thread of the block calls block
+functions and all 32 lanes call warp functions (no early `return`; threads
+without a value pass the identity, e.g. `0.0` for a sum); the block size is a
+multiple of 32. The block functions use 32 values of static shared memory per
+type and may be called several times in a kernel.
+
+```c
+extern "C" __global__ void kinetic_energy(const double* v, long long n,
+                                          double mass, double* energy) {
+    long long i = blockIdx.x * (long long)blockDim.x + threadIdx.x;
+    double e = i < n ? 0.5 * mass * v[i] * v[i] : 0.0;
+    cunumpy_block_sum_to(energy, e);  // zero *energy before the launch
+}
+```
+
+## `scipy`
+
+```python
+A = xp.scipy.sparse.csr_matrix((data, (rows, cols)), shape=(n, n))
+x, info = xp.scipy.sparse.linalg.cg(A, b)
+rho_k = xp.scipy.fft.rfftn(rho)
+```
+
+SciPy for the active backend: `scipy` on NumPy, `cupyx.scipy` on CuPy. The
+forwarded subpackages are those `cupyx.scipy` has (`SUBMODULES`): `fft`,
+`fftpack`, `interpolate`, `linalg`, `ndimage`, `signal`, `sparse`,
+`sparse.csgraph`, `sparse.linalg`, `spatial`, `special`, `stats`. Names are
+looked up at every access, so a backend switch takes effect immediately
+(Python caches the imports). Nothing is imported until a name is used; SciPy
+is not a dependency of cunumpy.
+
+* A name missing on the active backend (`cupyx.scipy` covers part of SciPy)
+  raises `AttributeError` naming the backend. Keyword arguments can differ
+  too (SciPy's `cg(..., rtol=)` is `tol=` in CuPy).
+* `xp.scipy.special.available("erfcx")` checks a name without raising.
+* `xp.scipy.sparse.linalg.resolve()` returns the module itself.
+* A missing SciPy (NumPy backend) or CuPy raises `ImportError` with the module
+  it needs.
+
+Sparse matrices assembled on the host move to the device once, with the
+constructor of the device type: `xp.scipy.sparse.csr_matrix(host_matrix)` on
+the CuPy backend copies a SciPy matrix; `matrix.get()` copies back.
+
+## `fuse(function=None, *, kernel_name=None)`
+
+```python
+@xp.fuse
+def pressure(rho, T, gamma):
+    return (gamma - 1.0) * rho * T
+```
+
+Compiles an elementwise function into one kernel with `cupy.fuse` when it is
+called with a CuPy array (positional or keyword), with the CuPy backend active
+while it is traced, so `xp.exp` etc. resolve to CuPy ufuncs; other calls run
+the function as it is. The fused kernel is created on first use and reused.
+`kernel_name` names it in profilers (default: the function name). The function
+must be elementwise in the sense of `cupy.fuse`: arithmetic, comparisons,
+ufuncs, `xp.where`, and supported reductions as the last operation; no Python
+control flow on array values or indexing. Test the CuPy path: a function
+`cupy.fuse` cannot trace raises at its first call with CuPy arrays.
+
+## `petsc_vec(array, comm=None)`
+
+```python
+b_vec = xp.petsc_vec(b)        # b: NumPy or CuPy array, shared, never copied
+x_vec = xp.petsc_vec(x)
+xp.synchronize()
+ksp.solve(b_vec, x_vec)        # PETSc writes into x
+xp.synchronize()
+```
+
+A `petsc4py.PETSc.Vec` that shares the memory of a C-contiguous array of
+`PETSc.ScalarType`, through DLPack: a `seq`/`mpi` vector for a NumPy array, a
+`seqcuda`/`mpicuda` (or HIP) vector for a CuPy array. The vector keeps a
+reference to the array. With several processes, `array` is this process's
+part of the vector (`comm`, default `COMM_WORLD`).
+
+* Another dtype raises `TypeError` and a non-contiguous array `ValueError`
+  (both would need a copy).
+* A CuPy array with a petsc4py built without CUDA/HIP raises `RuntimeError`
+  instead of PETSc working on a host copy.
+* Synchronize between CuPy and PETSc work on the same memory (they may use
+  different streams).
+* For the solve to stay on the GPU, the matrix must be a GPU type too
+  (`aijcusparse`, or `-mat_type aijcusparse -vec_type cuda`).
 
 ## Version
 

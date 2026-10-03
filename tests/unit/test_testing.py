@@ -74,7 +74,7 @@ def test_backends_and_marker():
     assert requires_cupy.args == (not xp.cupy_available(),)
     assert requires_cupy.kwargs["reason"] == "CuPy/GPU not available"
     with pytest.raises(AttributeError):
-        cunumpy.testing.no_such_thing
+        _ = cunumpy.testing.no_such_thing
 
 
 @pytest.mark.parametrize("backend_name", BACKENDS)
@@ -304,3 +304,53 @@ def test_device_function_kernel_on_gpu():
     spans = cp.empty(3, dtype=cp.int32)
     find_span(t, p, eta, spans, 3, n_threads=3)
     assert spans.get().tolist() == [2, 3, 3]
+
+
+def test_struct_arguments_are_compared_by_field_name():
+    """A CudaStructArguments object (fields may be properties) gets the host names."""
+    from cunumpy.testing import _collect_arrays
+
+    class Owner:
+        def __init__(self):
+            self.markers = np.zeros((3, 4))
+            self.weights = np.ones(3)
+
+    class HostArguments:  # e.g. a Pyccel class
+        def __init__(self, owner):
+            self.markers = owner.markers
+            self.weights = owner.weights
+            self.n = 3
+
+    class DeviceArguments(xp.CudaStructArguments):
+        struct_name = "OwnerArgs"
+        fields = (("markers", "Array2D<double>"), ("weights", "double*"), ("n", "int"))
+
+        def __init__(self, owner):
+            self._owner = owner  # not packed: no device arrays in this test
+
+        @property
+        def markers(self):
+            return self._owner.markers
+
+        @property
+        def weights(self):
+            return self._owner.weights
+
+        n = 3
+
+    owner = Owner()
+    host = _collect_arrays((1.0, HostArguments(owner)))
+    device = _collect_arrays((1.0, DeviceArguments(owner)))
+    assert (
+        sorted(host) == sorted(device) == ["argument 1.markers", "argument 1.weights"]
+    )
+    assert device["argument 1.markers"] is owner.markers
+
+    struct = DeviceArguments.struct
+    value = xp.CudaStructValue(
+        struct, np.zeros((), struct.dtype)[()], vars(owner) | {"n": 3}
+    )
+    assert sorted(_collect_arrays((value,))) == [
+        "argument 0.markers",
+        "argument 0.weights",
+    ]

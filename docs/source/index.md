@@ -49,6 +49,8 @@ guides/portable-code
 guides/data-movement
 guides/gpu-devices
 guides/mpi
+guides/particle-codes
+guides/solvers
 guides/profiling
 array-api-compat
 ```

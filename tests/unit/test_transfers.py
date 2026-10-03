@@ -135,10 +135,9 @@ def test_to_cupy_of_device_array_is_not_counted(fake_device):
 
 def test_to_cunumpy_counts_the_direction_it_delegates_to(fake_device, monkeypatch):
     device = fake_device(np.zeros(2))
-    with xp.count_transfers() as counter:
-        with xp.use_backend("numpy"):
-            xp.to_cunumpy(device)  # device -> host
-            xp.to_cunumpy(np.zeros(2))  # already on the host
+    with xp.count_transfers() as counter, xp.use_backend("numpy"):
+        xp.to_cunumpy(device)  # device -> host
+        xp.to_cunumpy(np.zeros(2))  # already on the host
 
     assert counter.to_host == 1 and counter.to_device == 0
 
@@ -168,9 +167,8 @@ def test_where_points_at_the_caller_outside_cunumpy(fake_device):
 
 def test_where_skips_frames_inside_cunumpy(fake_device):
     """`to_cunumpy` calls `to_numpy`; the call site is still the test."""
-    with xp.count_transfers() as counter:
-        with xp.use_backend("numpy"):
-            xp.to_cunumpy(fake_device(np.zeros(1)))
+    with xp.count_transfers() as counter, xp.use_backend("numpy"):
+        xp.to_cunumpy(fake_device(np.zeros(1)))
 
     (event,) = counter.events
     assert event.where.startswith(THIS_FILE + ":")
@@ -224,9 +222,8 @@ def test_nested_counters_each_see_their_own_block(fake_device):
 
 
 def test_counter_is_removed_when_the_block_raises(fake_device):
-    with pytest.raises(RuntimeError):
-        with xp.count_transfers():
-            raise RuntimeError
+    with pytest.raises(RuntimeError), xp.count_transfers():
+        raise RuntimeError
 
     assert transfers_module._ACTIVE == []
 
@@ -239,9 +236,8 @@ def test_assert_no_transfers_passes_without_transfers():
 
 
 def test_assert_no_transfers_raises_with_report(fake_device):
-    with pytest.raises(AssertionError) as info:
-        with xp.assert_no_transfers():
-            xp.to_numpy(fake_device(np.zeros(3)))
+    with pytest.raises(AssertionError) as info, xp.assert_no_transfers():
+        xp.to_numpy(fake_device(np.zeros(3)))
 
     message = str(info.value)
     assert "1 transfer(s) through cunumpy" in message
@@ -251,10 +247,9 @@ def test_assert_no_transfers_raises_with_report(fake_device):
 
 
 def test_assert_no_transfers_lets_exceptions_through(fake_device):
-    with pytest.raises(ValueError, match="inside"):
-        with xp.assert_no_transfers():
-            xp.to_numpy(fake_device(np.zeros(3)))
-            raise ValueError("inside")
+    with pytest.raises(ValueError, match="inside"), xp.assert_no_transfers():
+        xp.to_numpy(fake_device(np.zeros(3)))
+        raise ValueError("inside")
 
 
 # ---------------------------------------------------------------------------
@@ -315,9 +310,9 @@ def test_kernel_fallback_is_counted(monkeypatch):
     x = np.zeros(2)
 
     with xp.count_transfers() as counter:
+        line = _current_line() + 2
         with pytest.warns(RuntimeWarning, match="copies its arrays"):
             kernel(x, 2)
-            line = _current_line() - 1
         kernel(x, 2)
 
     assert np.all(x == 2.0)
@@ -394,9 +389,12 @@ def test_real_kernel_fallback_is_counted():
 
     kernel = Kernel(scale, missing_cuda="fallback")
     x = cp.ones(3)
-    with xp.count_transfers() as counter, xp.use_backend("cupy"):
-        with pytest.warns(RuntimeWarning):
-            kernel(x, 2.0, 3)
+    with (
+        xp.count_transfers() as counter,
+        xp.use_backend("cupy"),
+        pytest.warns(RuntimeWarning),
+    ):
+        kernel(x, 2.0, 3)
 
     assert cp.all(x == 2.0)
     assert counter.fallbacks == 1

@@ -26,11 +26,14 @@ In debug mode a `CudaKernel`:
 
 * is compiled with `-lineinfo` (source lines for `compute-sanitizer` and
   profilers) and `-DCUNUMPY_BOUNDS_CHECK`, which turns on bounds checks in
-  `Array1D`/`Array2D`/`Array3D` views (an out-of-bounds index prints the index
+  `Array1D` to `Array4D` views (an out-of-bounds index prints the index
   and shape, then traps);
 * synchronizes after every launch, so a failure raises at the launch that
   caused it, as a `RuntimeError` naming the kernel and its grid and block, with
-  the CUDA error chained.
+  the CUDA error chained. While the stream is being captured into a CUDA graph
+  (`stream.begin_capture()`), the synchronization is skipped, since it would
+  invalidate the capture; errors of captured kernels surface when the graph is
+  launched, so synchronize after `graph.launch()` to see them.
 
 ```python
 with xp.cuda_debug():
@@ -78,6 +81,21 @@ wrong stride, a missing `if`. The host kernel is the reference.
 that differs (see [Testing kernels](testing.md)). For `__device__` helpers,
 `device_function_kernel()` exposes a single function to Python so it can be
 compared value by value with its host version.
+
+## NaN hunting: `check_finite`
+
+A kernel that reads a wrong index usually produces a NaN or inf that surfaces
+many steps later. With `check_finite`, every launch is synchronized and the
+floating-point arrays among its arguments (including the array fields of
+struct argument objects) are scanned afterwards:
+
+```python
+catalog["push"].cuda_kernel.check_finite = True
+# RuntimeError: kernel 'push' left a NaN or inf in argument 0.markers (dtype float64, shape (1000, 8))
+```
+
+It costs a synchronization and a pass over the arrays per launch, so switch it
+on for the kernel under suspicion, not in production.
 
 ## Common causes
 

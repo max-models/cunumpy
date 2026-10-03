@@ -198,7 +198,7 @@ def test_wrong_scalars_raise():
     with pytest.raises(OverflowError, match="out of range"):
         kernel.prepare_args(1.0, x, y, 2**31)  # overflows int
     with pytest.raises(TypeError, match="losing information"):
-        kernel.prepare_args(1.0, x, y, np.int64(5))  # int64 into int
+        kernel.prepare_args(np.complex128(1.0), x, y, 5)  # complex into double
     with pytest.raises(TypeError):
         kernel.prepare_args("1.0", x, y, 5)
 
@@ -545,13 +545,13 @@ def test_struct_values():
 
 
 def test_struct_pointer_fields_must_be_contiguous():
-    values = dict(
-        n=3,
-        charge=2.0,
-        alive=FakeDeviceArray(np.bool_),
-        ids=FakeDeviceArray(np.int64),
-        weight=0.5,
-    )
+    values = {
+        "n": 3,
+        "charge": 2.0,
+        "alive": FakeDeviceArray(np.bool_),
+        "ids": FakeDeviceArray(np.int64),
+        "weight": 0.5,
+    }
     view = FakeDeviceArray(np.float64, flags=SimpleNamespace(c_contiguous=False))
     with pytest.raises(
         TypeError, match=r"argument 0 \(double\* x\) must be C-contiguous"
@@ -690,7 +690,7 @@ def test_parse_view_parameters():
     with pytest.raises(ValueError, match="array views"):
         parse_cuda_signature("__global__ void f(Array2D<Other> a) {}", "f")
     with pytest.raises(ValueError, match="unsupported type"):
-        parse_cuda_signature("__global__ void f(Array4D<double> a) {}", "f")
+        parse_cuda_signature("__global__ void f(Array5D<double> a) {}", "f")
 
 
 def test_view_parameters_pack_pointer_shape_and_strides():
@@ -945,10 +945,10 @@ def test_from_signature_errors():
     def unknown(x: "str[:]"):
         pass
 
-    def too_many(x: "float[:, :, :, :]"):
+    def too_many(x: "float[:, :, :, :, :]"):
         pass
 
-    def unparsable(x: "float[:](order=F)"):
+    def unparsable(x: "float[:](order=F)"):  # noqa: F821  (deliberately unparsable)
         pass
 
     with pytest.raises(
@@ -957,7 +957,7 @@ def test_from_signature_errors():
         CudaStruct.from_signature(missing, "A")
     with pytest.raises(ValueError, match="unsupported scalar type 'str'"):
         CudaStruct.from_signature(unknown, "A")
-    with pytest.raises(ValueError, match="at most 3 dimensions"):
+    with pytest.raises(ValueError, match="at most 4 dimensions"):
         CudaStruct.from_signature(too_many, "A")
     with pytest.raises(ValueError, match="cannot parse the annotation"):
         CudaStruct.from_signature(unparsable, "A")
@@ -1221,7 +1221,11 @@ def _run_python(code, env=None):
         [str(Path(xp.__file__).parents[1]), environment.get("PYTHONPATH", "")]
     )
     result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, env=environment
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=environment,
+        check=False,
     )
     return result.stdout, result.stderr
 
@@ -1289,9 +1293,8 @@ def test_cuda_debug_context_restores(debug_off):
         assert xp.get_cuda_debug() is True
     assert xp.get_cuda_debug() is False
 
-    with pytest.raises(ValueError):
-        with xp.cuda_debug():
-            raise ValueError
+    with pytest.raises(ValueError), xp.cuda_debug():
+        raise ValueError
     assert xp.get_cuda_debug() is False  # restored after an exception too
 
 
@@ -1517,6 +1520,59 @@ def test_compile_options_contain_the_header_hash(header_tree):
     assert _user_options(CudaKernel(INCLUDING_SOURCE, "double_it")) == ()
 
 
+def test_resolve_includes_angle_dirs(tmp_path):
+    shipped = tmp_path / "shipped"
+    (shipped / "lib").mkdir(parents=True)
+    (shipped / "lib" / "a.cuh").write_text('#include "lib/b.cuh"\n')
+    (shipped / "lib" / "b.cuh").write_text("")
+    source = "#include <lib/a.cuh>\n#include <cupy/complex.cuh>\n"
+    # angle brackets: system headers, not tracked by default
+    assert resolve_includes(source, [shipped]) == []
+    # in angle_dirs they are, and their quoted includes resolve there too
+    expected = [shipped / "lib" / "a.cuh", shipped / "lib" / "b.cuh"]
+    assert resolve_includes(source, angle_dirs=[shipped]) == expected
+    assert resolve_includes('#include "lib/a.cuh"\n', angle_dirs=[shipped]) == expected
+    # include_dirs come first for quoted includes
+    user = tmp_path / "user"
+    (user / "lib").mkdir(parents=True)
+    (user / "lib" / "a.cuh").write_text("")
+    assert resolve_includes('#include "lib/a.cuh"\n', [user], angle_dirs=[shipped]) == [
+        user / "lib" / "a.cuh"
+    ]
+
+
+def test_shipped_headers_are_part_of_the_hash():
+    include = Path(cuda_include_dir()) / "cunumpy"
+    for line in ("#include <cunumpy/reduce.cuh>", '#include "cunumpy/reduce.cuh"'):
+        kernel = CudaKernel(line + "\n" + AXPY, "axpy")
+        assert kernel.included_headers == (
+            include / "reduce.cuh",
+            include / "atomic.cuh",
+        )
+        digest = include_hash(kernel.included_headers)
+        assert _user_options(kernel) == (f"-DCUNUMPY_INCLUDE_HASH=0x{digest}",)
+    # a source without includes still gets no define
+    assert _user_options(CudaKernel(AXPY, "axpy")) == ()
+
+
+def test_changed_shipped_header_changes_the_hash(tmp_path, monkeypatch):
+    # a copy of the shipped headers stands for the installed ones before and
+    # after an upgrade of cunumpy
+    import shutil
+
+    from cunumpy import cuda_kernel
+
+    installed = tmp_path / "include"
+    shutil.copytree(cuda_include_dir(), installed)
+    monkeypatch.setattr(cuda_kernel, "_CUDA_INCLUDE_DIR", installed)
+    kernel = CudaKernel("#include <cunumpy/atomic.cuh>\n" + AXPY, "axpy")
+    before = kernel.compile_options()[-1]
+    assert before.startswith("-DCUNUMPY_INCLUDE_HASH=0x")
+    header = installed / "cunumpy" / "atomic.cuh"
+    header.write_text(header.read_text() + "\n// changed in an upgrade\n")
+    assert kernel.compile_options()[-1] != before
+
+
 def test_editing_a_header_recompiles_on_gpu(header_tree):
     _skip_without_cupy()
     import cupy as cp
@@ -1710,12 +1766,71 @@ def test_struct_arguments_class_definition():
     assert Derived.struct is ParticleArguments.struct
 
 
-def test_struct_arguments_repack_after_replacing_an_array():
+def test_struct_arguments_repack_when_a_field_changes():
     args = _particle_arguments(ptr=0x100)
+    packed = args.packed
+    assert args.packed is packed  # nothing changed: no repacking
+
     args.x = FakeDeviceArray(np.float64, ptr=0x200, shape=(3,))
-    assert args.packed["x"] == 0x100  # still the old address
-    args.pack()
-    assert args.packed["x"] == 0x200
+    assert args.packed["x"] == 0x200  # a new array: repacked at the next use
+    assert args.__cuda_args__() == (args.packed,)
+
+    args.charge = 5.0
+    assert args.packed["charge"] == 5.0  # a scalar changed: repacked too
+    args.charge = 5  # equal value of another type: repacked, same result
+    assert args.packed["charge"] == 5.0
+
+    args.x = np.zeros(3)  # an invalid value raises at the next use
+    with pytest.raises(TypeError, match="must be a CuPy array"):
+        args.packed  # noqa: B018
+
+
+class Owner:
+    """An object owning a marker array that it replaces when it grows."""
+
+    def __init__(self, n, ptr=0x100):
+        self.markers = FakeDeviceArray(np.float64, ptr=ptr, shape=(n, 4))
+
+    def grow(self, n, ptr):
+        self.markers = FakeDeviceArray(np.float64, ptr=ptr, shape=(n, 4))
+
+
+class OwnerArguments(xp.CudaStructArguments):
+    struct_name = "OwnerArgs"
+    fields = (("markers", "Array2D<double>"), ("n_markers", "int"))
+
+    def __init__(self, owner):
+        self._owner = owner
+        self.pack()
+
+    @property
+    def markers(self):
+        return self._owner.markers
+
+    @property
+    def n_markers(self):
+        return self._owner.markers.shape[0]
+
+
+def test_struct_arguments_follow_the_arrays_of_an_owner():
+    owner = Owner(3)
+    args = OwnerArguments(owner)
+    assert args.packed["markers"]["data"] == 0x100
+    assert args.packed["n_markers"] == 3
+
+    owner.grow(8, ptr=0x900)
+    assert args.packed["markers"]["data"] == 0x900
+    assert args.packed["markers"]["shape"].tolist() == [8, 4]
+    assert args.packed["n_markers"] == 8
+
+
+def test_struct_arguments_repack_when_a_view_changes_shape():
+    # a view of the same allocation with fewer rows: same address, new shape
+    owner = Owner(8, ptr=0x100)
+    args = OwnerArguments(owner)
+    owner.markers = FakeDeviceArray(np.float64, ptr=0x100, shape=(5, 4))
+    assert args.packed["markers"]["shape"].tolist() == [5, 4]
+    assert args.packed["n_markers"] == 5
 
 
 def test_struct_arguments_are_packed_again_when_copied():
@@ -1772,3 +1887,295 @@ def test_struct_arguments_on_gpu():
     assert int(size.get()[0]) == ParticleArguments.struct.dtype.itemsize
     assert out.get().tolist() == [n, 2.0, 42.0, 1.5]
     assert cp.all(args.x[1::2] == 1.0) and cp.all(args.x[::2] == 0.0)
+
+
+def test_debug_synchronization_is_skipped_while_capturing():
+    kernel = CudaKernel(AXPY, "axpy")
+    calls = []
+
+    class Stream:
+        def __init__(self, capturing):
+            self.capturing = capturing
+
+        def is_capturing(self):
+            return self.capturing
+
+        def synchronize(self):
+            calls.append(self.capturing)
+
+    class LegacyStream(Stream):
+        def is_capturing(self):
+            raise RuntimeError("not supported on the legacy stream")
+
+    kernel._synchronize_after_launch(Stream(True), (1,), (128,))
+    assert calls == []
+    kernel._synchronize_after_launch(Stream(False), (1,), (128,))
+    kernel._synchronize_after_launch(LegacyStream(False), (1,), (128,))
+    assert calls == [False, False]
+
+
+def test_debug_kernel_in_a_cuda_graph():
+    _skip_without_cupy()
+    import cupy as cp
+
+    n = 1000
+    x, y = cp.ones(n), cp.zeros(n)
+    kernel = CudaKernel(AXPY, "axpy", debug=True)
+    kernel(2.0, x, y, n, n_threads=n)  # compile outside the capture
+    stream = cp.cuda.Stream(non_blocking=True)
+    with stream:
+        stream.begin_capture()
+        kernel(2.0, x, y, n, n_threads=n, stream=stream)
+        graph = stream.end_capture()
+    graph.launch(stream)
+    graph.launch(stream)
+    stream.synchronize()
+    assert cp.all(y == 6.0)
+
+
+# ---------------------------------------------------------------------------
+# struct layout checked against the compiler
+# ---------------------------------------------------------------------------
+
+
+def test_layout_source_reports_size_alignment_and_offsets():
+    struct = CudaStruct(
+        "LayoutArgs", [("markers", "Array2D<double>"), ("valid", "bool*"), ("n", "int")]
+    )
+    source = struct.layout_source()
+    assert source.startswith('#include "cunumpy/array_view.cuh"')
+    assert struct.declaration in source
+    (param,) = parse_cuda_signature(source, "cunumpy_layout_LayoutArgs")
+    assert param.pointer and param.dtype == np.dtype(np.uint64)
+    assert "out[0] = sizeof(LayoutArgs);" in source
+    assert "out[1] = alignof(LayoutArgs);" in source
+    for i, name in enumerate(["markers", "valid", "n"]):
+        assert f"out[{i + 2}] = (unsigned long long)((const char*)&s.{name}" in source
+
+    # a header instead of the declaration: the struct is not defined in the source
+    from_header = struct.layout_source("pkg/layout_args.cuh")
+    assert from_header.startswith('#include "pkg/layout_args.cuh"')
+    assert "struct LayoutArgs {" not in from_header
+    assert struct.layout_source("#include <pkg/a.cuh>").startswith(
+        "#include <pkg/a.cuh>"
+    )
+    # no views: no array_view include
+    assert "array_view" not in PARTICLES.layout_source()
+
+
+def test_verify_layout_needs_cupy(monkeypatch):
+    monkeypatch.setattr(xp.xp, "cupy_available", lambda: False)
+    with pytest.raises(RuntimeError, match="needs CuPy"):
+        PARTICLES.verify_layout()
+
+
+def test_verify_layout_on_gpu(tmp_path):
+    _skip_without_cupy()
+    layout = PARTICLES.verify_layout()
+    assert layout["sizeof"] == PARTICLES.dtype.itemsize
+    assert layout["charge"] == PARTICLES.dtype.fields["charge"][1]
+
+    views = CudaStruct("Views", [("n", "int"), ("a", "Array2D<double>"), ("b", "bool")])
+    views.verify_layout()
+
+    # a header that drifted from the Python definition
+    header = tmp_path / "drifted.cuh"
+    header.write_text(
+        '#include "cunumpy/array_view.cuh"\n'
+        "struct Views { int n; bool b; Array2D<double> a; };\n"  # b moved before a
+    )
+    with pytest.raises(ValueError, match="differs from its CudaStruct dtype"):
+        views.verify_layout("drifted.cuh", include_dirs=[tmp_path])
+
+
+# ---------------------------------------------------------------------------
+# cunumpy/reduce.cuh
+# ---------------------------------------------------------------------------
+
+REDUCE_SOURCE = r"""
+#include "cunumpy/reduce.cuh"
+extern "C" __global__
+void reductions(const double* x, long long n, double* sum, unsigned long long* count,
+                double* block_min, double* block_max, double* warp_sum) {
+    long long i = blockIdx.x * (long long)blockDim.x + threadIdx.x;
+    double v = i < n ? x[i] : 0.0;  // no early return: every thread takes part
+    cunumpy_block_sum_to(sum, v);
+    cunumpy_block_sum_to(count, i < n ? 1ull : 0ull);
+    double lo = cunumpy_block_min(i < n ? v : 1e300);
+    double hi = cunumpy_block_max(i < n ? v : -1e300);
+    if (threadIdx.x == 0) { block_min[blockIdx.x] = lo; block_max[blockIdx.x] = hi; }
+    double w = cunumpy_warp_sum(v);
+    if (threadIdx.x % 32 == 0) warp_sum[i / 32] = w;
+}
+"""
+
+
+def test_reduce_header_is_shipped():
+    header = Path(cuda_include_dir()) / "cunumpy" / "reduce.cuh"
+    text = header.read_text()
+    assert "#ifndef CUNUMPY_REDUCE_CUH" in text and "#endif" in text
+    for name in (
+        "cunumpy_warp_sum",
+        "cunumpy_warp_min",
+        "cunumpy_warp_max",
+        "cunumpy_block_sum",
+        "cunumpy_block_min",
+        "cunumpy_block_max",
+        "cunumpy_block_sum_to",
+    ):
+        assert f"{name}(" in text, name
+    # the kernel's include resolves to the shipped header, which includes atomic.cuh
+    headers = resolve_includes(REDUCE_SOURCE, [cuda_include_dir()])
+    assert [p.name for p in headers] == ["reduce.cuh", "atomic.cuh"]
+    CudaKernel(REDUCE_SOURCE, "reductions")  # the signature parses
+
+
+@pytest.mark.parametrize("block_size", [32, 128, 1024])
+def test_reductions_on_gpu(block_size):
+    _skip_without_cupy()
+    import cupy as cp
+
+    n = 5000  # not a multiple of the block size: the last block is partial
+    x = cp.asarray(np.random.default_rng(1).normal(size=n))
+    n_blocks = -(-n // block_size)
+    total, count = cp.zeros(1), cp.zeros(1, dtype=cp.uint64)
+    lo, hi = cp.zeros(n_blocks), cp.zeros(n_blocks)
+    warp = cp.zeros(n_blocks * block_size // 32)
+    kernel = CudaKernel(REDUCE_SOURCE, "reductions", block_size=block_size)
+    kernel(x, n, total, count, lo, hi, warp, n_threads=n)
+
+    host = cp.asnumpy(x)
+    assert abs(float(total[0]) - host.sum()) < 1e-10 * n
+    assert int(count[0]) == n
+    padded = np.concatenate([host, np.full(n_blocks * block_size - n, np.nan)])
+    blocks = padded.reshape(n_blocks, block_size)
+    np.testing.assert_array_equal(cp.asnumpy(lo), np.nanmin(blocks, axis=1))
+    np.testing.assert_array_equal(cp.asnumpy(hi), np.nanmax(blocks, axis=1))
+    np.testing.assert_allclose(
+        cp.asnumpy(warp), np.nan_to_num(padded).reshape(-1, 32).sum(axis=1), rtol=1e-12
+    )
+
+
+# ---------------------------------------------------------------------------
+# 4D views and NumPy integer scalars
+# ---------------------------------------------------------------------------
+
+VIEW_4D = r"""
+#include "cunumpy/array_view.cuh"
+extern "C" __global__
+void scale_4d(Array4D<double> a, double factor, int n) {}
+"""
+
+
+def test_array4d_parameters_pack_pointer_shape_and_strides():
+    param, _, _ = parse_cuda_signature(VIEW_4D, "scale_4d")
+    assert param.view_ndim == 4 and param.ctype == "Array4D<double>"
+    kernel = CudaKernel(VIEW_4D, "scale_4d")
+    # every second component of a (2, 3, 4, 6) grid: a non-contiguous view
+    a = FakeDeviceArray(
+        np.float64, ptr=0x40, shape=(2, 3, 4, 3), strides=(576, 192, 48, 16)
+    )
+    packed, _, _ = kernel.prepare_args(a, 2.0, 5)
+    assert packed["data"] == 0x40
+    assert packed["shape"].tolist() == [2, 3, 4, 3]
+    assert packed["strides"].tolist() == [72, 24, 6, 2]
+    assert packed.dtype.itemsize == 72  # sizeof(Array4D<double>)
+    with pytest.raises(TypeError, match="must be a 4D array"):
+        kernel.prepare_args(FakeDeviceArray(np.float64, shape=(2, 3, 4)), 2.0, 5)
+
+
+def test_array4d_struct_fields_and_annotations():
+    struct = CudaStruct("Grid", [("e", "Array4D<double>"), ("n", "int")])
+    assert struct.dtype.fields["e"][0].itemsize == 72
+    assert "    Array4D<double> e;" in struct.declaration
+
+    def init(self, e: "float[:, :, :, :]", n: int): ...
+
+    from_annotations = CudaStruct.from_signature(init, "Grid")
+    assert from_annotations.fields[0].ctype == "Array4D<double>"
+
+    def too_many(self, e: "float[:, :, :, :, :]"): ...
+
+    with pytest.raises(ValueError, match="at most 4 dimensions"):
+        CudaStruct.from_signature(too_many, "Grid")
+
+
+def test_array4d_header_layout():
+    header = (Path(cuda_include_dir()) / "cunumpy" / "array_view.cuh").read_text()
+    assert "struct Array4D" in header
+    assert "sizeof(Array4D<double>) == 72" in header
+
+
+def test_numpy_integer_scalars_are_checked_by_value():
+    kernel = CudaKernel(AXPY, "axpy")  # (double a, double* x, double* y, int n)
+    x, y = FakeDeviceArray(np.float64), FakeDeviceArray(np.float64)
+    for n in (np.int64(5), np.int16(5), np.uint64(5), 5):
+        *_, packed_n = kernel.prepare_args(1.0, x, y, n)
+        assert type(packed_n) is np.int32 and packed_n == 5
+    with pytest.raises(OverflowError, match="out of range"):
+        kernel.prepare_args(1.0, x, y, np.int64(2**31))
+    with pytest.raises(TypeError):
+        kernel.prepare_args(1.0, x, y, np.float64(5.0))  # a float is not an int
+    # integers into a double parameter keep working
+    a, *_ = kernel.prepare_args(np.int64(3), x, y, 1)
+    assert type(a) is np.float64 and a == 3.0
+
+
+# ---------------------------------------------------------------------------
+# launch conveniences: n_threads_from="first_array", shared memory opt-in
+# ---------------------------------------------------------------------------
+
+
+class RecordingRawKernel:
+    """Stands for a compiled cupy.RawKernel: records launches and attributes."""
+
+    def __init__(self):
+        self.launches = []
+        self.max_dynamic_shared_size_bytes = 48 * 1024
+
+    def __call__(self, grid, block, args, shared_mem=0):
+        self.launches.append((grid, block, shared_mem))
+
+
+@pytest.fixture
+def recorded(monkeypatch):
+    """A CudaKernel whose launches are recorded instead of run."""
+    kernel = CudaKernel(AXPY, "axpy", block_size=128)
+    raw = RecordingRawKernel()
+    monkeypatch.setattr(kernel, "compile", lambda: raw)
+    monkeypatch.setattr(kernel, "debug_active", lambda: False)
+    return kernel, raw
+
+
+def test_n_threads_from_first_array(recorded):
+    kernel, raw = recorded
+    kernel.n_threads_from = "first_array"
+    x = FakeDeviceArray(np.float64, shape=(1000,))
+    y = FakeDeviceArray(np.float64, shape=(1000,))
+    kernel(2.0, x, y, 1000)  # the scalar first argument is skipped
+    assert raw.launches == [((8,), (128,), 0)]
+    kernel(2.0, x, y, 1000, n_threads=10)  # explicit sizes still win
+    assert raw.launches[-1] == ((1,), (128,), 0)
+    with pytest.raises(TypeError, match="n_threads_from must be"):
+        kernel.n_threads_from = "rows"
+    as_option = CudaKernel(AXPY, "axpy", n_threads_from="first_array")
+    assert as_option.n_threads_from((1.0, x)) == 1000
+    with pytest.raises(TypeError, match="needs an array argument"):
+        as_option.n_threads_from((1.0, 2))
+
+
+def test_shared_memory_above_the_default_is_opted_in(recorded, monkeypatch):
+    kernel, raw = recorded
+    monkeypatch.setattr(
+        xp.xp, "max_shared_memory_per_block", lambda opt_in=False: 100_000
+    )
+    x, y = FakeDeviceArray(np.float64), FakeDeviceArray(np.float64)
+    kernel(1.0, x, y, 1, n_threads=1, shared_mem=40_000)  # below 48 KiB: no setup
+    assert raw.max_dynamic_shared_size_bytes == 48 * 1024
+    kernel(1.0, x, y, 1, n_threads=1, shared_mem=80_000)
+    assert raw.max_dynamic_shared_size_bytes == 80_000
+    kernel(1.0, x, y, 1, n_threads=1, shared_mem=60_000)  # already allowed
+    assert raw.max_dynamic_shared_size_bytes == 80_000
+    with pytest.raises(ValueError, match="exceeds the 100000 bytes"):
+        kernel(1.0, x, y, 1, n_threads=1, shared_mem=100_001)
+    assert [s for *_, s in raw.launches] == [40_000, 80_000, 60_000]

@@ -394,3 +394,38 @@ def test_synchronize_warns_on_attribute_error(monkeypatch):
             xp.synchronize()
     finally:
         monkeypatch.setattr(cxp.array_backend, "_backend", "numpy")
+
+
+def test_max_shared_memory_per_block_without_a_gpu(monkeypatch):
+    monkeypatch.setattr(xp.xp, "cupy_available", lambda: False)
+    assert xp.max_shared_memory_per_block() == xp.DEFAULT_SHARED_MEMORY_PER_BLOCK
+    assert xp.max_shared_memory_per_block(opt_in=True) == 48 * 1024
+
+
+def test_max_shared_memory_per_block_reads_the_device(monkeypatch):
+    import sys
+    import types
+
+    class Device:
+        def __init__(self, device_id=0):
+            self.attributes = {
+                "MaxSharedMemoryPerBlock": 49152 + device_id,
+                "MaxSharedMemoryPerBlockOptin": 232448,
+            }
+
+    cupy = types.ModuleType("cupy")
+    cupy.cuda = types.SimpleNamespace(Device=Device)
+    monkeypatch.setitem(sys.modules, "cupy", cupy)
+    monkeypatch.setattr(xp.xp, "cupy_available", lambda: True)
+    assert xp.max_shared_memory_per_block() == 49152
+    assert xp.max_shared_memory_per_block(1) == 49153
+    assert xp.max_shared_memory_per_block(opt_in=True) == 232448
+
+
+def test_max_shared_memory_per_block_on_gpu():
+    if not xp.cupy_available():
+        pytest.skip("CuPy not installed or not functional")
+    assert xp.max_shared_memory_per_block() >= 48 * 1024
+    assert (
+        xp.max_shared_memory_per_block(opt_in=True) >= xp.max_shared_memory_per_block()
+    )

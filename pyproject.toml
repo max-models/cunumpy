@@ -43,7 +43,7 @@ optional-dependencies.docs = [
   "sphinx",
   "sphinx-book-theme",
 ]
-optional-dependencies.test = [ "coverage", "pytest" ]
+optional-dependencies.test = [ "coverage", "pytest", "scipy" ]
 optional-dependencies.test-compiled = [ "cunumpy[test]", "pyccel" ]
 urls."Source" = "https://github.com/max-models/cunumpy"
 
@@ -55,3 +55,7 @@ cunumpy = [ "py.typed", "*.pyi", "LLM_GUIDE.md", "cuda/include/cunumpy/*.cuh" ]
 
 [tool.isort]
 profile = "black"
+
+[tool.ruff]
+# agent worktrees and scratch scripts are local copies, not part of the project
+extend-exclude = [ ".claude" ]

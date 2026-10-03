@@ -130,7 +130,8 @@ def test_cuda_include_dir_contains_atomic_header():
     assert include_dir.endswith(os.path.join("cuda", "include"))
     header = os.path.join(include_dir, "cunumpy", "atomic.cuh")
     assert os.path.isfile(header)
-    source = open(header).read()
+    with open(header) as f:
+        source = f.read()
     assert "cunumpy_atomic_add(double* p, double v)" in source
     assert "cunumpy_atomic_add(float* p, float v)" in source
     assert "cunumpy_atomic_add_2d(" in source
@@ -147,7 +148,10 @@ def test_cuda_kernel_options_include_cunumpy_headers():
     assert kernel.compile_options().count(flag) == 1
     assert kernel.compile_options()[0] == "-I/some/dir"
     kernel = CudaKernel(BIN_ADD, "bin_add", options=["-std=c++17", flag])
-    assert kernel.compile_options() == ("-std=c++17", flag)
+    options = kernel.compile_options()
+    assert options[:2] == ("-std=c++17", flag)
+    # the shipped atomic.cuh is part of the header hash
+    assert len(options) == 3 and options[2].startswith("-DCUNUMPY_INCLUDE_HASH=0x")
 
 
 # --- CuPy backend ------------------------------------------------------------
