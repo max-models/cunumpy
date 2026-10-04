@@ -54,8 +54,7 @@ import os
 import re
 import sys
 import typing
-from collections.abc import (Callable, Hashable, Iterable, Iterator, Mapping,
-                             Sequence)
+from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
@@ -2404,8 +2403,10 @@ class CudaKernel:
         attribute ``max_dynamic_shared_size_bytes``; it is set once (and again
         for a larger request) up to the device's opt-in limit.
         """
-        from ._device import (DEFAULT_SHARED_MEMORY_PER_BLOCK,
-                              max_shared_memory_per_block)
+        from ._device import (
+            DEFAULT_SHARED_MEMORY_PER_BLOCK,
+            max_shared_memory_per_block,
+        )
 
         if shared_mem <= DEFAULT_SHARED_MEMORY_PER_BLOCK:
             return

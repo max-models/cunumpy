@@ -24,18 +24,46 @@ Importing this module makes ``xp.cuda`` refer to it instead of ``cupy.cuda``;
 use ``import cupy; cupy.cuda`` for CuPy's module.
 """
 
-from .._cuda_kernel import (DEBUG_OPTIONS, CudaArguments, CudaKernel,
-                            CudaKernelVariants, CudaParameter, CudaStruct,
-                            CudaStructArguments, CudaStructValue, ctype_of,
-                            cuda_include_dir, cuda_kernel_names, include_hash,
-                            parse_cuda_signature, resolve_includes,
-                            write_cuda_header)
-from .._device import (DEFAULT_SHARED_MEMORY_PER_BLOCK, bind_local_device,
-                       cuda_debug, device_count, free_memory, get_cuda_debug,
-                       max_shared_memory_per_block, memory_info, pin_memory,
-                       set_cuda_debug, set_device, set_device_for_rank, stream)
-from .._streams import (HostEvent, HostStream, create_event, create_stream,
-                        record_event, wait_event)
+from .._cuda_kernel import (
+    DEBUG_OPTIONS,
+    CudaArguments,
+    CudaKernel,
+    CudaKernelVariants,
+    CudaParameter,
+    CudaStruct,
+    CudaStructArguments,
+    CudaStructValue,
+    ctype_of,
+    cuda_include_dir,
+    cuda_kernel_names,
+    include_hash,
+    parse_cuda_signature,
+    resolve_includes,
+    write_cuda_header,
+)
+from .._device import (
+    DEFAULT_SHARED_MEMORY_PER_BLOCK,
+    bind_local_device,
+    cuda_debug,
+    device_count,
+    free_memory,
+    get_cuda_debug,
+    max_shared_memory_per_block,
+    memory_info,
+    pin_memory,
+    set_cuda_debug,
+    set_device,
+    set_device_for_rank,
+    stream,
+)
+from .._streams import (
+    HostEvent,
+    HostStream,
+    create_event,
+    create_stream,
+    record_event,
+    wait_event,
+)
 
 __all__ = [
     "DEBUG_OPTIONS",

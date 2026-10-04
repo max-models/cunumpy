@@ -4,8 +4,12 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
-from cunumpy.algorithms import (SegmentPlan, cell_offsets, segment_boundaries,
-                                segment_sum)
+from cunumpy.algorithms import (
+    SegmentPlan,
+    cell_offsets,
+    segment_boundaries,
+    segment_sum,
+)
 from cunumpy.kernel_testing import BACKENDS
 
 

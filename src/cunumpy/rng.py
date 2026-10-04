@@ -16,10 +16,14 @@ Named ``rng`` and not ``random`` so that ``xp.random`` stays NumPy's (CuPy's)
 ``random`` module.
 """
 
-from ._philox import (philox4x32_10, philox_normal, philox_normal2,
-                      philox_uniform, philox_uniform2)
-from ._random_streams import (BIT_GENERATORS, RandomStreams, get_rng,
-                              random_streams)
+from ._philox import (
+    philox4x32_10,
+    philox_normal,
+    philox_normal2,
+    philox_uniform,
+    philox_uniform2,
+)
+from ._random_streams import BIT_GENERATORS, RandomStreams, get_rng, random_streams
 
 __all__ = [
     "BIT_GENERATORS",
