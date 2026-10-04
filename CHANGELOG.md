@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Reusable `cuda.create_stream`, `create_event`, `record_event`, and `wait_event`,
+  with synchronous host equivalents; `cuda.stream(existing)` selects an existing stream.
+- `mpi.MPIStaging` reuses host staging storage and rejects overlapping device uses.
+- `algorithms.cell_offsets`, `segment_boundaries`, and `SegmentPlan` for prepared grouping.
+- Strict backend selection via `set_backend`/`use_backend(..., strict=True)` and
+  JSON-compatible `backend_info()` diagnostics.
+- `cunumpy/scan.cuh` inclusive/exclusive warp and block prefix sums, mask-aware
+  warp reductions, partial-warp block reductions, and integer atomic-add helpers.
+
+### Execution helpers
+- `segment_sum(..., out=...)` supports arbitrary trailing component dimensions;
+  CUDA reduces components in one accumulation launch. Prepared plans avoid
+  repeated key validation and GPU scalar reads. Floating-point order may vary.
+- MPI producer synchronization accepts a stream/event, or waits for all work on
+  the buffer's device. Receive staging waits for copy-back before releasing storage.
+
 ### Changed (breaking, with deprecation)
 - The helpers moved from the top level of `cunumpy` to submodules, so that the top level is the NumPy/CuPy namespace plus backend selection and array conversion, and no helper hides a NumPy or CuPy name (`xp.fuse` hid `cupy.fuse`): `cunumpy.cuda` (CUDA only: `CudaKernel`, `CudaKernelVariants`, `CudaStruct*`, `CudaArguments`, `CudaParameter`, header tools, debug mode, device selection and memory, `stream`, `pin_memory`), `cunumpy.kernels` (`Kernel`, `KernelCatalog`, `PyccelKernel`, `KernelArguments`, `PyccelStructArguments`, host implementations, `as_kernel_array`, `kernel_output`, `fuse`), `cunumpy.rng` (`random_streams`, `RandomStreams`, `get_rng`, `philox_*`), `cunumpy.algorithms` (`morton_*`, `sort_by_key`, `segment_sum`), `cunumpy.mpi` (`mpi_buffer`, CUDA-aware MPI, `local_rank`, `synchronize_for_mpi`), `cunumpy.profiling` (`timed_region`, `Timing`, `nvtx_range`, transfer counting), `cunumpy.memory` (`HostStaging`, `StagedCopy`, `DeviceMirror`) and `cunumpy.petsc` (`petsc_vec`). All are imported by `import cunumpy`. The old top-level names still work and raise a `DeprecationWarning` naming the new place; they will be removed in 0.6.
 - `cunumpy.testing` is now `cunumpy.kernel_testing`. Once imported, `cunumpy.testing` replaced NumPy's `xp.testing`, so `xp.testing.assert_allclose` failed in every test that ran after an `import cunumpy.testing`. `cunumpy.testing` still works, with a `DeprecationWarning`, until 0.6.

@@ -48,6 +48,7 @@ guides/backends
 guides/portable-code
 guides/data-movement
 guides/gpu-devices
+guides/execution-helpers
 guides/mpi
 guides/particle-codes
 guides/solvers

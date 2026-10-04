@@ -67,7 +67,7 @@ is checked when the version is unknown (not installed as a package).
 
 ## Backend selection
 
-### `set_backend(backend)`
+### `set_backend(backend, *, strict=False)`
 
 Selects the process-wide backend used for new NumPy-like operations. Supported
 values are `"numpy"` and `"cupy"`:
@@ -81,6 +81,17 @@ Requesting CuPy selects it only when CuPy and its CUDA runtime are functional;
 otherwise CuNumpy falls back to NumPy. Check `get_backend()` to inspect the
 effective selection. Changing the selection does not move arrays that have
 already been created.
+
+With `strict=True`, requesting unavailable CuPy raises `RuntimeError` with the
+availability failure reason, preserving the previous backend and namespace.
+`use_backend(backend, strict=True)` offers the same guarantee.
+
+### `backend_info()`
+
+Returns a JSON-compatible dictionary with the selected backend, cached CUDA
+availability and failure reason, dependency versions, and current device/runtime
+information when available. Inspection errors are included in the result. It
+does not change the backend or initialize MPI.
 
 The initial backend is NumPy unless `ARRAY_BACKEND=cupy` is set before CuNumpy
 is imported. Other values of this environment variable result in the NumPy
@@ -210,14 +221,36 @@ assert xp.get_array_backend(normalized) == xp.get_backend()
 Each conversion returns a suitable array; it does not change the active
 backend or mutate the source.
 
-### `algorithms.segment_sum(values, keys, n_segments)`
+### `algorithms.segment_sum(values, keys, n_segments, *, out=None)`
 
 `out[k] = sum(values[i] for keys[i] == k)` on the backend of `keys`, with
-`bincount` under the hood: the reduction step of a sort-then-reduce
-accumulation. `values` has shape `(n,)` or `(n, m)` (columns summed
-separately); a negative key drops the value; keys must be smaller than
-`n_segments`. The result keeps a floating-point or complex dtype and is
-`float64` otherwise.
+one CUDA accumulation launch for all trailing components. `values` has shape
+`(n, ...)`; a negative key drops the row; integer keys must be smaller than
+`n_segments`. The result has shape `(n_segments, ...)`, keeps a floating-point
+or complex dtype, and is `float64` otherwise. Optional `out` is overwritten,
+must match shape/dtype, be writable and C-contiguous, and must not alias values.
+Mixed backends raise. CUDA float16 accumulates in float32; floating-point atomic
+accumulation order is not deterministic.
+
+### `algorithms.SegmentPlan(keys, n_segments)`
+
+Copies and validates keys once, then `plan.sum(values, out=None)` reuses them.
+Changing the original keys does not change the plan. GPU preparation may
+synchronize; repeated sums avoid key validation and per-column scalar reads.
+A GPU plan requires its device current and values/output on that device.
+
+### `algorithms.cell_offsets(sorted_cells, n_cells)`
+
+Returns `n_cells+1` int64 offsets on the input backend. Cell k occupies the
+half-open slice `[offsets[k], offsets[k+1])`. Missing cells have equal endpoints.
+Input must be sorted integer IDs in `[0, n_cells)`; filter negative IDs first.
+
+### `algorithms.segment_boundaries(sorted_keys)`
+
+Returns `(unique_keys, starts, stops)` for runs of sorted integer keys. Supports
+sparse, negative, and uint64 Morton keys. Starts/stops are int64 half-open indices.
+Empty input returns three empty arrays. Validation and variable-length GPU
+output may synchronize; prepare boundaries outside repeated operations.
 
 ### `algorithms.sort_by_key(keys, *arrays)`
 
@@ -545,10 +578,11 @@ xp.mpi.synchronize_for_mpi(send, recv)  # 4. before every MPI call with device b
 MPI.COMM_WORLD.Sendrecv(send, dest, recvbuf=recv, source=source)
 ```
 
-### `mpi.synchronize_for_mpi(*arrays)`
+### `mpi.synchronize_for_mpi(*arrays, stream=None, event=None)`
 
-Waits for the work pending on the current stream if at least one of `arrays`
-is a CuPy array; `None` entries and host arrays are ignored, so it costs
+Waits for all work on devices owning the CuPy arrays, or only the explicit
+producer stream/event when supplied (pass at most one). The dependency must
+cover all supplied device buffers. `None` entries and host arrays are ignored, so it costs
 nothing for host buffers and on the NumPy backend. Call it before every MPI
 call that sends or receives device buffers: CuPy launches kernels
 asynchronously and MPI knows nothing about CUDA streams, so a buffer that a
@@ -563,7 +597,7 @@ comm.Sendrecv(send_buffer, dest, recvbuf=recv_buffer, source=source)
 No synchronization is needed after MPI returns: kernels launched afterwards see
 the received data.
 
-### `mpi.mpi_buffer(array, *, send=True, recv=False, cuda_aware=None)`
+### `mpi.mpi_buffer(array, *, send=True, recv=False, cuda_aware=None, staging=None, stream=None, event=None)`
 
 Context manager yielding the buffer to pass to MPI for `array`: a host array
 unchanged; a device array unchanged (after `synchronize_for_mpi`) when MPI is
@@ -572,6 +606,23 @@ before the block (`send`) and copied back after it (`recv`), both counted by
 `count_transfers()`. `cuda_aware=None` uses the answer recorded by
 `mpi_is_cuda_aware()` or `set_mpi_cuda_aware()`; without one, a device array
 raises `RuntimeError`.
+
+Pass `stream` or `event` for producer synchronization. Receive-only device
+staging also waits for preceding device work. Receive copy-back completes before
+the context releases host storage. With nonblocking MPI, call `request.Wait()`
+inside the context before reading/releasing the buffer.
+
+### `mpi.MPIStaging(shape, dtype)`
+
+Caller-owned reusable host staging storage, pinned when available and allocated
+lazily. Use `staging.buffer(array, **options)` or
+`mpi_buffer(array, staging=staging, **options)`. Device staging is bound to a
+shape, dtype, and device, and rejects overlapping uses. Host arrays still pass
+through unchanged. Use separate staging instances for simultaneously active
+send and receive buffers.
+
+Non-C-contiguous device arrays use a reusable device packing buffer; received
+values are written back into the original view, preserving its storage.
 
 ### `mpi.set_mpi_cuda_aware(value)`, `mpi.get_mpi_cuda_aware()`
 
@@ -622,7 +673,7 @@ Waits for queued work on the current CUDA device to finish. This is useful
 before reading asynchronously computed results from host code. It is a no-op
 on NumPy.
 
-### `cuda.stream()`
+### `cuda.stream(existing=None)`
 
 Context manager that creates a non-blocking CuPy stream and yields it. Work
 issued in the block is enqueued on that stream. On NumPy, yields `None` and
@@ -637,6 +688,24 @@ work_stream.synchronize()  # on CuPy; the yielded value is None on NumPy
 
 Do not call methods on the yielded value without checking the backend. Use
 `xp.synchronize()` for code that should work on both backends.
+
+Pass `existing` to select a previously allocated stream for the context.
+
+### `cuda.create_stream(non_blocking=True)`, `cuda.create_event(timing=False)`
+
+Create reusable CuPy streams and events. On CPU they return synchronous
+`HostStream`/`HostEvent` objects supporting context selection, `.synchronize()`,
+`.done`, recording and waits. Events disable timing by default. CUDA streams
+belong to the device current at construction; keep that device current while
+using them.
+
+### `cuda.record_event(event=None, *, stream=None)`, `cuda.wait_event(event, *, stream=None)`
+
+Record an existing or newly created completion event on the producer stream,
+then enqueue a wait on the consumer stream without blocking the CPU. Omitting
+the stream uses the current CUDA stream. All consumers of an event recording
+must enqueue their waits before that event is re-recorded. See the
+[execution helpers guide](guides/execution-helpers.md) for examples.
 
 ## Profiling
 
@@ -1939,7 +2008,9 @@ double cunumpy_atomic_add_3d(double* data, long long n1, long long n2,
                              long long i, long long j, long long k, double v);
 ```
 
-The indexed helpers (also for `float`) address C-contiguous arrays of shape
+The scalar and indexed helpers also support `int`, `unsigned int`, `long long`,
+and `unsigned long long`. Signed 64-bit addition uses CUDA's unsigned 64-bit
+atomic and modulo-2^64 arithmetic. The indexed helpers address C-contiguous arrays of shape
 `(n0, n1)` and `(n0, n1, n2)`. They wrap `atomicAdd`, a hardware instruction
 for `double` from compute capability 6.0 (sm_60) on; older devices use a
 compare-and-swap loop.
@@ -2022,7 +2093,7 @@ check) and combining values in a block before one atomic write.
 ```c
 #include <cunumpy/reduce.cuh>
 
-T cunumpy_warp_sum(T v);   T cunumpy_warp_min(T v);   T cunumpy_warp_max(T v);
+T cunumpy_warp_sum(T v, unsigned mask = 0xffffffffu); // also min/max
 T cunumpy_block_sum(T v);  T cunumpy_block_min(T v);  T cunumpy_block_max(T v);
 void cunumpy_block_sum_to(T* out, T v);  // *out += block sum, one atomic per block
 int cunumpy_block_thread();   // linear thread index in a 1D-3D block
@@ -2030,11 +2101,13 @@ int cunumpy_block_threads();  // threads per block
 ```
 
 `T` is `int`, `unsigned`, `long long`, `unsigned long long`, `float` or
-`double` (`block_sum_to`: `double`, `float`, `int`, `unsigned long long`). Every
+`double`; `block_sum_to` supports the same types. Every
 thread gets the result. Rules: every thread of the block calls block
-functions and all 32 lanes call warp functions (no early `return`; threads
-without a value pass the identity, e.g. `0.0` for a sum); the block size is a
-multiple of 32. The block functions use 32 values of static shared memory per
+functions (no early `return`; threads without a value pass the identity, e.g.
+`0.0` for a sum). Warp functions support arbitrary nonzero masks: every named
+lane calls with the same mask, and only named lanes participate. The default
+requires all 32 lanes. Block functions handle partial warps and any legal block
+size. The block functions use 32 values of static shared memory per
 type and may be called several times in a kernel.
 
 ```c
@@ -2045,6 +2118,25 @@ extern "C" __global__ void kinetic_energy(const double* v, long long n,
     cunumpy_block_sum_to(energy, e);  // zero *energy before the launch
 }
 ```
+
+### `cunumpy/scan.cuh`
+
+Warp/block prefix sums for compaction and binning:
+
+```c
+#include <cunumpy/scan.cuh>
+T cunumpy_warp_inclusive_sum(T v, unsigned mask = 0xffffffffu);
+T cunumpy_warp_exclusive_sum(T v, unsigned mask = 0xffffffffu);
+T cunumpy_block_inclusive_sum(T v);
+T cunumpy_block_exclusive_sum(T v);
+```
+
+Same shuffle arithmetic types and collective participation rules as reductions.
+Warp order follows increasing participating lane IDs, including sparse masks.
+Block order follows linear thread index (x fastest), with partial warps supported.
+Exclusive scans start at zero. Block scans use 32 shared values per type and
+specialization; repeated calls are supported. These are block-local operations;
+a global compaction needs a separate pass to combine block totals.
 
 ## `scipy`
 

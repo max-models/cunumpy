@@ -10,7 +10,13 @@ kernel), a stable sort of several arrays by one key, and sums per key::
     charge = xp.algorithms.segment_sum(q, cell, n_cells)
 """
 
-from ._algorithms import segment_sum, sort_by_key
+from ._algorithms import (
+    SegmentPlan,
+    cell_offsets,
+    segment_boundaries,
+    segment_sum,
+    sort_by_key,
+)
 from ._morton import (
     MAX_MORTON_LEVELS,
     morton_decode,
@@ -21,10 +27,13 @@ from ._morton import (
 
 __all__ = [
     "MAX_MORTON_LEVELS",
+    "SegmentPlan",
+    "cell_offsets",
     "morton_decode",
     "morton_encode",
     "morton_keys",
     "morton_scales",
+    "segment_boundaries",
     "segment_sum",
     "sort_by_key",
 ]

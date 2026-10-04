@@ -18,6 +18,7 @@ from ._scipy_backend import scipy
 from .xp import (
     as_device_array,
     assert_same_backend,
+    backend_info,
     cupy_available,
     default_float_dtype,
     get_array_backend,
@@ -98,6 +99,7 @@ __all__ = [
     "algorithms",
     "as_device_array",
     "assert_same_backend",
+    "backend_info",
     "cuda",
     "cupy_available",
     "cupy_backend",

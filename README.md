@@ -27,8 +27,8 @@ never hide a NumPy name:
 | `xp.cuda` | CUDA only: `CudaKernel`, `CudaStruct`, CUDA headers, devices, streams |
 | `xp.kernels` | `Kernel`, `KernelCatalog`, `PyccelKernel`, host implementations, `fuse` |
 | `xp.rng` | `random_streams`, `get_rng`, `philox_*` |
-| `xp.algorithms` | `morton_*`, `sort_by_key`, `segment_sum` |
-| `xp.mpi` | `mpi_buffer`, CUDA-aware MPI |
+| `xp.algorithms` | `morton_*`, `sort_by_key`, `cell_offsets`, `segment_boundaries`, `segment_sum`, `SegmentPlan` |
+| `xp.mpi` | `mpi_buffer`, reusable `MPIStaging`, CUDA-aware MPI |
 | `xp.profiling` | `timed_region`, `nvtx_range`, `count_transfers` |
 | `xp.memory` | `HostStaging`, `DeviceMirror` |
 | `xp.petsc` | `petsc_vec` |
@@ -71,6 +71,12 @@ The accepted backend names are `"numpy"` and `"cupy"`. If CuPy is requested
 but unavailable or not functional, CuNumpy falls back to NumPy. Always check
 `get_backend()` when the effective backend matters, such as when reporting
 configuration or deciding whether GPU-specific work will happen.
+
+Use `xp.set_backend("cupy", strict=True)` to raise when CUDA is unavailable,
+preserving the previous backend. `xp.backend_info()` returns structured backend,
+dependency, and CUDA diagnostics. Reusable streams/events, MPI staging, cell
+ranges, and prepared reductions are described in the
+[execution helpers guide](docs/source/guides/execution-helpers.md).
 
 Use `use_backend()` for a temporary selection. It restores the previous
 selection when the block exits, including when an exception is raised:

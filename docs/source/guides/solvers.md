@@ -137,5 +137,6 @@ extern "C" __global__ void push_and_energy(double* x, double* v, const double* E
 }
 ```
 
-The block size must be a multiple of 32, and every thread must reach the
-reduction. See the API reference for the warp and block functions.
+Every thread must reach the reduction; block functions also support partial
+warps. Warp functions accept explicit masks for subsets of lanes. See the API
+reference for the warp and block functions and prefix scans.

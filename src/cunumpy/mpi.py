@@ -22,6 +22,7 @@ mpi4py is imported only by the functions that need it.
 """
 
 from ._mpi import (
+    MPIStaging,
     get_mpi_cuda_aware,
     mpi_buffer,
     mpi_is_cuda_aware,
@@ -42,6 +43,7 @@ from ._mpi_serial import (
 
 __all__ = [
     "OVERRIDE_VARIABLE",
+    "MPIStaging",
     "SerialComm",
     "SerialMPI",
     "SerialRequest",

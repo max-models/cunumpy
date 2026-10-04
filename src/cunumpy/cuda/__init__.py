@@ -1,6 +1,6 @@
-"""CUDA-only parts of cunumpy: writing and launching CUDA kernels, and the GPU.
+"""CUDA kernels, device helpers, and reusable stream/event interfaces.
 
-Everything here is only useful with CuPy and a CUDA device. The kernel classes
+The kernel classes
 (:class:`CudaKernel`, :class:`CudaStruct`, ...) need CuPy to launch; the device
 functions (:func:`set_device`, :func:`memory_info`, :func:`stream`, ...) do
 nothing (or return ``None``/``0``) on the NumPy backend::
@@ -13,6 +13,9 @@ nothing (or return ``None``/``0``) on the NumPy backend::
 
 The CUDA headers shipped with cunumpy (``cunumpy/atomic.cuh``,
 ``cunumpy/random.cuh``, ...) are in :func:`cuda_include_dir`.
+
+Reusable :func:`create_stream` and :func:`create_event` return synchronous host
+equivalents on NumPy, supporting the same recording and completion interface.
 
 Backend-neutral kernel tools (:class:`~cunumpy.kernels.Kernel`,
 :class:`~cunumpy.kernels.PyccelKernel`, ...) are in :mod:`cunumpy.kernels`.
@@ -53,6 +56,14 @@ from .._device import (
     set_device_for_rank,
     stream,
 )
+from .._streams import (
+    HostEvent,
+    HostStream,
+    create_event,
+    create_stream,
+    record_event,
+    wait_event,
+)
 
 __all__ = [
     "DEBUG_OPTIONS",
@@ -64,7 +75,11 @@ __all__ = [
     "CudaStruct",
     "CudaStructArguments",
     "CudaStructValue",
+    "HostEvent",
+    "HostStream",
     "bind_local_device",
+    "create_event",
+    "create_stream",
     "ctype_of",
     "cuda_debug",
     "cuda_include_dir",
@@ -77,10 +92,12 @@ __all__ = [
     "memory_info",
     "parse_cuda_signature",
     "pin_memory",
+    "record_event",
     "resolve_includes",
     "set_cuda_debug",
     "set_device",
     "set_device_for_rank",
     "stream",
+    "wait_event",
     "write_cuda_header",
 ]

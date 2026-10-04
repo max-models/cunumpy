@@ -87,8 +87,9 @@ CUDA-aware.
 
 CuPy kernels run asynchronously, and MPI knows nothing about CUDA streams. A
 buffer that a kernel is still writing would be sent as it is at that moment.
-`synchronize_for_mpi(*buffers)` waits for the current stream if any argument is
-a CuPy array, and costs nothing otherwise:
+`synchronize_for_mpi(*buffers)` waits for each device represented by the CuPy
+arrays, and costs nothing for host arrays. Pass `stream=` or `event=` to wait
+only for a known producer dependency:
 
 ```python
 def exchange_halo(field, comm, left, right):

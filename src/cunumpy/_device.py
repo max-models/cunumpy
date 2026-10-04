@@ -178,7 +178,7 @@ def pin_memory(array: Any) -> Any:
 
 
 @contextmanager
-def stream() -> Generator[Any, None, None]:
+def stream(existing: Any = None) -> Generator[Any, None, None]:
     """Context manager for a CUDA stream, to overlap transfers and compute.
 
     On the CuPy backend, operations issued inside the block are enqueued on
@@ -186,8 +186,14 @@ def stream() -> Generator[Any, None, None]:
     `xp.synchronize()` (or the yielded stream's own `.synchronize()`) before
     reading results computed inside the block. No-op on the NumPy backend,
     where it yields `None`.
+
+    Pass a reusable stream from :func:`cunumpy.cuda.create_stream` as `existing`
+    to select it temporarily; this also works with its synchronous CPU equivalent.
     """
-    if array_backend.backend == "cupy":
+    if existing is not None:
+        with existing:
+            yield existing
+    elif array_backend.backend == "cupy":
         import cupy as cp
 
         with cp.cuda.Stream(non_blocking=True) as s:

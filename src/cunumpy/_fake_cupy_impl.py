@@ -37,8 +37,13 @@ class ndarray:
             "`.get()` to construct a NumPy array explicitly."
         )
 
-    def get(self, *args, **kwargs):
-        return self._a.copy()
+    def get(self, stream=None, order="C", out=None, blocking=True):
+        if out is not None:
+            if out.shape != self._a.shape or out.dtype != self._a.dtype:
+                raise ValueError("out must match the device array shape and dtype")
+            _np.copyto(out, self._a)
+            return out
+        return self._a.copy(order=order)
 
     def set(self, arr, *args, **kwargs):
         self._a[...] = arr
@@ -417,12 +422,39 @@ class _Device:
         return {"MaxSharedMemoryPerBlock": 48 * 1024}
 
 
+class _Event:
+    def __init__(self, **kwargs):
+        pass
+
+    @property
+    def done(self):
+        return True
+
+    def record(self, stream=None):
+        pass
+
+    def synchronize(self):
+        pass
+
+
 class _Stream(_Device):
     def __init__(self, *args, **kwargs):
         super().__init__()
 
     def __enter__(self):
         return self
+
+    def record(self, event=None):
+        event = _Event() if event is None else event
+        event.record(self)
+        return event
+
+    def wait_event(self, event):
+        pass
+
+    @property
+    def done(self):
+        return True
 
 
 _Stream.null = _Stream()
@@ -435,6 +467,7 @@ def _alloc_pinned_memory(nbytes):
 cuda = types.ModuleType("cupy.cuda")
 cuda.Device = _Device
 cuda.Stream = _Stream
+cuda.Event = _Event
 cuda.get_current_stream = lambda: _Stream.null
 cuda.alloc_pinned_memory = _alloc_pinned_memory
 cuda.device = types.ModuleType("cupy.cuda.device")

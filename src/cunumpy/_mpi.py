@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import operator
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
@@ -18,14 +19,15 @@ from .xp import array_backend, cupy_available, to_numpy
 _logger = logging.getLogger(__name__)
 
 
-def synchronize_for_mpi(*arrays: Any) -> None:
+def synchronize_for_mpi(*arrays: Any, stream: Any = None, event: Any = None) -> None:
     """Wait for pending device work before MPI reads or writes `arrays`.
 
     CuPy launches kernels asynchronously; MPI does not know about CUDA streams.
     Passing a device buffer to MPI while a kernel is still writing it sends
     whatever is in memory at that moment -- silently wrong data, no error. Call
     this before every MPI call that uses device buffers. It synchronizes the
-    current stream only if at least one of `arrays` is a CuPy array, so host
+    devices owning the arrays if no producer `stream` or `event` is supplied.
+    An explicit dependency waits only for that producer. Host
     buffers and the NumPy backend cost nothing. (After MPI returns, no
     synchronization is needed: kernels launched later see the received data.)
 
@@ -34,12 +36,26 @@ def synchronize_for_mpi(*arrays: Any) -> None:
     *arrays
         The buffers about to be passed to MPI; ``None`` entries are ignored.
     """
-    if not any(array_api_compat.is_cupy_array(a) for a in arrays if a is not None):
+    if stream is not None and event is not None:
+        raise ValueError("pass only one of stream and event")
+    devices = {a.device.id for a in arrays if array_api_compat.is_cupy_array(a)}
+    if not devices:
+        return
+    from ._streams import HostEvent, HostStream
+
+    if isinstance(event, HostEvent) or isinstance(stream, HostStream):
+        raise TypeError("device buffers require a CUDA producer stream or event")
+    if event is not None:
+        event.synchronize()
+        return
+    if stream is not None:
+        stream.synchronize()
         return
 
     import cupy as cp
 
-    cp.cuda.get_current_stream().synchronize()
+    for device in devices:
+        cp.cuda.Device(device).synchronize()
 
 
 # the result of the last mpi_is_cuda_aware() probe (or of set_mpi_cuda_aware()),
@@ -77,6 +93,74 @@ def _pinned_or_host_empty(shape: tuple[int, ...], dtype: Any) -> np.ndarray:
         return np.empty(shape, dtype=dtype)
 
 
+class MPIStaging:
+    """Reusable host storage for blocking MPI exchanges of device arrays.
+
+    Allocate once per send/receive buffer. Storage is allocated lazily, pinned
+    when available, and bound to one shape, dtype, and CUDA device. Only one
+    context may use it at a time. For nonblocking MPI, call request.Wait() inside
+    the context: the buffer must not be released or copied back while MPI uses it.
+    """
+
+    def __init__(self, shape: int | tuple[int, ...], dtype: Any) -> None:
+        self._shape = (
+            (operator.index(shape),)
+            if isinstance(shape, (int, np.integer))
+            else tuple(operator.index(n) for n in shape)
+        )
+        if any(n < 0 for n in self.shape):
+            raise ValueError("staging shape must be non-negative")
+        self._dtype = np.dtype(dtype)
+        if self.dtype.hasobject:
+            raise TypeError("MPI staging does not support object dtype")
+        self._host: np.ndarray | None = None
+        self._packed: Any = None
+        self._device: int | None = None
+        self._active = False
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        """The fixed staging shape."""
+        return self._shape
+
+    @property
+    def dtype(self) -> np.dtype:
+        """The fixed staging dtype."""
+        return self._dtype
+
+    def buffer(self, array: Any, **kwargs: Any) -> Any:
+        """Equivalent to ``mpi_buffer(array, staging=self, **kwargs)``."""
+        return mpi_buffer(array, staging=self, **kwargs)
+
+    def _transfer_array(self, array: Any) -> Any:
+        """Reuse C-order device storage when the MPI array has another layout."""
+        if array.flags.c_contiguous:
+            return array
+        if self._packed is None:
+            import cupy as cp
+
+            self._packed = cp.empty(self.shape, dtype=self.dtype)
+        return self._packed
+
+    @contextmanager
+    def _lease(self, array: Any) -> Generator[np.ndarray, None, None]:
+        if self._active:
+            raise RuntimeError("MPI staging buffer is already in use")
+        if tuple(array.shape) != self.shape or np.dtype(array.dtype) != self.dtype:
+            raise ValueError("MPI staging shape and dtype must match the array")
+        device = array.device.id
+        if self._device is not None and device != self._device:
+            raise ValueError("MPI staging buffer is bound to another CUDA device")
+        self._device = device
+        if self._host is None:
+            self._host = _pinned_or_host_empty(self.shape, self.dtype)
+        self._active = True
+        try:
+            yield self._host
+        finally:
+            self._active = False
+
+
 @contextmanager
 def mpi_buffer(
     array: Any,
@@ -84,6 +168,9 @@ def mpi_buffer(
     send: bool = True,
     recv: bool = False,
     cuda_aware: bool | None = None,
+    staging: MPIStaging | None = None,
+    stream: Any = None,
+    event: Any = None,
 ) -> Generator[Any, None, None]:
     """The buffer to hand to MPI for `array`: the array itself, or a host copy.
 
@@ -116,6 +203,12 @@ def mpi_buffer(
     cuda_aware : bool | None
         Whether MPI can take device buffers. None uses the answer recorded by
         `mpi_is_cuda_aware()` or `set_mpi_cuda_aware()`.
+    staging : MPIStaging | None
+        Reusable storage for host staging. For nonblocking MPI, wait for the
+        request inside the context before releasing this storage.
+    stream, event
+        Optional producer dependency (only one); without it all work on the
+        array's device is synchronized before MPI accesses the buffer.
 
     Raises
     ------
@@ -136,20 +229,32 @@ def mpi_buffer(
             "xp.mpi.set_mpi_cuda_aware(True/False), or pass cuda_aware="
         )
     if cuda_aware:
-        synchronize_for_mpi(array)
+        synchronize_for_mpi(array, stream=stream, event=event)
         yield array
         return
-    host = _pinned_or_host_empty(tuple(array.shape), array.dtype)
-    if send:
-        if _COUNTERS:
-            _record("to_host", f"mpi_buffer({_describe(array)}) staging for send")
-        synchronize_for_mpi(array)
-        host[...] = array.get()
-    yield host
-    if recv:
-        if _COUNTERS:
-            _record("to_device", f"mpi_buffer({_describe(array)}) staging for recv")
-        array.set(host)
+    if staging is None:
+        staging = MPIStaging(tuple(array.shape), array.dtype)
+    import cupy as cp
+
+    with cp.cuda.Device(array.device.id), staging._lease(array) as host:
+        # Even receive-only buffers may still be read/written by a GPU kernel.
+        synchronize_for_mpi(array, stream=stream, event=event)
+        transfer_array = staging._transfer_array(array)
+        if send:
+            if _COUNTERS:
+                _record("to_host", f"mpi_buffer({_describe(array)}) staging for send")
+            if transfer_array is not array:
+                transfer_array[...] = array
+            transfer_array.get(out=host)
+        yield host
+        if recv:
+            if _COUNTERS:
+                _record("to_device", f"mpi_buffer({_describe(array)}) staging for recv")
+            # Ensure MPI's host buffer can be reused immediately on context exit.
+            transfer_array.set(host)
+            if transfer_array is not array:
+                array[...] = transfer_array
+            cp.cuda.get_current_stream().synchronize()
 
 
 def _mpi_module() -> Any:

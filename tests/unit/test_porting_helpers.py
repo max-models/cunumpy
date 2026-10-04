@@ -584,6 +584,14 @@ assert xp.to_numpy(d).tolist() == [5.0, 6.0]
 assert sorted(e.kind for e in counter.events) == ["to_device", "to_host"]
 with xp.mpi.mpi_buffer(d, cuda_aware=True) as buf:
     assert buf is d
+producer = xp.cuda.create_stream()
+event = xp.cuda.create_event()
+with xp.cuda.stream(producer):
+    assert xp.cuda.record_event(event, stream=producer) is event
+xp.cuda.wait_event(event, stream=producer)
+assert producer.done and event.done
+assert producer.record().done
+assert xp.backend_info()["versions"]["cupy"] == "0.0.0+cunumpy-fake"
 print("fake cupy OK")
 """
 

@@ -110,6 +110,8 @@ Backend and inspection:
 
 ```python
 xp.set_backend("numpy" | "cupy")     # global; falls back to numpy if cupy unusable
+xp.set_backend("cupy", strict=True)  # unavailable CUDA raises; prior backend preserved
+xp.backend_info()                   # JSON-compatible dependencies/CUDA diagnostics
 xp.get_backend() -> "numpy" | "cupy" # active backend
 with xp.use_backend("numpy"): ...    # temporary, exception-safe
 xp.numpy_backend, xp.cupy_backend    # bools for the active backend
@@ -160,6 +162,40 @@ keys, order, a, b = xp.algorithms.sort_by_key(
 )  # stable argsort applied to every array
 xp.require_version("0.4.0")  # ImportError if cunumpy is older
 ```
+
+Reusable helpers (allocate during setup):
+
+```python
+producer, consumer = xp.cuda.create_stream(), xp.cuda.create_stream()
+event = xp.cuda.create_event()  # CPU: already-completed HostEvent
+with xp.cuda.stream(producer):
+    ...  # produce data; retain arrays until completion
+    xp.cuda.record_event(event, stream=producer)
+xp.cuda.wait_event(event, stream=consumer)  # future consumer work waits, CPU does not
+staging = xp.mpi.MPIStaging(a.shape, a.dtype)
+with staging.buffer(a, cuda_aware=False, recv=True) as buf:
+    ...  # blocking MPI, or request.Wait() BEFORE exiting
+offsets = xp.algorithms.cell_offsets(sorted_cells, n_cells)
+unique, starts, stops = xp.algorithms.segment_boundaries(sorted_keys)
+plan = xp.algorithms.SegmentPlan(keys, n_segments)  # copied, validated keys
+plan.sum(values, out=out)  # overwrite; arbitrary trailing dimensions
+```
+
+CUDA streams/plans require their device current. Re-record an event only after
+its consumers enqueue their waits. Staging shape/dtype/device are fixed; use
+separate objects for concurrent contexts. MPI synchronization accepts `stream=`
+or `event=`; without either it waits for all work on the buffer devices.
+Segment keys must be integer; negative keys are dropped. Dense offsets need
+sorted nonnegative cell IDs; sparse boundaries accept negative/uint64 keys.
+Preparation may synchronize; repeated plan sums avoid scalar reads. `out` must
+match shape/dtype, be C-contiguous, and not alias values. Mixed backends raise.
+CUDA floating-point accumulation uses atomics and may require tolerances.
+
+`cunumpy/scan.cuh` supplies `cunumpy_{warp,block}_{inclusive,exclusive}_sum`.
+Warp scans and `cunumpy_warp_{sum,min,max}` accept a nonzero mask: every named
+lane calls with the same mask. Block collectives handle partial warps, but every
+thread must participate (no early return). `cunumpy_atomic_add` and its indexed
+variants support int32/uint32/int64/uint64 as well as float/double.
 
 Random numbers and dtypes:
 
