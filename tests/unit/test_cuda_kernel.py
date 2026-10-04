@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
-import cunumpy._device as device_module
+import cunumpy._cuda_kernel as cuda_module
 from cunumpy import as_device_array
 from cunumpy.cuda import (
     CudaArguments,
@@ -72,6 +72,7 @@ class FakeDeviceArray:
 
     def __init__(self, dtype, ptr=0x1000, shape=(1,), strides=None, flags=None):
         self.dtype = np.dtype(dtype)
+        self.device = SimpleNamespace(id=0)
         self.data = SimpleNamespace(ptr=ptr)
         self.shape = tuple(shape)
         self.ndim = len(self.shape)
@@ -2186,6 +2187,21 @@ def recorded(monkeypatch):
     """A CudaKernel whose launches are recorded instead of run."""
     kernel = CudaKernel(AXPY, "axpy", block_size=128)
     raw = RecordingRawKernel()
+    limits = {
+        "name": b"recording GPU",
+        "maxThreadsPerBlock": 1024,
+        "maxThreadsDim": (1024, 1024, 64),
+        "maxGridSize": (2**31 - 1, 65535, 65535),
+        "sharedMemPerBlock": 48 * 1024,
+        "sharedMemPerBlockOptin": 100_000,
+    }
+    kernel._compiled[0] = cuda_module._CompiledKernel(
+        raw,
+        limits,
+        {"shared_size_bytes": 0, "max_threads_per_block": 1024},
+        48 * 1024,
+    )
+    monkeypatch.setattr(cuda_module, "_current_device", lambda: 0)
     monkeypatch.setattr(kernel, "compile", lambda: raw)
     monkeypatch.setattr(kernel, "debug_active", lambda: False)
     return kernel, raw
@@ -2208,13 +2224,8 @@ def test_n_threads_from_first_array(recorded):
         as_option.n_threads_from((1.0, 2))
 
 
-def test_shared_memory_above_the_default_is_opted_in(recorded, monkeypatch):
+def test_shared_memory_above_the_default_is_opted_in(recorded):
     kernel, raw = recorded
-    monkeypatch.setattr(
-        device_module,
-        "max_shared_memory_per_block",
-        lambda opt_in=False: 100_000,
-    )
     x, y = FakeDeviceArray(np.float64), FakeDeviceArray(np.float64)
     kernel(1.0, x, y, 1, n_threads=1, shared_mem=40_000)  # below 48 KiB: no setup
     assert raw.max_dynamic_shared_size_bytes == 48 * 1024

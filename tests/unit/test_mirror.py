@@ -19,6 +19,30 @@ requires_gpu = pytest.mark.skipif(
     reason="CuPy/GPU not available or not functional",
 )
 
+
+@requires_gpu
+@pytest.mark.parametrize("dependency", ["stream", "event"])
+def test_mirror_to_host_after_nondefault_producer(dependency):
+    import cupy as cp
+
+    host = np.zeros(1000)
+    with xp.use_backend("cupy"):
+        mirror = DeviceMirror(host)
+        mirror.zero()
+        xp.synchronize()
+        producer = cp.cuda.Stream(non_blocking=True)
+        event = cp.cuda.Event(disable_timing=True)
+        with producer:
+            mirror.device.fill(7.0)
+            event.record()
+        with xp.profiling.count_transfers() as counter:
+            mirror.to_host(
+                **{dependency: producer if dependency == "stream" else event}
+            )
+    np.testing.assert_array_equal(host, np.full(1000, 7.0))
+    assert counter.bytes_to_host == host.nbytes
+
+
 BIN_ADD = r"""
 #include <cunumpy/atomic.cuh>
 

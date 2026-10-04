@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Per-device eager CUDA compilation, compiler log streams and explicit `recompile()`.
+- Launch validation against actual device/kernel dimensions, thread limits and
+  static plus dynamic shared memory, with cached per-device opt-in state.
+- Transfer payload byte counts, mirror-refresh and kernel-output accounting, and
+  separate device-only conversion observations.
+- Producer `stream=`/`event=` dependencies for output staging and mirror downloads;
+  device-bound retained storage and CPU-to-pinned staging upgrades.
+- GPU CI requires real hardware and runs focused Compute Sanitizer memory,
+  shared-memory race and synchronization checks.
 - Reusable `cuda.create_stream`, `create_event`, `record_event`, and `wait_event`,
   with synchronous host equivalents; `cuda.stream(existing)` selects an existing stream.
 - `mpi.MPIStaging` reuses host staging storage and rejects overlapping device uses.
@@ -35,8 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Development
 - Formatting is checked with `ruff format` and import order with ruff's isort rules (`ruff check`), on `src/` and `tests/`, instead of black and isort; the `dev` extra installs ruff.
+- GPU matrix/FFT correctness tests check numerical parity without timing assertions;
+  performance comparisons belong in scope-profiler.
 
 ### Fixed
+- Block min/max reductions synchronize warp shared-memory reads before lane 0
+  overwrites the result slot, fixing Compute Sanitizer racecheck hazards.
 - `CudaKernel`'s header hash (`-DCUNUMPY_INCLUDE_HASH`) now covers the headers shipped with cunumpy (`cunumpy/atomic.cuh`, `reduce.cuh`, ...), also when included in angle brackets. Before, an upgrade of cunumpy that changed one of them left CuPy's kernel cache serving the kernel compiled with the old header. `resolve_includes(..., angle_dirs=...)` tracks angle-bracket includes found in the given directories.
 - `xp.testing.assert_kernels_agree` reads `CudaStructArguments` objects and struct values through their struct fields, so their arrays get the same names as the attributes of the host argument object (before, arrays behind properties were named after the private attribute holding the owner, and the comparison failed with "do not have the same array arguments").
 

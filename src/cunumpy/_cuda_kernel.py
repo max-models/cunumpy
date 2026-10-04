@@ -50,6 +50,7 @@ import ast
 import hashlib
 import inspect
 import math
+import operator
 import os
 import re
 import sys
@@ -57,6 +58,7 @@ import typing
 from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -83,6 +85,32 @@ __all__ = [
 
 # CUDA limit on the number of threads per block
 _MAX_THREADS_PER_BLOCK = 1024
+
+# Runtime queries are setup work, never repeated for a prepared launch.
+_DEVICE_LIMITS: dict[int, dict[str, Any]] = {}
+
+
+def _current_device() -> int:
+    import cupy as cp
+
+    return cp.cuda.runtime.getDevice()
+
+
+def _device_limits(device: int) -> dict[str, Any]:
+    if device not in _DEVICE_LIMITS:
+        import cupy as cp
+
+        _DEVICE_LIMITS[device] = cp.cuda.runtime.getDeviceProperties(device)
+    return _DEVICE_LIMITS[device]
+
+
+@dataclass
+class _CompiledKernel:
+    raw: Any
+    limits: dict[str, Any]
+    attributes: dict[str, int]
+    dynamic_shared: int
+
 
 # Headers shipped with cunumpy: #include <cunumpy/array_view.cuh> etc.
 _CUDA_INCLUDE_DIR = Path(__file__).resolve().parent / "cuda" / "include"
@@ -433,8 +461,22 @@ def _compile_in_threads(
             compile()
         return list(compilers)
 
+    from cunumpy.xp import cupy_available
+
+    device = _current_device() if cupy_available() else None
+
+    def on_device(compiler: Callable[[], Any]) -> Any:
+        if device is None:
+            return compiler()
+        import cupy as cp
+
+        with cp.cuda.Device(device):
+            return compiler()
+
     with ThreadPoolExecutor(max_workers=min(jobs, len(compilers))) as pool:
-        futures = {name: pool.submit(compile) for name, compile in compilers.items()}
+        futures = {
+            name: pool.submit(on_device, compile) for name, compile in compilers.items()
+        }
     compiled, error = [], None
     for name, future in futures.items():
         exc = future.exception()
@@ -1362,7 +1404,7 @@ class CudaStruct:
         RuntimeError
             If CuPy is not available.
         """
-        from cunumpy.xp import cupy_available
+        from cunumpy.xp import cupy_available, to_numpy
 
         if not cupy_available():
             raise RuntimeError("verify_layout() compiles a CUDA kernel and needs CuPy")
@@ -1378,7 +1420,7 @@ class CudaStruct:
         )
         out = cp.zeros(len(self._fields) + 2, dtype=cp.uint64)
         kernel(out, n_threads=1)
-        measured = [int(v) for v in out.get()]
+        measured = [int(v) for v in to_numpy(out)]
         layout = {"sizeof": measured[0], "alignof": measured[1]}
         layout.update({f.name: n for f, n in zip(self._fields, measured[2:])})
 
@@ -1931,8 +1973,6 @@ class CudaKernel:
     ) -> None:
         self._block = self._check_block(_as_shape(block_size, "block_size"))
         self.n_threads_from = n_threads_from
-        # dynamic shared memory the compiled kernel is set up for (see __call__)
-        self._shared_mem_opt_in = 48 * 1024
         self._check_finite = bool(check_finite)
         self._debug = None if debug is None else bool(debug)
         self._source = source
@@ -1958,7 +1998,7 @@ class CudaKernel:
             if self._signature is None
             else [_checker(p, i) for i, p in enumerate(self._signature)]
         )
-        self._raw_kernel = None
+        self._compiled: dict[int, _CompiledKernel] = {}
 
     @classmethod
     def from_file(
@@ -2213,51 +2253,80 @@ class CudaKernel:
 
     @property
     def is_compiled(self) -> bool:
-        """Whether the kernel has been compiled in this process."""
-        return self._raw_kernel is not None
+        """Whether compilation succeeded on the current CUDA device."""
+        return bool(self._compiled) and _current_device() in self._compiled
 
-    def compile(self) -> Any:
+    def compile(self, *, log_stream: Any = None) -> Any:
         """Compile the kernel now (it is otherwise compiled on the first call).
 
         The options are :meth:`compile_options`, evaluated now: a kernel
-        compiled before debug mode was enabled keeps its options.
+        compiled before debug mode was enabled keeps its options. Call
+        :meth:`recompile` to refresh headers/options explicitly. Compilation
+        and launch resources are cached separately on each CUDA device;
+        failed compilation remains retryable. ``log_stream`` receives compiler
+        output (a writable file object, or None).
 
         Returns
         -------
         cupy.RawKernel
             The compiled kernel; compiled once and cached (also on disk by CuPy,
-            keyed on the source and :meth:`compile_options`).
+            keyed on the source and :meth:`compile_options`). No launch is needed
+            to surface compiler errors.
 
         Raises
         ------
         RuntimeError
             If CuPy or a GPU is not available.
         """
-        if self._raw_kernel is None:
-            from cunumpy.xp import cupy_available
+        from cunumpy.xp import cupy_available
 
-            if not cupy_available():
-                raise RuntimeError(
-                    f"cannot compile CUDA kernel {self.expression!r}: "
-                    "CuPy is not installed or no GPU is available",
-                )
-            import cupy as cp
+        if not cupy_available():
+            raise RuntimeError(
+                f"cannot compile CUDA kernel {self.expression!r}: "
+                "CuPy is not installed or no GPU is available",
+            )
+        import cupy as cp
 
+        device = _current_device()
+        if device not in self._compiled:
             options = self.compile_options()
             if self._template_args is None:
-                self._raw_kernel = cp.RawKernel(
+                raw = cp.RawKernel(
                     self._source,
                     self._name,
                     options=options,
                 )
+                raw.compile(log_stream=log_stream)
             else:
                 module = cp.RawModule(
                     code=self._source,
                     options=options,
                     name_expressions=[self.expression],
                 )
-                self._raw_kernel = module.get_function(self.expression)
-        return self._raw_kernel
+                module.compile(log_stream=log_stream)
+                raw = module.get_function(self.expression)
+            limits = _device_limits(device)
+            attributes = dict(raw.attributes)
+            static = max(0, attributes.get("shared_size_bytes", 0))
+            dynamic = attributes.get("max_dynamic_shared_size_bytes", -1)
+            if dynamic < 0:
+                dynamic = max(0, int(limits["sharedMemPerBlock"]) - static)
+            dynamic = min(dynamic, max(0, int(limits["sharedMemPerBlock"]) - static))
+            # Do not publish failed compilation or incomplete setup as compiled.
+            self._compiled[device] = _CompiledKernel(raw, limits, attributes, dynamic)
+        return self._compiled[device].raw
+
+    def recompile(self, *, log_stream: Any = None) -> Any:
+        """Recompile on the current device using current headers/debug options.
+
+        Other devices keep their compiled kernels. A failed rebuild remains
+        uncompiled and can be retried; in-flight launches must finish first.
+        """
+        from cunumpy.xp import cupy_available
+
+        if cupy_available():
+            self._compiled.pop(_current_device(), None)
+        return self.compile(log_stream=log_stream)
 
     def prepare_args(self, *args: Any) -> tuple[Any, ...]:
         """The arguments as passed to ``cupy.RawKernel``: flattened and checked.
@@ -2331,7 +2400,7 @@ class CudaKernel:
                     "numbers of dimensions",
                 )
             block_shape = block_shape + (1,) * (len(threads) - 1)
-        grid_shape = tuple(math.ceil(n / b) for n, b in zip(threads, block_shape))
+        grid_shape = tuple((n + b - 1) // b for n, b in zip(threads, block_shape))
         return grid_shape, block_shape
 
     def __call__(
@@ -2374,10 +2443,14 @@ class CudaKernel:
             illegal memory access; the CuPy error is chained. Without debug
             mode, such an error surfaces at a later synchronization (a
             ``.get()``, an MPI call, ...), not necessarily in this kernel.
+        ValueError
+            Dimensions, threads or static plus dynamic shared memory exceed
+            this device/kernel's limits, or arrays/stream belong to another device.
         """
         if n_threads is None and grid is None and self._n_threads_from is not None:
             n_threads = self._n_threads_from(args)
         grid_shape, block_shape = self.launch_shape(n_threads, grid=grid, block=block)
+        shared_mem = operator.index(shared_mem)
         if shared_mem < 0:
             raise ValueError(f"shared_mem must be non-negative, got {shared_mem}")
         values = self.prepare_args(*args)
@@ -2385,8 +2458,23 @@ class CudaKernel:
             return
 
         kernel = self.compile()
-        if shared_mem > self._shared_mem_opt_in:
-            self._opt_in_shared_memory(kernel, shared_mem)
+        device = _current_device()
+        state = self._compiled[device]
+        self._validate_launch(state, device, grid_shape, block_shape, shared_mem)
+        if stream is not None and getattr(stream, "device_id", device) not in (
+            device,
+            -1,
+        ):
+            raise ValueError(
+                f"kernel {self.expression!r}: stream belongs to another device"
+            )
+        for label, array in _device_arrays_in(args):
+            array_device = getattr(getattr(array, "device", None), "id", None)
+            if array_device is not None and array_device != device:
+                raise ValueError(
+                    f"kernel {self.expression!r} on CUDA device {device}: "
+                    f"{label} belongs to CUDA device {array_device}",
+                )
         debug = self.debug_active()
         with stream if stream is not None else nullcontext():
             kernel(grid_shape, block_shape, values, shared_mem=shared_mem)
@@ -2395,29 +2483,50 @@ class CudaKernel:
             if self._check_finite:
                 self._check_finite_arrays(args)
 
-    def _opt_in_shared_memory(self, kernel: Any, shared_mem: int) -> None:
-        """Allow `shared_mem` bytes of dynamic shared memory above the default limit.
-
-        Up to :data:`~cunumpy.cuda.DEFAULT_SHARED_MEMORY_PER_BLOCK` (48 KiB) every
-        device launches without setup. Above it, newer GPUs need the kernel
-        attribute ``max_dynamic_shared_size_bytes``; it is set once (and again
-        for a larger request) up to the device's opt-in limit.
-        """
-        from cunumpy._device import (
-            DEFAULT_SHARED_MEMORY_PER_BLOCK,
-            max_shared_memory_per_block,
-        )
-
-        if shared_mem <= DEFAULT_SHARED_MEMORY_PER_BLOCK:
-            return
-        limit = max_shared_memory_per_block(opt_in=True)
-        if shared_mem > limit:
+    def _validate_launch(
+        self,
+        state: _CompiledKernel,
+        device: int,
+        grid: tuple[int, ...],
+        block: tuple[int, ...],
+        shared_mem: int,
+    ) -> None:
+        limits, attributes = state.limits, state.attributes
+        name = limits.get("name", "unknown")
+        if isinstance(name, bytes):
+            name = name.decode(errors="replace")
+        context = f"kernel {self.expression!r} on CUDA device {device} ({name})"
+        for label, shape, maximum in (
+            ("block", block, limits["maxThreadsDim"]),
+            ("grid", grid, limits["maxGridSize"]),
+        ):
+            for axis, (requested, limit) in enumerate(zip(shape, maximum)):
+                if requested > limit:
+                    raise ValueError(
+                        f"{context}: {label}[{axis}]={requested} exceeds the {limit} limit",
+                    )
+        threads_limit = int(limits["maxThreadsPerBlock"])
+        kernel_limit = attributes.get("max_threads_per_block", -1)
+        if kernel_limit > 0:
+            threads_limit = min(threads_limit, kernel_limit)
+        if math.prod(block) > threads_limit:
             raise ValueError(
-                f"kernel {self.expression!r}: shared_mem={shared_mem} bytes exceeds "
-                f"the {limit} bytes a block may use on this device",
+                f"{context}: block {block} has {math.prod(block)} threads, "
+                f"exceeding the {threads_limit} device/kernel limit",
             )
-        kernel.max_dynamic_shared_size_bytes = shared_mem
-        self._shared_mem_opt_in = shared_mem
+        static = max(0, attributes.get("shared_size_bytes", 0))
+        maximum_shared = max(
+            int(limits["sharedMemPerBlock"]),
+            int(limits.get("sharedMemPerBlockOptin", 0)),
+        )
+        if shared_mem + static > maximum_shared:
+            raise ValueError(
+                f"{context}: static shared memory {static} + shared_mem={shared_mem} "
+                f"exceeds the {maximum_shared} bytes a block may use on this device",
+            )
+        if shared_mem > state.dynamic_shared:
+            state.raw.max_dynamic_shared_size_bytes = shared_mem
+            state.dynamic_shared = shared_mem
 
     def _check_finite_arrays(self, args: tuple[Any, ...]) -> None:
         """Raise if a floating-point array among `args` holds NaN or inf."""

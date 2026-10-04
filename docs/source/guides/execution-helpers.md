@@ -92,6 +92,60 @@ Without either, CuNumpy synchronizes all work on the buffer's device.
 `synchronize_for_mpi(*arrays, stream=..., event=...)` follows the same rule; pass
 at most one dependency, covering all reads/writes of the supplied buffers.
 
+## Order output snapshots and mirror refreshes
+
+```python
+staging = xp.memory.HostStaging(field.shape, field.dtype, buffers=2)
+copy = staging.copy(field, stream=producer)
+# Alternatively: copy = staging.copy(field, event=produced)
+host_field = copy.result()  # complete host data for an output writer
+```
+
+The snapshot runs on the supplied producer stream, or on the current stream
+after waiting for the supplied event. Without either, the current stream must
+already cover production. Subsequent writes on that stream are ordered after
+the snapshot; another stream must wait before overwriting the source. Waiting
+for `copy.result()` is a conservative way to establish completion.
+
+Make the source device current when submitting copies. The staging instance
+binds to that device and rejects another. Completion checks temporarily select
+the owning device and restore the caller's device. CPU-initialized storage gets
+fresh pinned slots at first GPU use; earlier CPU snapshots stay valid. Reusing
+a slot still invalidates its earlier handle, so copy a returned host buffer if
+the writer must retain it.
+
+`DeviceMirror.to_host(stream=producer)` and `.to_host(event=produced)` provide the
+same explicit producer choices for synchronous refreshes into another library's
+host array. Make the mirror's device current. After CPU work changes its host
+array, explicitly call `.to_device()` before resuming GPU work.
+
+## Check copies and prepare kernels
+
+```python
+with xp.profiling.count_transfers() as copies:
+    mirror.to_device()
+    mirror.to_host()
+print(copies.bytes_to_device, copies.bytes_to_host)
+```
+
+Transfers through execution/conversion helpers carry payload byte counts,
+including mirror refreshes, MPI/output staging, argument conversion, and kernel
+output copy-back. Conversion/fallback markers describe calls and add no bytes.
+`total` includes these markers; use `to_host + to_device` for physical boundary
+copy counts. Device-only conversions are recorded separately as `device_copy`
+and are permitted by `assert_no_transfers()`. Forwarded backend operations such
+as `xp.asarray()` and external library copies are outside this accounting.
+
+`kernel.compile(log_stream=log)` compiles eagerly and caches successful state
+per device; catalog setup catches CUDA compiler failures before timesteps.
+`kernel.recompile()` explicitly refreshes headers/debug options. Each launch
+checks actual block/grid, kernel thread, and static-plus-dynamic shared-memory
+limits. These execution checks are independent of scope-profiler.
+
+GPU CI requires a real CUDA device (`CUNUMPY_REQUIRE_CUDA=1`) and runs focused
+`memcheck`, `racecheck`, and `synccheck` jobs with nonzero sanitizer error exits.
+Numerical parity tests are separate from performance comparisons.
+
 ## Prepare cell ranges and segment reductions
 
 ```python

@@ -182,7 +182,7 @@ def test_warp_shuffles_in_an_included_header_are_refused():
         "  double s = cunumpy_block_sum(1.0); if (threadIdx.x == 0) out[0] = s; }",
         "k",
     )
-    with pytest.raises(NotImplementedError, match="warp shuffles"):
+    with pytest.raises(NotImplementedError, match="warp (shuffles|synchronization)"):
         emulate_cuda_kernel(kernel, np.zeros(1), 1, n_threads=32)
 
 

@@ -15,7 +15,7 @@ from cunumpy._mpi_serial import (
     _LOCAL_RANK_VARIABLES,  # noqa: F401 - re-exported
 )
 from cunumpy._transfers import _ACTIVE as _COUNTERS
-from cunumpy._transfers import _describe, _record
+from cunumpy._transfers import _describe, _nbytes, _record
 from cunumpy.xp import array_backend, cupy_available, to_numpy
 
 _logger = logging.getLogger(__name__)
@@ -243,17 +243,25 @@ def mpi_buffer(
         synchronize_for_mpi(array, stream=stream, event=event)
         transfer_array = staging._transfer_array(array)
         if send:
-            if _COUNTERS:
-                _record("to_host", f"mpi_buffer({_describe(array)}) staging for send")
             if transfer_array is not array:
                 transfer_array[...] = array
             transfer_array.get(out=host)
+            if _COUNTERS:
+                _record(
+                    "to_host",
+                    f"mpi_buffer({_describe(array)}) staging for send",
+                    nbytes=_nbytes(array),
+                )
         yield host
         if recv:
-            if _COUNTERS:
-                _record("to_device", f"mpi_buffer({_describe(array)}) staging for recv")
-            # Ensure MPI's host buffer can be reused immediately on context exit.
             transfer_array.set(host)
+            if _COUNTERS:
+                _record(
+                    "to_device",
+                    f"mpi_buffer({_describe(array)}) staging for recv",
+                    nbytes=_nbytes(array),
+                )
+            # Ensure MPI's host buffer can be reused immediately on context exit.
             if transfer_array is not array:
                 array[...] = transfer_array
             cp.cuda.get_current_stream().synchronize()

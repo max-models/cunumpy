@@ -1,12 +1,13 @@
 variables:
-  # Use the specialized MPCDF HPC image
   CUDA_IMAGE: "gitlab-registry.mpcdf.mpg.de/mpcdf/ci-module-image/nvhpcsdk_26:2026"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  ARRAY_BACKEND: "cupy"
+  CUNUMPY_REQUIRE_CUDA: "1"
 
 stages:
   - test
 
-gpu_tests:
+.gpu_job:
   stage: test
   image: ${CUDA_IMAGE}
   tags:
@@ -16,32 +17,34 @@ gpu_tests:
     - module load python-waterboa/2025.06
     - module load nvhpcsdk/26
     - module load fftw-serial/3.3.10
-  script:
-    - echo "--- CUDA Sanity Check ---"
     - nvidia-smi
-    
-    - echo "--- Detect Compute Capability ---"
-    - nvidia-smi --query-gpu=compute_cap --format=csv,noheader
-    
-    - echo "--- Tool Versions ---"
-    - cmake --version
-    - python3 --version
-    - git --version
-    
-    - echo "--- Pytest Execution ---"
-    # The MPCDF image likely has a specific python environment.
-    # We install our dependencies into the user directory or a virtualenv.
-    # One CUDA version only: nvhpcsdk/26 provides CUDA 13.2 (its headers are used
-    # when CuPy compiles kernels with NVRTC), so install CuPy for CUDA 13 with the
-    # CUDA 13.2 libraries and NVRTC. Mixing CUDA 12 (cupy-cuda12x) with the CUDA 13.2
-    # headers fails to compile CuPy's own kernels (e.g. CUB reductions).
+    # Keep NVRTC, CUDA libraries and headers on the same toolkit generation.
     - python3 -m pip install --user "cupy-cuda13x[ctk]" "cuda-toolkit==13.2.*"
-    - python3 -m pip install --user -e .
-
-    # Add the user bin to PATH for pytest
+    - python3 -m pip install --user -e ".[test]"
     - export PATH="$HOME/.local/bin:$PATH"
-
-    - export ARRAY_BACKEND=cupy
     - python3 -c "import cupy; cupy.show_config()"
-    
-    - pytest -xvs .
+
+gpu_tests:
+  extends: .gpu_job
+  script:
+    - python3 -m pytest -q tests
+
+gpu_sanitizers:
+  extends: .gpu_job
+  timeout: 45 minutes
+  parallel:
+    matrix:
+      - SANITIZER: [memcheck, racecheck, synccheck]
+  script:
+    - compute-sanitizer --version
+    # These tests intentionally contain no illegal-access demonstration kernels.
+    - >-
+      compute-sanitizer --tool "$SANITIZER" --error-exitcode 1
+      --target-processes all python3 -m pytest -q
+      tests/unit/test_cuda_collectives.py
+      tests/unit/test_cuda_launch_limits.py
+      tests/unit/test_reusable_streams.py
+      tests/unit/test_staging.py
+      tests/unit/test_mirror.py
+      tests/unit/test_mpi_staging.py
+      tests/unit/test_segment_plans.py

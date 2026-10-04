@@ -131,15 +131,19 @@ xp.to_numpy(a)        # -> numpy.ndarray; copies only if a is CuPy
 xp.to_cupy(a)         # -> cupy.ndarray; copies only if a is not CuPy; ImportError w/o CuPy
 xp.to_cunumpy(a)      # -> array of the active backend
 xp.as_device_array(value, dtype=None, ndim=None, *, name=None)
-                      # contiguous CuPy array of dtype: returned as is; else one copy;
+                      # contiguous CuPy array of dtype: returned as is; else convert;
                       # RuntimeError on the NumPy backend
 with xp.profiling.count_transfers() as c: ...   # c.total, c.to_host, c.to_device,
                                       # c.kernel_conversions, c.fallbacks, c.events, c.report()
-with xp.profiling.assert_no_transfers(): ...    # AssertionError with report if anything copied
+with xp.profiling.assert_no_transfers(): ...    # rejects host/device copies and host fallback
 ```
 
-Only transfers through cunumpy are counted (not raw `cupy.asarray`, `.get()`,
-`float(device_scalar)`, or `DeviceMirror.to_host()/to_device()`).
+Mirror refreshes, MPI/output staging, argument conversion and kernel output
+copy-back are counted with `event.nbytes`, `c.bytes_to_host`, and
+`c.bytes_to_device`. Conversion/fallback markers add no bytes; `c.total`
+includes markers. Device-only conversions are separate `device_copy` events
+and are allowed by `assert_no_transfers()`. Forwarded `xp.asarray`, raw CuPy
+copies, and external library/scalar conversions are not counted.
 
 MPI, accumulation and versions:
 
@@ -264,7 +268,9 @@ k = xp.cuda.CudaKernel(source, name, *, block_size=128, options=(), include_dirs
 k = xp.cuda.CudaKernel.from_file("push/push_cuda.cu")           # name "push"
 ks = xp.cuda.CudaKernel.all_from_file("ops.cu")                 # dict name -> kernel
 k(*args, n_threads=None, grid=None, block=None, shared_mem=0, stream=None)
-k.compile(); k.is_compiled; k.launch_shape(n_threads) -> (grid, block)
+k.compile(log_stream=None); k.recompile(log_stream=None)
+k.is_compiled  # successful compilation on the current CUDA device
+k.launch_shape(n_threads) -> (grid, block)
 k.included_headers; k.compile_options(); k.debug_active()
 xp.cuda.CudaKernelVariants(factory).get(*key); .compile_all(keys, jobs=1)
 xp.cuda.ctype_of(np.float64) == "double"
@@ -284,6 +290,10 @@ xp.cuda.cuda_include_dir()
   `ArrayND<T>` params: CuPy arrays of dtype T and ndim N, any strides.
 * Compiled lazily with NVRTC on first call; cached on disk by CuPy; quoted
   `#include "..."` headers are hashed into the options so edits recompile.
+  `compile()` compiles eagerly and reuses successful per-device state;
+  `recompile()` refreshes that state after header/debug changes. Each launch
+  validates actual device/kernel dimensions, threads and static+dynamic shared
+  memory. Use the returned CuPy raw kernel's attributes for resource inspection.
 * Creating a `CudaKernel` does not import CuPy; compiling needs a GPU.
 
 Shipped CUDA headers (always on the include path):
@@ -375,9 +385,19 @@ m = xp.memory.DeviceMirror(host_numpy_array)  # TypeError if not numpy.ndarray
 m.device  # CuPy copy (lazy) on CuPy; the host array itself on NumPy
 m.zero()
 m.to_device()
-m.to_host()  # to_host copies in place; no-ops on NumPy
+m.to_host(stream=None, event=None)  # in place; pass at most one dependency
 m.rebind(new_host_array)  # after the owner reallocates
 ```
+
+Make a retained mirror's CUDA device current before using it. `to_host()`
+blocks until the copy completes; supply the producer stream or event when work
+ran elsewhere. Refresh with `to_device()` after CPU work modifies the host.
+`HostStaging.copy(a, stream=None, event=None)` snapshots on the producer stream
+(or current stream after an event wait). Later writes must be ordered after
+the snapshot. Staging binds to the first source device and upgrades ordinary
+CPU slots to pinned slots on first GPU use. `ready()`/`result()` temporarily
+select the owning device and restore the caller's device. Copy the returned
+host buffer to retain it beyond slot reuse.
 
 Debugging:
 
@@ -508,8 +528,8 @@ def test_scale():
 * Comparing CPU and GPU results with exact equality where the GPU uses atomics
   or a different reduction order; use a tolerance.
 * Assuming `xp.random.seed(s)` gives the same numbers on both backends.
-* Expecting `DeviceMirror` copies or raw CuPy conversions to show up in
-  `count_transfers()`.
+* Expecting raw CuPy or forwarded backend operations to show up in
+  `count_transfers()`; mirror copies and execution helpers are counted.
 * Writing code that requires CuPy at import time. `import cunumpy` and creating
   `CudaKernel` objects work without CuPy; import `cupy` lazily, only on the GPU
   path, if you need it at all.
