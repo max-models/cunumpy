@@ -7,7 +7,8 @@ from cunumpy.cuda import CudaKernel
 from cunumpy.kernel_testing import emulate_cuda_kernel, emulation_compiler
 
 pytestmark = pytest.mark.skipif(
-    emulation_compiler() is None, reason="no C++ compiler for the emulation"
+    emulation_compiler() is None,
+    reason="no C++ compiler for the emulation",
 )
 
 AXPY = r"""
@@ -56,7 +57,12 @@ def test_strided_view_written_back_into_the_callers_array():
     markers = np.arange(24.0).reshape(8, 3)
     every_second_row = markers[::2]  # a non-contiguous view
     emulate_cuda_kernel(
-        CudaKernel(COLUMN, "scale_column"), every_second_row, 1, 10.0, grid=1, block=2
+        CudaKernel(COLUMN, "scale_column"),
+        every_second_row,
+        1,
+        10.0,
+        grid=1,
+        block=2,
     )
     expected = np.arange(24.0).reshape(8, 3)
     expected[::2, 1] *= 10.0
@@ -139,7 +145,12 @@ def test_arrays_are_checked():
     kernel = CudaKernel(AXPY, "axpy")
     with pytest.raises(TypeError, match="dtype float64"):
         emulate_cuda_kernel(
-            kernel, 1.0, np.ones(3, np.float32), np.ones(3), 3, n_threads=3
+            kernel,
+            1.0,
+            np.ones(3, np.float32),
+            np.ones(3),
+            3,
+            n_threads=3,
         )
     with pytest.raises(TypeError, match="NumPy array"):
         emulate_cuda_kernel(kernel, 1.0, [1.0], np.ones(3), 3, n_threads=3)
@@ -250,7 +261,9 @@ extern "C" __global__ void reverse_blocks(double* x) {
 def test_barrier_orders_writes_before_reads():
     x = np.arange(128.0)
     emulate_cuda_kernel(
-        CudaKernel(REVERSE, "reverse_blocks", block_size=64), x, n_threads=128
+        CudaKernel(REVERSE, "reverse_blocks", block_size=64),
+        x,
+        n_threads=128,
     )
     expected = np.concatenate([np.arange(64.0)[::-1], np.arange(64.0, 128.0)[::-1]])
     np.testing.assert_array_equal(x, expected)
@@ -271,7 +284,10 @@ extern "C" __global__ void early(double* x, int n) {
 def test_threads_leaving_before_a_barrier_do_not_hang():
     x = np.ones(40)
     emulate_cuda_kernel(
-        CudaKernel(EARLY_EXIT, "early", block_size=32), x, 40, n_threads=40
+        CudaKernel(EARLY_EXIT, "early", block_size=32),
+        x,
+        40,
+        n_threads=40,
     )
     assert x.tolist() == [2.0] * 40
 
@@ -301,12 +317,14 @@ def test_2d_blocks_with_shared_tiles():
 
 def test_compile_errors_and_crashes_are_reported():
     broken = CudaKernel(
-        'extern "C" __global__ void k(int n) { undefined_call(n); }', "k"
+        'extern "C" __global__ void k(int n) { undefined_call(n); }',
+        "k",
     )
     with pytest.raises(RuntimeError, match="does not compile"):
         emulate_cuda_kernel(broken, 1, n_threads=1)
     trap = CudaKernel(
-        'extern "C" __global__ void k(int n) { if (n > 0) __trap(); }', "k"
+        'extern "C" __global__ void k(int n) { if (n > 0) __trap(); }',
+        "k",
     )
     with pytest.raises(RuntimeError, match="crashed"):
         emulate_cuda_kernel(trap, 1, n_threads=1)
@@ -317,5 +335,10 @@ def test_bounds_checks_from_the_view_header():
     a = np.ones((4, 2))
     with pytest.raises(RuntimeError, match="crashed"):
         emulate_cuda_kernel(
-            kernel, a, 5, 2.0, n_threads=4, options=("-DCUNUMPY_BOUNDS_CHECK",)
+            kernel,
+            a,
+            5,
+            2.0,
+            n_threads=4,
+            options=("-DCUNUMPY_BOUNDS_CHECK",),
         )

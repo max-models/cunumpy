@@ -61,7 +61,10 @@ class RandomStreams:
         )
 
     def seed(
-        self, value: int | None, rank: int = 0, bit_generator: str | None = None
+        self,
+        value: int | None,
+        rank: int = 0,
+        bit_generator: str | None = None,
     ) -> None:
         """Seed all draws of this process with the stream ``(value, rank)``.
 
@@ -87,11 +90,12 @@ class RandomStreams:
         if bit_generator is not None and bit_generator not in BIT_GENERATORS:
             raise ValueError(
                 f"Unknown bit generator {bit_generator!r}; use one of "
-                f"{', '.join(BIT_GENERATORS)}"
+                f"{', '.join(BIT_GENERATORS)}",
             )
         self._bit_generator = bit_generator or "PCG64"
         self._sequence = np.random.SeedSequence(
-            entropy=None if value is None else int(value), spawn_key=(int(rank),)
+            entropy=None if value is None else int(value),
+            spawn_key=(int(rank),),
         )
         self._generators.clear()
         legacy = int(self._sequence.generate_state(1)[0])
@@ -127,7 +131,9 @@ class RandomStreams:
         return self._generators[backend]
 
     def make_generator(
-        self, seed: int | None = None, backend: str | None = None
+        self,
+        seed: int | None = None,
+        backend: str | None = None,
     ) -> Any:
         """A generator for a component: its own if it has a seed, else the process one.
 
@@ -156,7 +162,9 @@ class RandomStreams:
         return self._rng(rng).random(size=size)
 
     def standard_normal(
-        self, size: int | tuple[int, ...] | None = None, rng: Any = None
+        self,
+        size: int | tuple[int, ...] | None = None,
+        rng: Any = None,
     ) -> Any:
         """Standard normal samples from `rng` (the process generator by default)."""
         return self._rng(rng).standard_normal(size=size)

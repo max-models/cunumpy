@@ -98,7 +98,8 @@ def test_arrays_on_another_device_are_rejected(monkeypatch):
     kernel.prepare_args(FakeDeviceArray(np.float64), 2.0, 4)  # no device attribute
     kernel.prepare_args(FakeDeviceArray(np.float64, device=0), 2.0, 4)
     with pytest.raises(
-        ValueError, match="on CUDA device 1, but the current device is 0"
+        ValueError,
+        match="on CUDA device 1, but the current device is 0",
     ):
         kernel.prepare_args(FakeDeviceArray(np.float64, device=1), 2.0, 4)
     # struct pointer fields go through the same check
@@ -111,7 +112,9 @@ def test_device_check_is_skipped_without_cupy(monkeypatch):
     monkeypatch.delitem(sys.modules, "cupy", raising=False)
     assert cuda_kernel_module._current_device_id() is None
     CudaKernel(SCALE, "scale").prepare_args(
-        FakeDeviceArray(np.float64, device=7), 2.0, 4
+        FakeDeviceArray(np.float64, device=7),
+        2.0,
+        4,
     )
 
 
@@ -122,7 +125,9 @@ def test_device_check_is_skipped_without_cupy(monkeypatch):
 
 def test_from_pyccel_class_from_source_and_file(tmp_path):
     struct = CudaStruct.from_pyccel_class(
-        PYCCEL_SOURCE, "MarkerArguments", "MarkerArgs"
+        PYCCEL_SOURCE,
+        "MarkerArguments",
+        "MarkerArgs",
     )
     assert struct.name == "MarkerArgs"
     # fields are named after the attributes the parameters are stored in
@@ -139,18 +144,25 @@ def test_from_pyccel_class_from_source_and_file(tmp_path):
     assert from_file.name == "MarkerArguments"
     assert from_file.dtype == struct.dtype
     same = CudaStruct.from_pyccel_class(
-        str(path), "MarkerArguments", "A", int_type="int"
+        str(path),
+        "MarkerArguments",
+        "A",
+        int_type="int",
     )
     assert [f.ctype for f in same.fields][2] == "int"
 
 
 def test_from_pyccel_class_options():
     keep = CudaStruct.from_pyccel_class(
-        PYCCEL_SOURCE, "MarkerArguments", attribute_names=False
+        PYCCEL_SOURCE,
+        "MarkerArguments",
+        attribute_names=False,
     )
     assert [f.name for f in keep.fields][3] == "first_pusher_idx"
     fewer = CudaStruct.from_pyccel_class(
-        PYCCEL_SOURCE, "MarkerArguments", exclude=("bc_type", "first_pusher_idx")
+        PYCCEL_SOURCE,
+        "MarkerArguments",
+        exclude=("bc_type", "first_pusher_idx"),
     )
     assert [f.name for f in fewer.fields] == ["markers", "valid_mks", "Np"]
     final = CudaStruct.from_pyccel_class(PYCCEL_SOURCE, "DerhamArguments", "DerhamArgs")
@@ -167,7 +179,8 @@ def test_from_pyccel_class_errors():
         CudaStruct.from_pyccel_class("class Empty:\n    pass\n", "Empty")
     with pytest.raises(ValueError, match="no type annotation"):
         CudaStruct.from_pyccel_class(
-            "class A:\n    def __init__(self, x):\n        pass\n", "A"
+            "class A:\n    def __init__(self, x):\n        pass\n",
+            "A",
         )
 
 
@@ -311,7 +324,7 @@ def test_check_finite(monkeypatch):
 def test_device_arrays_in_struct_arguments():
     args = MarkerArguments(FakeDeviceArray(np.float64, shape=(5, 3)), 5)
     found = dict(
-        cuda_kernel_module._device_arrays_in((1.0, args, FakeDeviceArray("f8")))
+        cuda_kernel_module._device_arrays_in((1.0, args, FakeDeviceArray("f8"))),
     )
     assert set(found) == {"argument 1.markers", "argument 2"}
 
@@ -338,14 +351,14 @@ def helper_package(tmp_path, monkeypatch):
         (root / name).mkdir(parents=True)
         (root / name / "__init__.py").write_text("")
         (root / name / f"{name}_kernels.py").write_text(
-            f"def {name}(x, factor, n):\n    for i in range(n):\n        x[i] *= factor\n"
+            f"def {name}(x, factor, n):\n    for i in range(n):\n        x[i] *= factor\n",
         )
     (root / "scale" / "scale_cuda.cu").write_text(SCALE)
     (root / "scale" / "scale_test_args.py").write_text(
         "import numpy as np\nimport cunumpy as xp\n\nN_THREADS = 300\nRTOL = 1e-10\n\n\n"
         "def make_args(backend, seed):\n"
         "    x = xp.to_cunumpy(np.random.default_rng(seed).random(300))\n"
-        "    return (x, 2.0, x.size)\n"
+        "    return (x, 2.0, x.size)\n",
     )
     (root / "__init__.py").write_text("")
     monkeypatch.syspath_prepend(str(tmp_path))
@@ -386,10 +399,10 @@ def test_parity_cases_marks_kernels_without_test_args(helper_package):
     root.mkdir()
     (root / "__init__.py").write_text("")
     (root / "with_cuda_no_args_kernels.py").write_text(
-        "def with_cuda_no_args(x, factor, n):\n    pass\n"
+        "def with_cuda_no_args(x, factor, n):\n    pass\n",
     )
     (root / "with_cuda_no_args_cuda.cu").write_text(
-        SCALE.replace("scale", "with_cuda_no_args")
+        SCALE.replace("scale", "with_cuda_no_args"),
     )
     catalog = KernelCatalog.from_package("helper_kernel_pkg")
     cases = parity_cases(catalog)
@@ -426,7 +439,7 @@ def test_host_parameters_from_pyccel_stub(tmp_path):
         "from pyccel.decorators import low_level\n\n"
         "@low_level('push')\n"
         "def push(dt : 'float', stage : 'int', markers : 'float64[:,:](order=C)') -> None:\n"
-        "    ...\n"
+        "    ...\n",
     )
     module = ModuleType("push_kernels")
     module.__file__ = str(so)
@@ -456,7 +469,9 @@ def test_device_function_kernel_struct_parameters():
         "{ return d.params[0] * x; }\n"
     )
     kernel = device_function_kernel(
-        source, "double scale_x(const DomainArgs& d, double x)", structs=[domain]
+        source,
+        "double scale_x(const DomainArgs& d, double x)",
+        structs=[domain],
     )
     params = [(p.name, p.ctype, p.struct is not None) for p in kernel.signature]
     assert params == [
@@ -482,7 +497,8 @@ def test_segment_sum():
     keys = np.array([0, 2, 0, -1, 2])
     values = np.array([1.0, 2.0, 3.0, 100.0, 4.0])
     np.testing.assert_array_equal(
-        xp.algorithms.segment_sum(values, keys, 4), [4.0, 0.0, 6.0, 0.0]
+        xp.algorithms.segment_sum(values, keys, 4),
+        [4.0, 0.0, 6.0, 0.0],
     )
     columns = np.stack([values, -values], axis=1)
     out = xp.algorithms.segment_sum(columns, keys, 3)
@@ -584,6 +600,14 @@ assert xp.to_numpy(d).tolist() == [5.0, 6.0]
 assert sorted(e.kind for e in counter.events) == ["to_device", "to_host"]
 with xp.mpi.mpi_buffer(d, cuda_aware=True) as buf:
     assert buf is d
+producer = xp.cuda.create_stream()
+event = xp.cuda.create_event()
+with xp.cuda.stream(producer):
+    assert xp.cuda.record_event(event, stream=producer) is event
+xp.cuda.wait_event(event, stream=producer)
+assert producer.done and event.done
+assert producer.record().done
+assert xp.backend_info()["versions"]["cupy"] == "0.0.0+cunumpy-fake"
 print("fake cupy OK")
 """
 

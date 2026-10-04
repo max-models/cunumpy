@@ -82,7 +82,7 @@ class FakeDeviceArray:
                 stride *= n
         self.strides = tuple(strides)
         c_contiguous = self.strides == tuple(
-            np.zeros(self.shape, dtype=self.dtype).strides
+            np.zeros(self.shape, dtype=self.dtype).strides,
         )
         self.flags = SimpleNamespace(c_contiguous=c_contiguous)
         if flags is not None:
@@ -112,7 +112,7 @@ def test_parse_axpy():
         ("n", "int", False),
     ]
     assert [p.dtype for p in params] == [np.dtype(np.float64)] * 3 + [
-        np.dtype(np.int32)
+        np.dtype(np.int32),
     ]
 
 
@@ -224,7 +224,8 @@ def test_array_checks():
     x = FakeDeviceArray(np.float64)
 
     with pytest.raises(
-        TypeError, match=r"argument 2 \(double\* y\) must be a CuPy array"
+        TypeError,
+        match=r"argument 2 \(double\* y\) must be a CuPy array",
     ):
         kernel.prepare_args(1.0, x, np.zeros(3), 3)  # host array: never copied
     with pytest.raises(TypeError, match="must have dtype float64, got float32"):
@@ -240,10 +241,13 @@ def test_non_contiguous_arrays_are_rejected():
     kernel = CudaKernel(AXPY, "axpy")
     x = FakeDeviceArray(np.float64)
     view = FakeDeviceArray(
-        np.float64, shape=(3, 2), flags=SimpleNamespace(c_contiguous=False)
+        np.float64,
+        shape=(3, 2),
+        flags=SimpleNamespace(c_contiguous=False),
     )
     with pytest.raises(
-        TypeError, match=r"argument 2 \(double\* y\) must be C-contiguous"
+        TypeError,
+        match=r"argument 2 \(double\* y\) must be C-contiguous",
     ):
         kernel.prepare_args(1.0, x, view, 3)
     # the message says why, and how to fix it
@@ -405,7 +409,7 @@ def test_stream_and_include_dirs_on_gpu(tmp_path):
     import cupy as cp
 
     (tmp_path / "helpers.cuh").write_text(
-        "__device__ double twice(double v) { return 2 * v; }\n"
+        "__device__ double twice(double v) { return 2 * v; }\n",
     )
     source = r"""
     #include "helpers.cuh"
@@ -558,7 +562,8 @@ def test_struct_pointer_fields_must_be_contiguous():
     }
     view = FakeDeviceArray(np.float64, flags=SimpleNamespace(c_contiguous=False))
     with pytest.raises(
-        TypeError, match=r"argument 0 \(double\* x\) must be C-contiguous"
+        TypeError,
+        match=r"argument 0 \(double\* x\) must be C-contiguous",
     ):
         PARTICLES(x=view, **values)
 
@@ -625,7 +630,11 @@ def test_struct_on_gpu():
     )
     out, size = cp.zeros(4), cp.zeros(1, dtype=cp.uint64)
     CudaKernel(PUSH_SOURCE, "push", structs=[PARTICLES])(
-        value, 0.5, out, size, n_threads=n
+        value,
+        0.5,
+        out,
+        size,
+        n_threads=n,
     )
     assert int(size.get()[0]) == PARTICLES.dtype.itemsize  # same layout as in C
     assert out.get().tolist() == [n, 2.0, 42.0, 1.5]
@@ -730,7 +739,8 @@ def test_view_parameters_pack_pointer_shape_and_strides():
 def test_view_parameter_errors():
     kernel = CudaKernel(SCALE_COLUMN, "scale_column")
     with pytest.raises(
-        TypeError, match=r"argument 0 \(Array2D<double> a\) must be a CuPy"
+        TypeError,
+        match=r"argument 0 \(Array2D<double> a\) must be a CuPy",
     ):
         kernel.prepare_args(np.zeros((2, 2)), 1, 2.0)
     with pytest.raises(TypeError, match="must have dtype float64, got float32"):
@@ -739,7 +749,9 @@ def test_view_parameter_errors():
         kernel.prepare_args(FakeDeviceArray(np.float64, shape=(2,)), 1, 2.0)
     with pytest.raises(TypeError, match="not multiples of the element size"):
         kernel.prepare_args(
-            FakeDeviceArray(np.float64, shape=(2, 2), strides=(20, 8)), 1, 2.0
+            FakeDeviceArray(np.float64, shape=(2, 2), strides=(20, 8)),
+            1,
+            2.0,
         )
 
 
@@ -838,7 +850,9 @@ def test_bounds_check_traps_on_gpu():
     import cupy as cp
 
     kernel = CudaKernel(
-        SCALE_COLUMN, "scale_column", options=("-DCUNUMPY_BOUNDS_CHECK",)
+        SCALE_COLUMN,
+        "scale_column",
+        options=("-DCUNUMPY_BOUNDS_CHECK",),
     )
     a = cp.ones((4, 3))
     kernel(a, 1, 2.0, n_threads=4)
@@ -956,7 +970,8 @@ def test_from_signature_errors():
         pass
 
     with pytest.raises(
-        ValueError, match="parameter 'x' of .*missing.* no type annotation"
+        ValueError,
+        match="parameter 'x' of .*missing.* no type annotation",
     ):
         CudaStruct.from_signature(missing, "A")
     with pytest.raises(ValueError, match="unsupported scalar type 'str'"):
@@ -987,7 +1002,8 @@ def test_to_header(tmp_path):
     assert '#include "cunumpy/array_view.cuh"\n#include "defs.cuh"\n' in written
     # the pattern: a committed header equals the generated one
     assert path.read_text() == struct.to_header(
-        guard="STRUPHY_MARKER_ARGS", includes=["defs.cuh"]
+        guard="STRUPHY_MARKER_ARGS",
+        includes=["defs.cuh"],
     )
     # a struct without views does not include the array view header
     plain = PARTICLES.to_header()
@@ -995,25 +1011,29 @@ def test_to_header(tmp_path):
     # the generated header defines the struct as the kernel expects
     struct.check_source(header)
     CudaKernel(
-        header + 'extern "C" __global__ void f(MarkerArgs a) {}', "f", structs=[struct]
+        header + 'extern "C" __global__ void f(MarkerArgs a) {}',
+        "f",
+        structs=[struct],
     )
 
 
 def test_write_cuda_header(tmp_path):
     path = tmp_path / "pusher_args.cuh"
     header = write_cuda_header(
-        path, [MARKERS, PARTICLES], includes=["#include <cupy/complex.cuh>"]
+        path,
+        [MARKERS, PARTICLES],
+        includes=["#include <cupy/complex.cuh>"],
     )
     assert path.read_text() == header
     assert header.startswith(
         "// Generated by cunumpy.cuda.CudaStruct from the Python definition; do not edit.\n"
         "#ifndef PUSHER_ARGS_CUH\n#define PUSHER_ARGS_CUH\n\n"
-        '#include "cunumpy/array_view.cuh"\n#include <cupy/complex.cuh>\n\n'
+        '#include "cunumpy/array_view.cuh"\n#include <cupy/complex.cuh>\n\n',
     )
     assert header.index("struct Markers") < header.index("struct Particles")
     assert header.endswith("#endif  // PUSHER_ARGS_CUH\n")
     assert write_cuda_header(path, [PARTICLES], guard="G") == PARTICLES.to_header(
-        guard="G"
+        guard="G",
     )
     for struct in (MARKERS, PARTICLES):
         struct.check_source(header)
@@ -1112,8 +1132,10 @@ def test_variants_on_gpu():
 
     variants = CudaKernelVariants(
         lambda ndim, dtype: CudaKernel(
-            _generated_source(ndim, ctype_of(dtype)), "fill", block_size=1
-        )
+            _generated_source(ndim, ctype_of(dtype)),
+            "fill",
+            block_size=1,
+        ),
     )
     variants.compile_all([(2, np.float64), (1, np.int32)], jobs=2)
     assert all(variants.get(*key).is_compiled for key in variants)
@@ -1222,7 +1244,7 @@ def _run_python(code, env=None):
 
     environment = {**os.environ, **(env or {})}
     environment["PYTHONPATH"] = os.pathsep.join(
-        [str(Path(xp.__file__).parents[1]), environment.get("PYTHONPATH", "")]
+        [str(Path(xp.__file__).parents[1]), environment.get("PYTHONPATH", "")],
     )
     result = subprocess.run(
         [sys.executable, "-c", code],
@@ -1268,7 +1290,8 @@ def test_debug_from_env(value, expected):
 
 
 @pytest.mark.parametrize(
-    "value, expected", [("1", "True"), ("on", "True"), ("0", "False"), (None, "False")]
+    "value, expected",
+    [("1", "True"), ("on", "True"), ("0", "False"), (None, "False")],
 )
 def test_debug_from_env_at_import(monkeypatch, value, expected):
     """The environment variable is read when cunumpy.xp is imported."""
@@ -1401,8 +1424,9 @@ def test_out_of_bounds_write_on_gpu(debug):
     _skip_without_cupy()
     output = "".join(
         _run_python(
-            OUT_OF_BOUNDS.replace("DEBUG", str(debug)), env={"CUNUMPY_CUDA_DEBUG": "0"}
-        )
+            OUT_OF_BOUNDS.replace("DEBUG", str(debug)),
+            env={"CUNUMPY_CUDA_DEBUG": "0"},
+        ),
     )
     assert "no error" not in output, output
     if debug:
@@ -1436,7 +1460,7 @@ def header_tree(tmp_path):
     (tmp_path / "sub").mkdir()
     (tmp_path / "double_it_cuda.cu").write_text(INCLUDING_SOURCE)
     (tmp_path / "b.cuh").write_text(
-        '#include "sub/c.cuh"\n__device__ double twice(double v) { return FACTOR * v; }\n'
+        '#include "sub/c.cuh"\n__device__ double twice(double v) { return FACTOR * v; }\n',
     )
     (tmp_path / "sub" / "c.cuh").write_text("#define FACTOR 2\n")
     return tmp_path
@@ -1541,7 +1565,7 @@ def test_resolve_includes_angle_dirs(tmp_path):
     (user / "lib").mkdir(parents=True)
     (user / "lib" / "a.cuh").write_text("")
     assert resolve_includes('#include "lib/a.cuh"\n', [user], angle_dirs=[shipped]) == [
-        user / "lib" / "a.cuh"
+        user / "lib" / "a.cuh",
     ]
 
 
@@ -1720,7 +1744,9 @@ def test_struct_arguments_check_their_fields():
         )
     with pytest.raises(TypeError, match="must be a CuPy array"):
         ParticleArguments(
-            np.zeros(3), FakeDeviceArray(np.bool_), FakeDeviceArray(np.int64)
+            np.zeros(3),
+            FakeDeviceArray(np.bool_),
+            FakeDeviceArray(np.int64),
         )
     args = _particle_arguments()
     args.n = 2.5  # a float for the int field n
@@ -1740,7 +1766,8 @@ def test_struct_arguments_need_every_field_attribute():
             self.pack()
 
     with pytest.raises(
-        AttributeError, match="no attribute 'n' for the field of struct Incomplete"
+        AttributeError,
+        match="no attribute 'n' for the field of struct Incomplete",
     ):
         Incomplete(FakeDeviceArray(np.float64))
 
@@ -1882,11 +1909,18 @@ def test_struct_arguments_on_gpu():
     alive = cp.ones(n, dtype=bool)
     alive[::2] = False
     args = ParticleArguments(
-        cp.zeros(n), alive, cp.array([7, 42], dtype=cp.int64), weight=1.5
+        cp.zeros(n),
+        alive,
+        cp.array([7, 42], dtype=cp.int64),
+        weight=1.5,
     )
     out, size = cp.zeros(4), cp.zeros(1, dtype=cp.uint64)
     CudaKernel(PUSH_SOURCE, "push", structs=[ParticleArguments.struct])(
-        args, 0.5, out, size, n_threads=n
+        args,
+        0.5,
+        out,
+        size,
+        n_threads=n,
     )
     assert int(size.get()[0]) == ParticleArguments.struct.dtype.itemsize
     assert out.get().tolist() == [n, 2.0, 42.0, 1.5]
@@ -1944,7 +1978,8 @@ def test_debug_kernel_in_a_cuda_graph():
 
 def test_layout_source_reports_size_alignment_and_offsets():
     struct = CudaStruct(
-        "LayoutArgs", [("markers", "Array2D<double>"), ("valid", "bool*"), ("n", "int")]
+        "LayoutArgs",
+        [("markers", "Array2D<double>"), ("valid", "bool*"), ("n", "int")],
     )
     source = struct.layout_source()
     assert source.startswith('#include "cunumpy/array_view.cuh"')
@@ -1961,7 +1996,7 @@ def test_layout_source_reports_size_alignment_and_offsets():
     assert from_header.startswith('#include "pkg/layout_args.cuh"')
     assert "struct LayoutArgs {" not in from_header
     assert struct.layout_source("#include <pkg/a.cuh>").startswith(
-        "#include <pkg/a.cuh>"
+        "#include <pkg/a.cuh>",
     )
     # no views: no array_view include
     assert "array_view" not in PARTICLES.layout_source()
@@ -1986,7 +2021,7 @@ def test_verify_layout_on_gpu(tmp_path):
     header = tmp_path / "drifted.cuh"
     header.write_text(
         '#include "cunumpy/array_view.cuh"\n'
-        "struct Views { int n; bool b; Array2D<double> a; };\n"  # b moved before a
+        "struct Views { int n; bool b; Array2D<double> a; };\n",  # b moved before a
     )
     with pytest.raises(ValueError, match="differs from its CudaStruct dtype"):
         views.verify_layout("drifted.cuh", include_dirs=[tmp_path])
@@ -2056,7 +2091,9 @@ def test_reductions_on_gpu(block_size):
     np.testing.assert_array_equal(cp.asnumpy(lo), np.nanmin(blocks, axis=1))
     np.testing.assert_array_equal(cp.asnumpy(hi), np.nanmax(blocks, axis=1))
     np.testing.assert_allclose(
-        cp.asnumpy(warp), np.nan_to_num(padded).reshape(-1, 32).sum(axis=1), rtol=1e-12
+        cp.asnumpy(warp),
+        np.nan_to_num(padded).reshape(-1, 32).sum(axis=1),
+        rtol=1e-12,
     )
 
 
@@ -2077,7 +2114,10 @@ def test_array4d_parameters_pack_pointer_shape_and_strides():
     kernel = CudaKernel(VIEW_4D, "scale_4d")
     # every second component of a (2, 3, 4, 6) grid: a non-contiguous view
     a = FakeDeviceArray(
-        np.float64, ptr=0x40, shape=(2, 3, 4, 3), strides=(576, 192, 48, 16)
+        np.float64,
+        ptr=0x40,
+        shape=(2, 3, 4, 3),
+        strides=(576, 192, 48, 16),
     )
     packed, _, _ = kernel.prepare_args(a, 2.0, 5)
     assert packed["data"] == 0x40
@@ -2171,7 +2211,9 @@ def test_n_threads_from_first_array(recorded):
 def test_shared_memory_above_the_default_is_opted_in(recorded, monkeypatch):
     kernel, raw = recorded
     monkeypatch.setattr(
-        device_module, "max_shared_memory_per_block", lambda opt_in=False: 100_000
+        device_module,
+        "max_shared_memory_per_block",
+        lambda opt_in=False: 100_000,
     )
     x, y = FakeDeviceArray(np.float64), FakeDeviceArray(np.float64)
     kernel(1.0, x, y, 1, n_threads=1, shared_mem=40_000)  # below 48 KiB: no setup

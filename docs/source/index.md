@@ -10,7 +10,7 @@ reference.
 ```python
 import cunumpy as xp
 
-xp.set_backend("cupy")       # falls back to NumPy without a usable GPU
+xp.set_backend("cupy")  # falls back to NumPy without a usable GPU
 values = xp.arange(1_000)
 print(xp.sum(values**2), xp.get_backend())
 ```
@@ -48,6 +48,7 @@ guides/backends
 guides/portable-code
 guides/data-movement
 guides/gpu-devices
+guides/execution-helpers
 guides/mpi
 guides/particle-codes
 guides/solvers

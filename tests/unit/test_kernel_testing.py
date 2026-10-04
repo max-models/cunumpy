@@ -178,10 +178,12 @@ def test_assert_kernels_agree_on_gpu():
 
     # the declared outputs of the host kernel are used by default
     declared = Kernel(
-        scale, CudaKernel(SCALE_CUDA, "scale"), host_options={"outputs": (0,)}
+        scale,
+        CudaKernel(SCALE_CUDA, "scale"),
+        host_options={"outputs": (0,)},
     )
     assert list(assert_kernels_agree(declared, make_scale_args, n_threads=300)) == [
-        "argument 0"
+        "argument 0",
     ]
 
     wrong = Kernel(scale_wrong, CudaKernel(SCALE_CUDA, "scale"), name="scale")
@@ -212,7 +214,8 @@ __device__ int find_span(const double* t, int p, double eta) {
 
 def test_device_function_kernel_source():
     kernel = device_function_kernel(
-        FIND_SPAN, "int find_span(const double* t, int p, double eta)"
+        FIND_SPAN,
+        "int find_span(const double* t, int p, double eta)",
     )
     assert kernel.name == "find_span_kernel"
     assert FIND_SPAN in kernel.source
@@ -246,7 +249,7 @@ def test_device_function_kernel_options():
     )
     assert kernel.name == "fill_all" and kernel.block_size == 64
     assert kernel.source.startswith(
-        '#include "helpers.cuh"\n#include <cupy/complex.cuh>\n'
+        '#include "helpers.cuh"\n#include <cupy/complex.cuh>\n',
     )
     assert (
         'extern "C" __global__ void fill_all('
@@ -276,7 +279,9 @@ def test_device_function_kernel_errors():
         device_function_kernel("", "double f(double out)")
     # the clash is resolved with another generated name
     kernel = device_function_kernel(
-        "", "double f(const double* x, int n)", n_threads_param="size"
+        "",
+        "double f(const double* x, int n)",
+        n_threads_param="size",
     )
     assert (
         "f_kernel(const double* x, const int* n, double* out, int size)"
@@ -289,7 +294,8 @@ def test_device_function_kernel_on_gpu():
     import cupy as cp
 
     sq = device_function_kernel(
-        "__device__ double sq(double x) { return x * x; }", "double sq(double x)"
+        "__device__ double sq(double x) { return x * x; }",
+        "double sq(double x)",
     )
     x = cp.arange(1000, dtype=cp.float64)
     out = cp.empty(1000)
@@ -297,7 +303,8 @@ def test_device_function_kernel_on_gpu():
     assert cp.allclose(out, x * x)
 
     find_span = device_function_kernel(
-        FIND_SPAN, "int find_span(const double* t, int p, double eta)"
+        FIND_SPAN,
+        "int find_span(const double* t, int p, double eta)",
     )
     t = cp.asarray([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0])
     eta = cp.asarray([0.1, 0.6, 0.9])
@@ -349,7 +356,9 @@ def test_struct_arguments_are_compared_by_field_name():
 
     struct = DeviceArguments.struct
     value = xp.cuda.CudaStructValue(
-        struct, np.zeros((), struct.dtype)[()], vars(owner) | {"n": 3}
+        struct,
+        np.zeros((), struct.dtype)[()],
+        vars(owner) | {"n": 3},
     )
     assert sorted(_collect_arrays((value,))) == [
         "argument 0.markers",

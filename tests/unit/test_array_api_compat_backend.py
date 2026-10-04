@@ -51,7 +51,8 @@ def test_to_cupy_returns_real_cupy_ndarray():
 
 
 @pytest.mark.parametrize(
-    "dtype", [np.float32, np.float64, np.int32, np.int64, np.complex64]
+    "dtype",
+    [np.float32, np.float64, np.int32, np.int64, np.complex64],
 )
 def test_round_trip_preserves_values_and_dtype(dtype):
     _skip_without_cupy()

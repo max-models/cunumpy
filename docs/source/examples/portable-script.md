@@ -51,7 +51,9 @@ def main():
     args = parser.parse_args()
 
     xp.set_backend("cupy" if args.gpu else "numpy")
-    print(f"backend={xp.get_backend()} devices={xp.cuda.device_count()} cunumpy={xp.__version__}")
+    print(
+        f"backend={xp.get_backend()} devices={xp.cuda.device_count()} cunumpy={xp.__version__}"
+    )
 
     dx = 1.0 / args.n
     dt = 0.2 * dx**2  # stable for the explicit scheme

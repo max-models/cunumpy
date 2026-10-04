@@ -65,7 +65,7 @@ A wrong argument count, dtype or layout raises before anything is launched,
 with the parameter name in the message:
 
 ```python
-axpy(2, x, y, x.size, n_threads=x.size)          # fine: 2 is cast to double
+axpy(2, x, y, x.size, n_threads=x.size)  # fine: 2 is cast to double
 axpy(2.0, xp.to_numpy(x), y, x.size, n_threads=x.size)
 # TypeError: argument 1 (double* x) must be a CuPy array, got ndarray; arrays are never copied to the device
 ```
@@ -190,7 +190,7 @@ void scale_column(Array2D<double> a, long long column, double factor) {
 scale_column = xp.cuda.CudaKernel(SCALE_COLUMN, "scale_column")
 
 markers = xp.zeros((1000, 7))
-view = markers[::2, 1:5]                 # non-contiguous view is fine
+view = markers[::2, 1:5]  # non-contiguous view is fine
 scale_column(view, 1, 10.0, n_threads=view.shape[0])
 ```
 

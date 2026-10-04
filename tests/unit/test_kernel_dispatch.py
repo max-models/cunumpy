@@ -134,13 +134,13 @@ def kernel_package(tmp_path, monkeypatch):
                 def {name}(x, a, n):
                     for i in range(n):
                         {body}
-                """)
+                """),
         )
     (root / "scale" / "scale_cuda.cu").write_text(SCALE_CUDA)
     (root / "not_a_kernel").mkdir()
     (root / "__init__.py").write_text(
         "from cunumpy.kernels import KernelCatalog\n\n"
-        "catalog = KernelCatalog.from_package(__name__)\n"
+        "catalog = KernelCatalog.from_package(__name__)\n",
     )
     monkeypatch.syspath_prepend(str(tmp_path))
     yield importlib.import_module("demo_kernel_pkg").catalog
@@ -246,7 +246,7 @@ def test_catalog_host_options(kernel_package_factory):
     assert all(catalog[name].host_kernel.outputs == (0,) for name in catalog)
 
     catalog = kernel_package_factory(
-        host_options=lambda name: {"outputs": (0,) if name == "scale" else ()}
+        host_options=lambda name: {"outputs": (0,) if name == "scale" else ()},
     )
     assert catalog["scale"].host_kernel.outputs == (0,)
     assert catalog["shift"].host_kernel.outputs == ()
@@ -382,10 +382,10 @@ def test_catalog_kernel_includes_from_the_source_root(tmp_path, monkeypatch):
     (root / "kernels" / "__init__.py").write_text("")
     (root / "kernels" / "scale" / "__init__.py").write_text("")
     (root / "kernels" / "scale" / "scale_kernels.py").write_text(
-        "def scale(x, a, n):\n    pass\n"
+        "def scale(x, a, n):\n    pass\n",
     )
     (root / "kernels" / "scale" / "scale_cuda.cu").write_text(
-        '#include "demo_include_pkg/common.cuh"\n' + SCALE_CUDA
+        '#include "demo_include_pkg/common.cuh"\n' + SCALE_CUDA,
     )
     monkeypatch.syspath_prepend(str(tmp_path))
     try:

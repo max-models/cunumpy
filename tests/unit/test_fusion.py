@@ -51,7 +51,9 @@ def test_device_arrays_use_cupy_fuse_once(monkeypatch):
 
     monkeypatch.setattr(fusion, "_cupy_fuse", fake_cupy_fuse)
     monkeypatch.setattr(
-        fusion, "_is_device_array", lambda a: isinstance(a, FakeDeviceArray)
+        fusion,
+        "_is_device_array",
+        lambda a: isinstance(a, FakeDeviceArray),
     )
 
     @xp.kernels.fuse(kernel_name="p")

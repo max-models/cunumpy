@@ -91,7 +91,7 @@ w = xp.to_cunumpy(np.full(10_000, 1e-4))
 
 rho.zero()
 deposit(x, w, rho.device, x.size, rho_host.size, 1.0 / 64, n_threads=x.size)
-rho.to_host()          # rho_host now holds the charge density, on both backends
+rho.to_host()  # rho_host now holds the charge density, on both backends
 
 # the host library continues with rho_host, e.g. an MPI Allreduce
 ```
@@ -107,9 +107,9 @@ cell. The last step is `xp.algorithms.segment_sum(values, keys, n_segments)`, on
 backend:
 
 ```python
-cell = ix + nx * (iy + ny * iz)                 # (n_particles,), -1 for outside
-weights = compute_weights(markers)              # (n_particles, 8), one per corner
-rho_cells = xp.algorithms.segment_sum(weights, cell, nx * ny * nz)   # (n_cells, 8)
+cell = ix + nx * (iy + ny * iz)  # (n_particles,), -1 for outside
+weights = compute_weights(markers)  # (n_particles, 8), one per corner
+rho_cells = xp.algorithms.segment_sum(weights, cell, nx * ny * nz)  # (n_cells, 8)
 ```
 
 Negative keys drop the value; a 2D `values` is summed column by column. Measure

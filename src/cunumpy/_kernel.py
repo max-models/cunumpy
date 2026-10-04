@@ -108,14 +108,14 @@ class KernelArguments:
         """The object passed to the host kernel in place of this one."""
         raise NotImplementedError(
             f"{type(self).__name__} does not provide host kernel arguments "
-            "(implement __host_args__)"
+            "(implement __host_args__)",
         )
 
     def __cuda_args__(self) -> tuple[Any, ...]:
         """The CUDA kernel arguments this object stands for."""
         raise NotImplementedError(
             f"{type(self).__name__} does not provide CUDA kernel arguments "
-            "(implement __cuda_args__)"
+            "(implement __cuda_args__)",
         )
 
 
@@ -129,7 +129,8 @@ def _host_args(value: Any) -> Any:
 
 
 def resolve_host_args(
-    args: Sequence[Any], kwargs: Mapping[str, Any] | None = None
+    args: Sequence[Any],
+    kwargs: Mapping[str, Any] | None = None,
 ) -> tuple[tuple[Any, ...], dict[str, Any]]:
     """Replace :class:`KernelArguments` objects by their host form.
 
@@ -235,13 +236,13 @@ class PyccelKernel:
                 raise TypeError(
                     "outputs must be a sequence of argument indices/names, "
                     f"not a bare {type(outputs).__name__} "
-                    f"(did you mean outputs=({outputs!r},)?)"
+                    f"(did you mean outputs=({outputs!r},)?)",
                 )
             for entry in outputs:
                 if not isinstance(entry, (int, str)) or isinstance(entry, bool):
                     raise TypeError(
                         "outputs entries must be argument indices (int) or "
-                        f"names (str), got {entry!r}"
+                        f"names (str), got {entry!r}",
                     )
             self._outputs = tuple(outputs)
 
@@ -307,7 +308,7 @@ class PyccelKernel:
             return value_np
 
         if hasattr(value, "__dict__") and value.__class__.__module__.startswith(
-            self._object_modules
+            self._object_modules,
         ):
             # Shallow-copy the object so the caller's instance keeps pointing at
             # its device arrays; only the copy holds the host views.
@@ -356,14 +357,16 @@ class PyccelKernel:
             return
 
         if hasattr(value, "__dict__") and value.__class__.__module__.startswith(
-            self._object_modules
+            self._object_modules,
         ):
             seen.add(id(value))
             for attr in vars(value).values():
                 self._collect_host_arrays(attr, found, seen)
 
     def _output_host_arrays(
-        self, args_np: list[Any], kwargs_np: dict[str, Any]
+        self,
+        args_np: list[Any],
+        kwargs_np: dict[str, Any],
     ) -> set[int]:
         """Ids of the host arrays reachable from the declared output arguments.
 
@@ -385,7 +388,7 @@ class PyccelKernel:
                         f"{self.name}() was declared with output argument "
                         f"{entry}, but was called with {len(args_np)} "
                         "positional argument(s). Note that an output passed as "
-                        "a keyword must be declared by name, not by index."
+                        "a keyword must be declared by name, not by index.",
                     )
                 self._collect_host_arrays(args_np[index], found, seen)
             else:
@@ -394,7 +397,7 @@ class PyccelKernel:
                         f"{self.name}() was declared with output argument "
                         f"{entry!r}, but no such keyword argument was passed. "
                         "Note that an output passed positionally must be "
-                        "declared by index, not by name."
+                        "declared by index, not by name.",
                     )
                 self._collect_host_arrays(kwargs_np[entry], found, seen)
 
@@ -424,7 +427,7 @@ class PyccelKernel:
             return any(self._contains_cupy(item, seen) for item in value.values())
 
         if hasattr(value, "__dict__") and value.__class__.__module__.startswith(
-            self._object_modules
+            self._object_modules,
         ):
             seen.add(id(value))
             return any(self._contains_cupy(attr, seen) for attr in vars(value).values())
@@ -521,13 +524,13 @@ def _check_implementation(name: str | None) -> str | None:
     if name is not None and name not in HOST_IMPLEMENTATIONS:
         raise ValueError(
             f"kernel implementation must be one of {HOST_IMPLEMENTATIONS} or None, "
-            f"got {name!r}"
+            f"got {name!r}",
         )
     return name
 
 
 _KERNEL_IMPLEMENTATION: str | None = _check_implementation(
-    os.environ.get("CUNUMPY_KERNEL_IMPLEMENTATION", "").strip().lower() or None
+    os.environ.get("CUNUMPY_KERNEL_IMPLEMENTATION", "").strip().lower() or None,
 )
 
 
@@ -590,13 +593,15 @@ class HostImplementations:
     """
 
     def __init__(
-        self, name: str, loaders: Mapping[str, Callable[[], Callable[..., Any]]]
+        self,
+        name: str,
+        loaders: Mapping[str, Callable[[], Callable[..., Any]]],
     ) -> None:
         unknown = set(loaders) - set(HOST_IMPLEMENTATIONS)
         if unknown:
             raise ValueError(
                 f"kernel {name!r}: unknown implementations {sorted(unknown)}, "
-                f"expected names from {HOST_IMPLEMENTATIONS}"
+                f"expected names from {HOST_IMPLEMENTATIONS}",
             )
         if "python" not in loaders:
             raise ValueError(f"kernel {name!r}: the 'python' implementation is needed")
@@ -644,12 +649,12 @@ class HostImplementations:
         if name not in self._loaders:
             raise LookupError(
                 f"kernel {self.__name__!r} has no {name!r} implementation "
-                f"(it has {', '.join(self.names)})"
+                f"(it has {', '.join(self.names)})",
             )
         if name in self.errors:
             raise LookupError(
                 f"the {name!r} implementation of kernel {self.__name__!r} is "
-                f"unavailable: {self.errors[name]!r}"
+                f"unavailable: {self.errors[name]!r}",
             ) from self.errors[name]
         try:
             function = self._loaders[name]()
@@ -657,7 +662,7 @@ class HostImplementations:
             self.errors[name] = error
             raise LookupError(
                 f"the {name!r} implementation of kernel {self.__name__!r} is "
-                f"unavailable: {error!r}"
+                f"unavailable: {error!r}",
             ) from error
         self._loaded[name] = function
         return function

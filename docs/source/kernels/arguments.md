@@ -30,8 +30,12 @@ import cunumpy as xp
 
 class DeviceParticles(xp.cuda.CudaArguments):
     def __init__(self, positions, velocities):
-        self.positions = xp.as_device_array(positions, np.float64, ndim=2, name="positions")
-        self.velocities = xp.as_device_array(velocities, np.float64, ndim=2, name="velocities")
+        self.positions = xp.as_device_array(
+            positions, np.float64, ndim=2, name="positions"
+        )
+        self.velocities = xp.as_device_array(
+            velocities, np.float64, ndim=2, name="velocities"
+        )
         super().__init__(self.positions, self.velocities, self.positions.shape[0])
 
 
@@ -108,12 +112,15 @@ Particles = xp.cuda.CudaStruct(
     [("x", "double*"), ("v", "double*"), ("n", "long long"), ("charge", "double")],
 )
 
-PUSH = Particles.declaration + r"""
+PUSH = (
+    Particles.declaration
+    + r"""
 extern "C" __global__ void push(Particles p, double dt) {
     long long i = blockDim.x * (long long)blockIdx.x + threadIdx.x;
     if (i < p.n) p.x[i] += dt * p.charge * p.v[i];
 }
 """
+)
 push = xp.cuda.CudaKernel(PUSH, "push", structs=[Particles])
 
 value = Particles(x=x, v=v, n=x.size, charge=-1.0)
@@ -155,14 +162,18 @@ class CudaMarkerArguments(xp.cuda.CudaStructArguments):
 
     def __init__(self, markers, valid_mks, weight_idx):
         self.markers = xp.as_device_array(markers, np.float64, ndim=2, name="markers")
-        self.valid_mks = xp.as_device_array(valid_mks, np.bool_, ndim=1, name="valid_mks")
+        self.valid_mks = xp.as_device_array(
+            valid_mks, np.bool_, ndim=1, name="valid_mks"
+        )
         self.n_markers, self.n_cols = self.markers.shape
         self.weight_idx = weight_idx
         self.pack()
 
 
 xp.cuda.write_cuda_header("kernels/marker_args.cuh", [CudaMarkerArguments.struct])
-push = xp.cuda.CudaKernel.from_file("kernels/push_cuda.cu", structs=[CudaMarkerArguments.struct])
+push = xp.cuda.CudaKernel.from_file(
+    "kernels/push_cuda.cu", structs=[CudaMarkerArguments.struct]
+)
 
 args = CudaMarkerArguments(markers, valid_mks, weight_idx=6)
 push(args, dt, n_threads=args.n_markers)
@@ -254,7 +265,7 @@ error. One GPU test per struct catches it:
 ```python
 def test_marker_args_layout():
     CudaMarkerArguments.struct.verify_layout()  # the Python declaration
-    CudaMarkerArguments.struct.verify_layout(   # the committed header
+    CudaMarkerArguments.struct.verify_layout(  # the committed header
         "marker_args.cuh", include_dirs=["kernels"]
     )
 ```
@@ -267,8 +278,7 @@ the arguments on host and device:
 
 ```python
 class MarkerArguments:
-    def __init__(self, markers: "float[:, :]", n_markers: int, valid: "bool[:]"):
-        ...
+    def __init__(self, markers: "float[:, :]", n_markers: int, valid: "bool[:]"): ...
 
 
 MarkerArgs = xp.cuda.CudaStruct.from_signature(MarkerArguments.__init__, "MarkerArgs")
@@ -333,7 +343,9 @@ from pathlib import Path
 
 
 def test_marker_args_header_is_up_to_date(tmp_path):
-    generated = xp.cuda.write_cuda_header(tmp_path / "marker_args.cuh", [MarkerArgs, DomainArgs])
+    generated = xp.cuda.write_cuda_header(
+        tmp_path / "marker_args.cuh", [MarkerArgs, DomainArgs]
+    )
     assert Path("kernels/marker_args.cuh").read_text() == generated
 ```
 

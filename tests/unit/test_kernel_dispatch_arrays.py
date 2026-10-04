@@ -46,7 +46,9 @@ def fake_gpu(monkeypatch):
     CUDA launches are recorded instead of run."""
     monkeypatch.setattr(dispatch_module, "get_backend", lambda: "cupy")
     monkeypatch.setattr(
-        dispatch_module, "_is_device_array", lambda a: isinstance(a, FakeDeviceArray)
+        dispatch_module,
+        "_is_device_array",
+        lambda a: isinstance(a, FakeDeviceArray),
     )
     launches = []
 
@@ -138,13 +140,16 @@ def test_check_signature():
 
     with pytest.raises(ValueError, match="host kernel takes"):
         Kernel(
-            reordered, CudaKernel(SCALE_CUDA, "scale"), name="scale"
+            reordered,
+            CudaKernel(SCALE_CUDA, "scale"),
+            name="scale",
         ).check_signature()
 
     # nothing to compare: no CUDA kernel, an unparsed signature, a compiled builtin
     Kernel(renamed).check_signature()
     Kernel(
-        renamed, CudaKernel(SCALE_CUDA, "scale", check_signature=False)
+        renamed,
+        CudaKernel(SCALE_CUDA, "scale", check_signature=False),
     ).check_signature()
     compiled = CompiledFunction()
     Kernel(compiled, CudaKernel(SCALE_CUDA, "scale"), name="scale").check_signature()
@@ -199,7 +204,10 @@ def test_compiled_host_kernel_falls_back():
 
     fallback_calls = []
     with_fallback = CompiledHostKernel(
-        module, "double", failing, fallback=fallback_calls.append
+        module,
+        "double",
+        failing,
+        fallback=fallback_calls.append,
     )
     with_fallback("x")
     assert fallback_calls == ["x"] and not with_fallback.compiled
@@ -224,7 +232,7 @@ def pyccel_style_package(tmp_path, monkeypatch):
     (root / "scale" / "scale_pyccel.py").write_text(
         "def scale(x: 'float[:]', factor: float, n: int):\n"
         "    for i in range(n):\n"
-        "        x[i] *= factor\n"
+        "        x[i] *= factor\n",
     )
     (root / "scale" / "scale_cuda.cu").write_text(SCALE_CUDA)
     monkeypatch.syspath_prepend(str(tmp_path))
@@ -312,16 +320,16 @@ def self_declaring_package(tmp_path, monkeypatch):
     (root / "scale" / "scale_pyccel.py").write_text(
         "def scale(x: 'float[:]', factor: float, n: int):\n"
         "    for i in range(n):\n"
-        "        x[i] *= factor\n"
+        "        x[i] *= factor\n",
     )
     (root / "scale" / "scale_numpy.py").write_text(
         "CALLS = []\n\n"
         "def scale(x, factor, n):\n"
         "    CALLS.append(n)\n"
-        "    x[:n] *= factor\n"
+        "    x[:n] *= factor\n",
     )
     (root / "scale" / "scale_numba.py").write_text(
-        "import a_jit_library_that_is_not_installed\n"
+        "import a_jit_library_that_is_not_installed\n",
     )
     (root / "scale" / "scale_cuda.cu").write_text(SCALE_CUDA)
     (root / "scale" / "__init__.py").write_text(
@@ -333,7 +341,7 @@ def self_declaring_package(tmp_path, monkeypatch):
         "kernel = xp.kernels.Kernel.from_folder(\n"
         "    __name__, host_suffix='_pyccel', dispatch='arrays',\n"
         "    compile_host=_compile, n_threads_from='first_array',\n"
-        ")\n"
+        ")\n",
     )
     monkeypatch.syspath_prepend(str(tmp_path))
     yield importlib.import_module("demo_folder_pkg.scale")
@@ -410,7 +418,8 @@ def test_default_skips_unavailable_implementations():
     with_numpy("x")
     assert used == ["x"]
     only_python = HostImplementations(
-        "scale", {"pyccel": no_pyccel, "python": lambda: scale}
+        "scale",
+        {"pyccel": no_pyccel, "python": lambda: scale},
     )
     x = np.ones(2)
     with pytest.warns(RuntimeWarning, match="uncompiled Python version"):
@@ -451,7 +460,8 @@ def test_kernel_implementation_environment_variable():
 
 
 def test_arrays_dispatch_calls_the_host_kernel_without_conversion(
-    fake_gpu, monkeypatch
+    fake_gpu,
+    monkeypatch,
 ):
     # CuPy is active, but host arguments never go through PyccelKernel's
     # device-to-host conversion: the choice already says they are host arrays
@@ -479,7 +489,8 @@ def test_check_signature_covers_every_host_implementation():
 
     kernel = Kernel(
         HostImplementations(
-            "scale", {"python": lambda: scale, "numpy": lambda: swapped}
+            "scale",
+            {"python": lambda: scale, "numpy": lambda: swapped},
         ),
         CudaKernel(SCALE_CUDA, "scale"),
     )

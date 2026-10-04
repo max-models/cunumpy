@@ -18,7 +18,7 @@ _HOST = _np.ndarray
 def _err(obj, where=""):
     return TypeError(
         f"Unsupported type {type(obj)}{where} (fake CuPy: host arrays/lists are "
-        "not accepted)"
+        "not accepted)",
     )
 
 
@@ -34,11 +34,16 @@ class ndarray:
     def __array__(self, *args, **kwargs):
         raise TypeError(
             "Implicit conversion to a NumPy array is not allowed. Please use "
-            "`.get()` to construct a NumPy array explicitly."
+            "`.get()` to construct a NumPy array explicitly.",
         )
 
-    def get(self, *args, **kwargs):
-        return self._a.copy()
+    def get(self, stream=None, order="C", out=None, blocking=True):
+        if out is not None:
+            if out.shape != self._a.shape or out.dtype != self._a.dtype:
+                raise ValueError("out must match the device array shape and dtype")
+            _np.copyto(out, self._a)
+            return out
+        return self._a.copy(order=order)
 
     def set(self, arr, *args, **kwargs):
         self._a[...] = arr
@@ -152,7 +157,8 @@ def _wrap(x):
     if isinstance(x, _HOST):
         return ndarray(x)
     if isinstance(x, _np.generic) and not isinstance(
-        x, (_np.str_, _np.bytes_, _np.void)
+        x,
+        (_np.str_, _np.bytes_, _np.void),
     ):
         return ndarray(_np.asarray(x))
     if isinstance(x, tuple):
@@ -324,21 +330,27 @@ def _module_attr(name, src=_np, prefix="cupy"):
     if name in _SEQUENCE:
         return _wrap_callable(attr, strict=True, name=f"{prefix}.{name}")
     return _wrap_callable(
-        attr, strict=True, name=f"{prefix}.{name}", first_is_data=True
+        attr,
+        strict=True,
+        name=f"{prefix}.{name}",
+        first_is_data=True,
     )
 
 
 def asarray(a, dtype=None, order=None, **kwargs):
     return ndarray(
         _np.array(
-            _unwrap(a), dtype=dtype, order=order or "K", copy=kwargs.pop("copy", None)
-        )
+            _unwrap(a),
+            dtype=dtype,
+            order=order or "K",
+            copy=kwargs.pop("copy", None),
+        ),
     )
 
 
 def array(a, dtype=None, copy=True, order="K", ndmin=0, **kwargs):
     return ndarray(
-        _np.array(_unwrap(a), dtype=dtype, copy=copy, order=order, ndmin=ndmin)
+        _np.array(_unwrap(a), dtype=dtype, copy=copy, order=order, ndmin=ndmin),
     )
 
 
@@ -417,12 +429,39 @@ class _Device:
         return {"MaxSharedMemoryPerBlock": 48 * 1024}
 
 
+class _Event:
+    def __init__(self, **kwargs):
+        pass
+
+    @property
+    def done(self):
+        return True
+
+    def record(self, stream=None):
+        pass
+
+    def synchronize(self):
+        pass
+
+
 class _Stream(_Device):
     def __init__(self, *args, **kwargs):
         super().__init__()
 
     def __enter__(self):
         return self
+
+    def record(self, event=None):
+        event = _Event() if event is None else event
+        event.record(self)
+        return event
+
+    def wait_event(self, event):
+        pass
+
+    @property
+    def done(self):
+        return True
 
 
 _Stream.null = _Stream()
@@ -435,6 +474,7 @@ def _alloc_pinned_memory(nbytes):
 cuda = types.ModuleType("cupy.cuda")
 cuda.Device = _Device
 cuda.Stream = _Stream
+cuda.Event = _Event
 cuda.get_current_stream = lambda: _Stream.null
 cuda.alloc_pinned_memory = _alloc_pinned_memory
 cuda.device = types.ModuleType("cupy.cuda.device")
@@ -473,7 +513,9 @@ class _RNGProxy:
 random = types.ModuleType("cupy.random")
 random.default_rng = lambda seed=None: _RNGProxy(_np.random.default_rng(_unwrap(seed)))
 random.__getattr__ = lambda attr: _wrap_callable(
-    getattr(_np.random, attr), strict=False, name=f"cupy.random.{attr}"
+    getattr(_np.random, attr),
+    strict=False,
+    name=f"cupy.random.{attr}",
 )
 
 for _m in (cuda, cuda.device, cuda.runtime, linalg, fft, random):
@@ -499,7 +541,7 @@ __all__ = sorted(  # noqa: PLE0605 - the NumPy namespace plus the CuPy extras
         "is_available",
         "bool_",
         "fuse",
-    }
+    },
 )
 
 

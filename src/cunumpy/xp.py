@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import warnings
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
+from importlib.metadata import PackageNotFoundError, version
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -26,11 +28,12 @@ _logger = logging.getLogger(__name__)
 
 
 _CUPY_AVAILABLE_CACHE = None
+_CUPY_UNAVAILABLE_REASON: str | None = None
 
 
 def cupy_available() -> bool:
     """Check if CuPy is available and functional."""
-    global _CUPY_AVAILABLE_CACHE
+    global _CUPY_AVAILABLE_CACHE, _CUPY_UNAVAILABLE_REASON
     if _CUPY_AVAILABLE_CACHE is not None:
         return _CUPY_AVAILABLE_CACHE
 
@@ -39,9 +42,13 @@ def cupy_available() -> bool:
 
         # Check if a GPU is available
         _CUPY_AVAILABLE_CACHE = cp.is_available()
+        _CUPY_UNAVAILABLE_REASON = (
+            None if _CUPY_AVAILABLE_CACHE else "CuPy reports no usable CUDA device"
+        )
         return _CUPY_AVAILABLE_CACHE
-    except Exception:  # noqa: BLE001 - tolerate any driver/runtime failure
+    except Exception as error:  # noqa: BLE001 - tolerate driver/runtime failure
         _CUPY_AVAILABLE_CACHE = False
+        _CUPY_UNAVAILABLE_REASON = f"{type(error).__name__}: {error}"
         return False
 
 
@@ -79,7 +86,7 @@ class ArrayBackend:
             else:
                 if verbose:
                     print(
-                        "CuPy not available or not functional. Falling back to NumPy."
+                        "CuPy not available or not functional. Falling back to NumPy.",
                     )
                 self._backend = "numpy"
                 return np
@@ -110,19 +117,29 @@ class ArrayBackend:
             for listener in self._listeners:
                 listener(module)
 
-    def set(self, backend: BackendType) -> None:
+    def set(self, backend: BackendType, *, strict: bool = False) -> None:
         """Select `backend` (falls back to NumPy if CuPy is not functional)."""
         if backend not in ("numpy", "cupy"):
             raise ValueError("Array backend must be either 'numpy' or 'cupy'.")
+        if strict and backend == "cupy" and not cupy_available():
+            raise RuntimeError(
+                "Cannot select the CuPy backend: "
+                + (_CUPY_UNAVAILABLE_REASON or "CuPy/CUDA is unavailable"),
+            )
         module = self._load_backend(backend)  # sets self._backend to the effective one
         self._set(self._backend, module)
 
     @contextmanager
-    def use_backend(self, backend: BackendType) -> Generator[None, None, None]:
+    def use_backend(
+        self,
+        backend: BackendType,
+        *,
+        strict: bool = False,
+    ) -> Generator[None, None, None]:
         """Temporarily change the backend."""
         old_backend = self._backend
         old_xp = self._xp
-        self.set(backend)
+        self.set(backend, strict=strict)
         try:
             yield
         finally:
@@ -137,14 +154,62 @@ array_backend = ArrayBackend(
 )
 
 
-def use_backend(backend: BackendType) -> Generator[None, None, None]:
+def use_backend(
+    backend: BackendType,
+    *,
+    strict: bool = False,
+) -> Generator[None, None, None]:
     """Temporarily change the backend."""
-    return array_backend.use_backend(backend)
+    return array_backend.use_backend(backend, strict=strict)
 
 
-def set_backend(backend: BackendType) -> None:
-    """Set the backend globally."""
-    array_backend.set(backend)
+def set_backend(backend: BackendType, *, strict: bool = False) -> None:
+    """Select a backend; with `strict`, unavailable CUDA raises without switching."""
+    array_backend.set(backend, strict=strict)
+
+
+def backend_info() -> dict[str, Any]:
+    """Return JSON-compatible backend, dependency, and CUDA diagnostics.
+
+    Does not change the backend or import MPI. CUDA availability is cached, as
+    in :func:`cupy_available`. Device inspection errors are reported in the
+    result rather than hiding the otherwise useful CPU/dependency information.
+    """
+    versions = {}
+    for package in ("cunumpy", "numpy", "array-api-compat"):
+        try:
+            versions[package] = version(package)
+        except PackageNotFoundError:
+            versions[package] = None
+    available = bool(cupy_available())
+    versions["cupy"] = getattr(sys.modules.get("cupy"), "__version__", None)
+    info: dict[str, Any] = {
+        "backend": get_backend(),
+        "cupy_available": available,
+        "cuda_unavailable_reason": None if available else _CUPY_UNAVAILABLE_REASON,
+        "versions": versions,
+        "device": None,
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+    }
+    if available:
+        try:
+            import cupy as cp
+
+            versions["cupy"] = getattr(cp, "__version__", None)
+            dev = cp.cuda.Device()
+            properties = cp.cuda.runtime.getDeviceProperties(dev.id)
+            name = properties["name"]
+            info["device"] = {
+                "id": int(dev.id),
+                "name": name.decode() if isinstance(name, bytes) else str(name),
+                "compute_capability": str(dev.compute_capability),
+                "visible_devices": int(cp.cuda.runtime.getDeviceCount()),
+                "driver_version": int(cp.cuda.runtime.driverGetVersion()),
+                "runtime_version": int(cp.cuda.runtime.runtimeGetVersion()),
+            }
+        except Exception as error:  # noqa: BLE001 - diagnostics must remain usable
+            info["cuda_inspection_error"] = f"{type(error).__name__}: {error}"
+    return info
 
 
 def get_backend() -> BackendType:
@@ -284,7 +349,7 @@ def as_device_array(
         raise RuntimeError(
             f"{what}: the active backend is {array_backend.backend!r}; device "
             "arguments are only built on the CuPy backend, and host data is never "
-            "copied to the device implicitly (build host arguments instead)"
+            "copied to the device implicitly (build host arguments instead)",
         )
 
     import cupy as cp
@@ -300,7 +365,7 @@ def as_device_array(
     if ndim is not None and result.ndim != ndim:
         raise ValueError(
             f"{what} must have {ndim} dimension(s), got {result.ndim} "
-            f"(shape {result.shape})"
+            f"(shape {result.shape})",
         )
     return result
 
@@ -372,7 +437,7 @@ def assert_same_backend(*arrays: Any) -> None:
         backends = [get_array_backend(array) for array in arrays]
         raise TypeError(
             f"Arrays are on mismatched backends: {backends}. Use "
-            "xp.to_cunumpy()/xp.to_numpy()/xp.to_cupy() to align them first."
+            "xp.to_cunumpy()/xp.to_numpy()/xp.to_cupy() to align them first.",
         )
 
 

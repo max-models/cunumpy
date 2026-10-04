@@ -244,7 +244,7 @@ def _code(kernel: CudaKernel) -> str:
 
 
 _EXTERN_SHARED = re.compile(
-    r"extern\s+__shared__\s+(?:__align__\(\s*\d+\s*\)\s+)?([\w:<>\s]+?)\s+(\w+)\s*\[\s*\]\s*;"
+    r"extern\s+__shared__\s+(?:__align__\(\s*\d+\s*\)\s+)?([\w:<>\s]+?)\s+(\w+)\s*\[\s*\]\s*;",
 )
 
 
@@ -254,7 +254,7 @@ def _check_supported(kernel: CudaKernel) -> None:
         if re.search(pattern, code):
             raise NotImplementedError(
                 f"kernel {kernel.name!r} uses {what}, which emulation cannot run "
-                "correctly one thread at a time; test it on a GPU"
+                "correctly one thread at a time; test it on a GPU",
             )
 
 
@@ -301,13 +301,13 @@ def emulate_cuda_kernel(
     """
     if kernel.signature is None:
         raise TypeError(
-            "emulation needs a parsed kernel signature (check_signature=True)"
+            "emulation needs a parsed kernel signature (check_signature=True)",
         )
     _check_supported(kernel)
     params = kernel.signature
     if len(args) != len(params):
         raise TypeError(
-            f"kernel {kernel.name!r} takes {len(params)} arguments, got {len(args)}"
+            f"kernel {kernel.name!r} takes {len(params)} arguments, got {len(args)}",
         )
     compiler = compiler or emulation_compiler()
     if compiler is None:
@@ -323,23 +323,23 @@ def emulate_cuda_kernel(
             name = f"cunumpy_arg{i}"
             if param.struct is not None:
                 raise NotImplementedError(
-                    "emulation does not support struct parameters"
+                    "emulation does not support struct parameters",
                 )
             if param.pointer or param.view_ndim is not None:
                 if not isinstance(value, np.ndarray):
                     raise TypeError(
                         f"argument {i} ({param.name}) must be a NumPy array, got "
-                        f"{type(value).__name__}"
+                        f"{type(value).__name__}",
                     )
                 if param.dtype is not None and value.dtype != param.dtype:
                     raise TypeError(
                         f"argument {i} ({param.name}) must have dtype "
-                        f"{np.dtype(param.dtype)}, got {value.dtype}"
+                        f"{np.dtype(param.dtype)}, got {value.dtype}",
                     )
                 if param.view_ndim is not None and value.ndim != param.view_ndim:
                     raise TypeError(
                         f"argument {i} ({param.name}) must be a {param.view_ndim}D "
-                        f"array, got {value.ndim}D"
+                        f"array, got {value.ndim}D",
                     )
                 buffer = np.ascontiguousarray(value)
                 path = tmp_path / f"{name}.bin"
@@ -353,7 +353,7 @@ def emulate_cuda_kernel(
                 globals_.append(f"static {element}* {name};")
                 inits.append(
                     f"    {name} = ({element}*)malloc({max(buffer.nbytes, 1)});\n"
-                    f'    cunumpy_read("{path}", {name}, {buffer.nbytes});'
+                    f'    cunumpy_read("{path}", {name}, {buffer.nbytes});',
                 )
                 if param.view_ndim is not None:
                     shape = ", ".join(f"{n}LL" for n in buffer.shape)
@@ -362,7 +362,7 @@ def emulate_cuda_kernel(
                     )
                     globals_.append(f"static {ctype} {name}_view;")
                     inits.append(
-                        f"    {name}_view = {ctype}{{{name}, {{{shape}}}, {{{strides}}}}};"
+                        f"    {name}_view = {ctype}{{{name}, {{{shape}}}, {{{strides}}}}};",
                     )
                     call_args.append(f"{name}_view")
                 else:
@@ -377,7 +377,8 @@ def emulate_cuda_kernel(
             raise ValueError(f"shared_mem must be non-negative, got {shared_mem}")
         kernel_source = kernel.source.replace('extern "C"', "")
         kernel_source = _EXTERN_SHARED.sub(
-            r"\1* \2 = (\1*)cunumpy_dynamic_shared;", kernel_source
+            r"\1* \2 = (\1*)cunumpy_dynamic_shared;",
+            kernel_source,
         )
         coroutines = "__syncthreads" in _code(kernel)
         if coroutines:
@@ -423,13 +424,13 @@ def emulate_cuda_kernel(
         built = subprocess.run(command, capture_output=True, text=True, check=False)
         if built.returncode:
             raise RuntimeError(
-                f"kernel {kernel.name!r} does not compile for emulation:\n{built.stderr[:4000]}"
+                f"kernel {kernel.name!r} does not compile for emulation:\n{built.stderr[:4000]}",
             )
         ran = subprocess.run([str(exe)], capture_output=True, text=True, check=False)
         if ran.returncode:
             raise RuntimeError(
                 f"kernel {kernel.name!r} crashed in emulation (exit {ran.returncode}):\n"
-                f"{ran.stdout[-2000:]}{ran.stderr[-2000:]}"
+                f"{ran.stdout[-2000:]}{ran.stderr[-2000:]}",
             )
         for value, buffer, out in arrays:
             result = np.fromfile(out, dtype=buffer.dtype).reshape(buffer.shape)

@@ -389,7 +389,9 @@ def test_outputs_traverse_nested_containers_and_objects():
         obj.data[:] = 2.0
 
     PyccelKernel(kernel, object_modules=(Container.__module__,), outputs=(1, 2))(
-        xp.to_cupy(np.ones(2)), [{"m": nested}], Container(held)
+        xp.to_cupy(np.ones(2)),
+        [{"m": nested}],
+        Container(held),
     )
 
     assert np.array_equal(xp.to_numpy(nested), np.full(2, 1.0))

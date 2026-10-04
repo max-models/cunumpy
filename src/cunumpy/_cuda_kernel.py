@@ -235,7 +235,7 @@ _COMPLEX = re.compile(r"(?:(?:thrust|cuda::std)::)?complex\s*<\s*(float|double)\
 _VIEW = re.compile(r"\bArray([1234])D\s*<((?:[^<>]|complex<[^<>]*>)+?)>")
 _TOKEN = re.compile(
     r"Array[1234]D<[^<>]*(?:<[^<>]*>[^<>]*)?>|complex<(?:float|double)>"
-    r"|[A-Za-z_]\w*|\*|\[\s*\]"
+    r"|[A-Za-z_]\w*|\*|\[\s*\]",
 )
 
 
@@ -279,7 +279,8 @@ def _strip_comments(source: str) -> str:
 # bracket includes are system headers and are not tracked, except in the
 # directories given as ``angle_dirs`` (cunumpy's shipped headers).
 _INCLUDE = re.compile(
-    r'^[ \t]*#[ \t]*include[ \t]*(?:"([^"\n]+)"|<([^>\n]+)>)', re.MULTILINE
+    r'^[ \t]*#[ \t]*include[ \t]*(?:"([^"\n]+)"|<([^>\n]+)>)',
+    re.MULTILINE,
 )
 
 
@@ -408,7 +409,8 @@ def cuda_kernel_names(source: str) -> list[str]:
 
 
 def _compile_in_threads(
-    compilers: Mapping[Hashable, Callable[[], Any]], jobs: int | None
+    compilers: Mapping[Hashable, Callable[[], Any]],
+    jobs: int | None,
 ) -> list[Hashable]:
     """Run the `compilers` (name -> compile function), `jobs` at a time.
 
@@ -446,7 +448,8 @@ def _compile_in_threads(
 
 
 def _parse_parameter(
-    text: str, structs: dict[str, CudaStruct] | None = None
+    text: str,
+    structs: dict[str, CudaStruct] | None = None,
 ) -> CudaParameter:
     text = _COMPLEX.sub(lambda m: f"complex<{m.group(1)}>", text)
     text = _VIEW.sub(_normalize_view, text)
@@ -464,7 +467,7 @@ def _parse_parameter(
         if pointers:
             raise ValueError(
                 f"cannot check the kernel parameter {text.strip()!r}: structs can "
-                "only be passed by value"
+                "only be passed by value",
             )
         struct = structs[ctype]
         return CudaParameter(name, ctype, struct.dtype, False, struct)
@@ -474,7 +477,7 @@ def _parse_parameter(
         if pointers or element not in _CTYPES:
             raise ValueError(
                 f"cannot check the kernel parameter {text.strip()!r}: array views "
-                f"take a scalar element type and are passed by value"
+                f"take a scalar element type and are passed by value",
             )
         ndim = int(view.group(1))
         return CudaParameter(name, ctype, np.dtype(_CTYPES[element]), False, None, ndim)
@@ -483,7 +486,7 @@ def _parse_parameter(
     if pointers > 1 or ctype not in _CTYPES:
         raise ValueError(
             f"cannot check the kernel parameter {text.strip()!r}: unsupported type "
-            f"{ctype + '*' * pointers!r}"
+            f"{ctype + '*' * pointers!r}",
         )
     return CudaParameter(name, ctype, np.dtype(_CTYPES[ctype]), pointers == 1)
 
@@ -580,12 +583,14 @@ def parse_cuda_signature(
         if template_args is None or len(template_args) != len(template_params):
             raise ValueError(
                 f"{name!r} is a template with {len(template_params)} parameters; "
-                f"pass them as template_args"
+                f"pass them as template_args",
             )
         for words, value in zip(template_params, template_args):
             if words[0] in ("typename", "class"):
                 params = re.sub(
-                    r"\b" + re.escape(words[-1]) + r"\b", _template_arg(value), params
+                    r"\b" + re.escape(words[-1]) + r"\b",
+                    _template_arg(value),
+                    params,
                 )
     elif template_args:
         raise ValueError(f"{name!r} is not a template, but template_args were given")
@@ -619,16 +624,17 @@ def _check_device_array(param: CudaParameter, index: int, value: Any) -> None:
     """Raise unless `value` is a device array of the declared dtype on the current device."""
     # checked on the class: on the instance, CuPy builds the whole interface dict
     if not hasattr(type(value), "__cuda_array_interface__") and not hasattr(
-        value, "__cuda_array_interface__"
+        value,
+        "__cuda_array_interface__",
     ):
         raise TypeError(
             f"{_describe(param, index)} must be a CuPy array, got "
-            f"{type(value).__name__}; arrays are never copied to the device"
+            f"{type(value).__name__}; arrays are never copied to the device",
         )
     if param.dtype is not None and value.dtype != param.dtype:
         raise TypeError(
             f"{_describe(param, index)} must have dtype {param.dtype}, got "
-            f"{value.dtype}"
+            f"{value.dtype}",
         )
     # an array on another GPU: the kernel would read a foreign address, which
     # neither cupy.RawKernel nor the struct packing notices
@@ -639,7 +645,7 @@ def _check_device_array(param: CudaParameter, index: int, value: Any) -> None:
             raise ValueError(
                 f"{_describe(param, index)} is on CUDA device {device_id}, but the "
                 f"current device is {current}; kernels only take arrays of the "
-                "current device (see cunumpy.cuda.bind_local_device)"
+                "current device (see cunumpy.cuda.bind_local_device)",
             )
 
 
@@ -655,7 +661,7 @@ def _pointer_checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
             raise TypeError(
                 f"{_describe(param, index)} must be C-contiguous: a non-contiguous "
                 f"view (e.g. a[:, 0:3]) would be read as a flat buffer; use "
-                f"cupy.ascontiguousarray or cunumpy.as_device_array"
+                f"cupy.ascontiguousarray or cunumpy.as_device_array",
             )
         return value
 
@@ -675,14 +681,14 @@ def _view_checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
         _check_device_array(param, index, value)
         if value.ndim != ndim:
             raise TypeError(
-                f"{_describe(param, index)} must be a {ndim}D array, got {value.ndim}D"
+                f"{_describe(param, index)} must be a {ndim}D array, got {value.ndim}D",
             )
         itemsize = value.dtype.itemsize
         strides = [s // itemsize for s in value.strides]
         if any(s * itemsize != stride for s, stride in zip(strides, value.strides)):
             raise TypeError(
                 f"{_describe(param, index)}: strides {tuple(value.strides)} are not "
-                f"multiples of the element size {itemsize}"
+                f"multiples of the element size {itemsize}",
             )
         packed = np.zeros((), dtype=dtype)
         packed["data"] = value.data.ptr
@@ -707,14 +713,14 @@ def _scalar_checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
             if not low <= value <= high:
                 raise OverflowError(
                     f"{_describe(param, index)}: {value} is out of range "
-                    f"[{low}, {high}]"
+                    f"[{low}, {high}]",
                 )
             return scalar_type(value)
         if kind in "fc":
             return scalar_type(value)
         raise TypeError(
             f"{_describe(param, index)} cannot take a value of type "
-            f"{type(value).__name__}"
+            f"{type(value).__name__}",
         )
 
     def check(value: Any) -> Any:
@@ -737,7 +743,7 @@ def _scalar_checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
                 return scalar_type(value)
             raise TypeError(
                 f"{_describe(param, index)} cannot take a {value.dtype} scalar "
-                f"without losing information"
+                f"without losing information",
             )
         # bool is a subclass of int, but must not be cast like one
         is_bool = isinstance(value, bool)
@@ -751,7 +757,7 @@ def _scalar_checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
             return scalar_type(value)
         raise TypeError(
             f"{_describe(param, index)} cannot take a value of type "
-            f"{value_type.__name__}"
+            f"{value_type.__name__}",
         )
 
     return check
@@ -766,7 +772,7 @@ def _struct_checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
             return value
         raise TypeError(
             f"{_describe(param, index)} must be a value of struct {param.ctype} "
-            f"(created with that CudaStruct), got {type(value).__name__}"
+            f"(created with that CudaStruct), got {type(value).__name__}",
         )
 
     return check
@@ -807,7 +813,7 @@ _PYCCEL_SCALARS = {
 }
 _PYCCEL_ANNOTATION = re.compile(
     r"^(?:(?:typing\.)?Final\s*\[\s*)?(?:const\s+)?(?P<scalar>\w+)\s*"
-    r"(?:\[(?P<dims>[\s:,]*)\])?\s*\]?$"
+    r"(?:\[(?P<dims>[\s:,]*)\])?\s*\]?$",
 )
 
 
@@ -833,7 +839,7 @@ def _pyccel_ctype(annotation: Any, scalars: Mapping[str, str], what: str) -> str
         raise ValueError(f"{what}: unsupported annotation {annotation!r}")
     if scalar not in scalars:
         raise ValueError(
-            f"{what}: unsupported scalar type {scalar!r} in {annotation!r}"
+            f"{what}: unsupported scalar type {scalar!r} in {annotation!r}",
         )
     ctype = scalars[scalar]
     if ndim == 0:
@@ -849,7 +855,9 @@ def _header_guard(name: str) -> str:
 
 
 def _header_source(
-    structs: Sequence[CudaStruct], guard: str, includes: Iterable[str]
+    structs: Sequence[CudaStruct],
+    guard: str,
+    includes: Iterable[str],
 ) -> str:
     includes = list(includes)
     if any(f.view_ndim is not None for s in structs for f in s.fields):
@@ -1238,7 +1246,9 @@ class CudaStruct:
             The header source.
         """
         source = _header_source(
-            (self,), guard or _header_guard(f"{self._name}_cuh"), includes
+            (self,),
+            guard or _header_guard(f"{self._name}_cuh"),
+            includes,
         )
         if path is not None:
             Path(path).write_text(source)
@@ -1257,7 +1267,9 @@ class CudaStruct:
         """
         code = _strip_comments(source)
         match = re.search(
-            r"struct\s+" + re.escape(self._name) + r"\s*\{(.*?)\}", code, re.DOTALL
+            r"struct\s+" + re.escape(self._name) + r"\s*\{(.*?)\}",
+            code,
+            re.DOTALL,
         )
         if match is None:
             return
@@ -1266,13 +1278,13 @@ class CudaStruct:
             found = [_parse_parameter(m) for m in members]
         except ValueError as exc:
             raise ValueError(
-                f"cannot compare the definition of struct {self._name!r}: {exc}"
+                f"cannot compare the definition of struct {self._name!r}: {exc}",
             ) from None
         key = [(f.name, f.ctype, f.pointer) for f in self._fields]
         if [(f.name, f.ctype, f.pointer) for f in found] != key:
             raise ValueError(
                 f"the definition of struct {self._name!r} in the CUDA source does not "
-                f"match its CudaStruct:\n{self.declaration}"
+                f"match its CudaStruct:\n{self.declaration}",
             )
 
     def layout_source(self, include: str | None = None) -> str:
@@ -1306,7 +1318,7 @@ class CudaStruct:
             f"    out[0] = sizeof({self._name});\n"
             f"    out[1] = alignof({self._name});\n"
             f"{offsets}\n"
-            "}\n"
+            "}\n",
         )
         return "\n".join(lines)
 
@@ -1380,7 +1392,7 @@ class CudaStruct:
         if differences:
             raise ValueError(
                 f"the compiled layout of struct {self._name!r} differs from its "
-                "CudaStruct dtype:\n  " + "\n  ".join(differences)
+                "CudaStruct dtype:\n  " + "\n  ".join(differences),
             )
         return layout
 
@@ -1403,7 +1415,7 @@ class CudaStruct:
         if missing or unknown:
             raise TypeError(
                 f"struct {self._name}: missing fields {missing}, unknown fields "
-                f"{unknown}"
+                f"{unknown}",
             )
         packed = np.zeros((), dtype=self._dtype)
         for field in self._fields:
@@ -1542,7 +1554,7 @@ class CudaStructArguments(CudaArguments):
             return  # an intermediate base class, or a subclass of a complete one
         if not (has_name and has_fields):
             raise TypeError(
-                f"{cls.__qualname__} must define both struct_name and fields"
+                f"{cls.__qualname__} must define both struct_name and fields",
             )
         cls.struct = CudaStruct(cls.struct_name, cls.fields)
 
@@ -1565,7 +1577,7 @@ class CudaStructArguments(CudaArguments):
         struct = getattr(type(self), "struct", None)
         if struct is None:
             raise TypeError(
-                f"{type(self).__qualname__} does not define struct_name and fields"
+                f"{type(self).__qualname__} does not define struct_name and fields",
             )
         values = self._field_values(struct)
         self._struct_value = struct(**values)
@@ -1580,7 +1592,7 @@ class CudaStructArguments(CudaArguments):
             except AttributeError:
                 raise AttributeError(
                     f"{type(self).__qualname__} has no attribute {field.name!r} "
-                    f"for the field of struct {struct.name}"
+                    f"for the field of struct {struct.name}",
                 ) from None
         return values
 
@@ -1647,7 +1659,8 @@ def _field_state(struct: CudaStruct, values: Mapping[str, Any]) -> tuple[Any, ..
 
 def _is_device_array(value: Any) -> bool:
     return hasattr(type(value), "__cuda_array_interface__") or hasattr(
-        value, "__cuda_array_interface__"
+        value,
+        "__cuda_array_interface__",
     )
 
 
@@ -1725,7 +1738,7 @@ class PyccelStructArguments(CudaStructArguments):
         struct = getattr(type(self), "struct", None)
         if struct is None:
             raise TypeError(
-                f"{type(self).__qualname__} does not define struct_name and fields"
+                f"{type(self).__qualname__} does not define struct_name and fields",
             )
         return tuple(field.name for field in struct.fields)
 
@@ -1735,7 +1748,7 @@ class PyccelStructArguments(CudaStructArguments):
         if host_class is None:
             raise TypeError(
                 f"{type(self).__qualname__}.host_class is not set: the class of "
-                "the host argument object (e.g. the pyccel class) is required"
+                "the host argument object (e.g. the pyccel class) is required",
             )
         names = self._host_field_names()
         values = [getattr(self, name) for name in names]
@@ -1753,7 +1766,7 @@ class PyccelStructArguments(CudaStructArguments):
                         f"{type(self).__qualname__}.{name} is a device array: there "
                         "is no host form on the CuPy backend. Call the CUDA kernel, "
                         "or set host_copies = True for a read-only host evaluation "
-                        "from host copies"
+                        "from host copies",
                     )
                 from .xp import to_numpy
 
@@ -1795,7 +1808,7 @@ def _first_array_length(args: tuple[Any, ...]) -> int:
         if shape is not None and len(shape) > 0 and hasattr(arg, "dtype"):
             return int(shape[0])
     raise TypeError(
-        "n_threads_from='first_array' needs an array argument; pass n_threads"
+        "n_threads_from='first_array' needs an array argument; pass n_threads",
     )
 
 
@@ -1931,7 +1944,10 @@ class CudaKernel:
         self._template_args = None if template_args is None else tuple(template_args)
         self._signature = (
             parse_cuda_signature(
-                source, name, structs=self._structs, template_args=self._template_args
+                source,
+                name,
+                structs=self._structs,
+                template_args=self._template_args,
             )
             if check_signature
             else None
@@ -1972,7 +1988,7 @@ class CudaKernel:
         if name is None:
             if not path.name.endswith(suffix):
                 raise ValueError(
-                    f"{path.name} does not end with {suffix!r}; pass the kernel name"
+                    f"{path.name} does not end with {suffix!r}; pass the kernel name",
                 )
             name = path.name[: -len(suffix)]
         include_dirs = (path.parent, *kwargs.pop("include_dirs", ()))
@@ -2024,7 +2040,7 @@ class CudaKernel:
         if math.prod(block) > _MAX_THREADS_PER_BLOCK:
             raise ValueError(
                 f"a block has at most {_MAX_THREADS_PER_BLOCK} threads, got "
-                f"{block} = {math.prod(block)}"
+                f"{block} = {math.prod(block)}",
             )
         return block
 
@@ -2109,7 +2125,7 @@ class CudaKernel:
                 self._include_dirs,
                 base_dir=self._source_dir,
                 angle_dirs=(cuda_include_dir(),),
-            )
+            ),
         )
 
     def compile_options(self) -> tuple[str, ...]:
@@ -2159,7 +2175,8 @@ class CudaKernel:
 
     @n_threads_from.setter
     def n_threads_from(
-        self, value: Callable[[tuple[Any, ...]], Any] | str | None
+        self,
+        value: Callable[[tuple[Any, ...]], Any] | str | None,
     ) -> None:
         if value == "first_array":
             value = _first_array_length
@@ -2222,14 +2239,16 @@ class CudaKernel:
             if not cupy_available():
                 raise RuntimeError(
                     f"cannot compile CUDA kernel {self.expression!r}: "
-                    "CuPy is not installed or no GPU is available"
+                    "CuPy is not installed or no GPU is available",
                 )
             import cupy as cp
 
             options = self.compile_options()
             if self._template_args is None:
                 self._raw_kernel = cp.RawKernel(
-                    self._source, self._name, options=options
+                    self._source,
+                    self._name,
+                    options=options,
                 )
             else:
                 module = cp.RawModule(
@@ -2273,7 +2292,7 @@ class CudaKernel:
         if len(values) != len(self._signature):
             raise TypeError(
                 f"{self._name}() takes {len(self._signature)} arguments after "
-                f"flattening argument objects, got {len(values)}"
+                f"flattening argument objects, got {len(values)}",
             )
         return tuple([check(v) for check, v in zip(self._checkers, values)])
 
@@ -2309,7 +2328,7 @@ class CudaKernel:
             if len(block_shape) != 1:
                 raise ValueError(
                     f"block {block_shape} and n_threads {threads} have different "
-                    "numbers of dimensions"
+                    "numbers of dimensions",
                 )
             block_shape = block_shape + (1,) * (len(threads) - 1)
         grid_shape = tuple(math.ceil(n / b) for n, b in zip(threads, block_shape))
@@ -2395,7 +2414,7 @@ class CudaKernel:
         if shared_mem > limit:
             raise ValueError(
                 f"kernel {self.expression!r}: shared_mem={shared_mem} bytes exceeds "
-                f"the {limit} bytes a block may use on this device"
+                f"the {limit} bytes a block may use on this device",
             )
         kernel.max_dynamic_shared_size_bytes = shared_mem
         self._shared_mem_opt_in = shared_mem
@@ -2411,11 +2430,14 @@ class CudaKernel:
             if not bool(cp.isfinite(array).all()):
                 raise RuntimeError(
                     f"kernel {self.expression!r} left a NaN or inf in {label} "
-                    f"(dtype {array.dtype}, shape {tuple(array.shape)})"
+                    f"(dtype {array.dtype}, shape {tuple(array.shape)})",
                 )
 
     def _synchronize_after_launch(
-        self, stream: Any, grid: tuple[int, ...], block: tuple[int, ...]
+        self,
+        stream: Any,
+        grid: tuple[int, ...],
+        block: tuple[int, ...],
     ) -> None:
         """Wait for the launch and re-raise a CUDA error naming this kernel.
 
@@ -2442,7 +2464,7 @@ class CudaKernel:
                 raise
             raise RuntimeError(
                 f"CUDA error after launching kernel {self.expression!r} with "
-                f"grid {grid} and block {block}: {error}"
+                f"grid {grid} and block {block}: {error}",
             ) from error
 
 
@@ -2492,7 +2514,7 @@ class CudaKernelVariants:
             kernel = self._factory(*key)
             if not isinstance(kernel, CudaKernel):
                 raise TypeError(
-                    f"the factory must return a CudaKernel, got {type(kernel).__name__}"
+                    f"the factory must return a CudaKernel, got {type(kernel).__name__}",
                 )
             self._kernels[key] = kernel
         return kernel
@@ -2509,7 +2531,10 @@ class CudaKernelVariants:
         return list(self._kernels)
 
     def compile_all(
-        self, keys: Iterable[Sequence[Hashable]] = (), *, jobs: int | None = 1
+        self,
+        keys: Iterable[Sequence[Hashable]] = (),
+        *,
+        jobs: int | None = 1,
     ) -> None:
         """Compile the given variants (created if needed) and all existing ones.
 
@@ -2525,5 +2550,6 @@ class CudaKernelVariants:
         for key in keys:
             self.get(*key)
         _compile_in_threads(
-            {key: kernel.compile for key, kernel in self._kernels.items()}, jobs
+            {key: kernel.compile for key, kernel in self._kernels.items()},
+            jobs,
         )

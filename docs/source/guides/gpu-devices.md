@@ -22,7 +22,7 @@ On a multi-GPU workstation, pick the device before creating arrays:
 ```python
 xp.set_backend("cupy")
 print("GPUs:", xp.cuda.device_count())
-xp.cuda.set_device(1)          # arrays created from now on live on GPU 1
+xp.cuda.set_device(1)  # arrays created from now on live on GPU 1
 values = xp.zeros(10**6)
 ```
 
@@ -81,10 +81,10 @@ Work on one stream runs in order; work on different streams may overlap.
 
 ```python
 with xp.cuda.stream() as s:
-    device = xp.to_cupy(pinned_host)   # copy and compute queued on s
+    device = xp.to_cupy(pinned_host)  # copy and compute queued on s
     result = xp.fft.fft(device)
 
-xp.synchronize()                       # wait before using the result elsewhere
+xp.synchronize()  # wait before using the result elsewhere
 ```
 
 On NumPy, `stream()` yields `None`, so do not call methods on the yielded value

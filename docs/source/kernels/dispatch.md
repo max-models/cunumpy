@@ -172,10 +172,10 @@ none is. Device arrays run the CUDA kernel. To choose, use the same pattern as
 for the array backend:
 
 ```python
-xp.kernels.set_kernel_implementation("numpy")       # like xp.set_backend
+xp.kernels.set_kernel_implementation("numpy")  # like xp.set_backend
 with xp.kernels.use_kernel_implementation("numba"):  # like xp.use_backend
     push(positions, velocities, dt)
-xp.kernels.set_kernel_implementation(None)          # back to the default
+xp.kernels.set_kernel_implementation(None)  # back to the default
 ```
 
 or `CUNUMPY_KERNEL_IMPLEMENTATION=numpy` for a whole run (read at import, like
@@ -207,7 +207,7 @@ def compile_kernels(module):
 
 catalog = xp.kernels.KernelCatalog.from_package(
     __name__,
-    host_suffix="_pyccel",          # push/push_pyccel.py next to push/push_cuda.cu
+    host_suffix="_pyccel",  # push/push_pyccel.py next to push/push_cuda.cu
     compile_host=compile_kernels,
     host_fallback=NUMPY_VERSIONS,
 )
@@ -282,8 +282,8 @@ function's, and lists every kernel that differs, e.g.
 print(catalog.summary())
 # CUDA kernels: 2 of 3 (missing: sort)
 
-catalog.without_cuda    # ['sort']
-catalog.with_cuda       # ['deposit', 'push']
+catalog.without_cuda  # ['sort']
+catalog.with_cuda  # ['deposit', 'push']
 ```
 
 `summary()` is handy for a `--status` command line flag or the start-up log.
@@ -292,7 +292,7 @@ At setup, on the GPU backend, compile everything at once:
 
 ```python
 if xp.cupy_backend:
-    catalog.compile_all(jobs=8)   # threads; jobs=None uses all CPUs
+    catalog.compile_all(jobs=8)  # threads; jobs=None uses all CPUs
 ```
 
 All kernels are compiled even if one fails; the first error is raised

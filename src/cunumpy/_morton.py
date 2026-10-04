@@ -65,7 +65,7 @@ def _check_levels(ndim: int, levels: int) -> None:
     if not 1 <= levels <= MAX_MORTON_LEVELS[ndim]:
         raise ValueError(
             f"levels must be between 1 and {MAX_MORTON_LEVELS[ndim]} in {ndim}D, "
-            f"got {levels}"
+            f"got {levels}",
         )
 
 
@@ -135,7 +135,7 @@ def morton_scales(lower: Sequence[float], upper: Sequence[float], levels: int) -
     if lower.shape != upper.shape or lower.ndim != 1:
         raise ValueError(
             f"lower and upper must be sequences of equal length, got shapes "
-            f"{lower.shape} and {upper.shape}"
+            f"{lower.shape} and {upper.shape}",
         )
     _check_levels(lower.shape[0], levels)
     if np.any(upper == lower):
@@ -183,7 +183,7 @@ def morton_keys(
     cells = []
     for axis in range(ndim):
         cell = xpm.floor(
-            (positions[:, axis] - float(lower[axis])) * float(scales[axis])
+            (positions[:, axis] - float(lower[axis])) * float(scales[axis]),
         )
         cells.append(xpm.clip(cell, 0.0, top).astype(xpm.uint64))
     return morton_encode(*cells)

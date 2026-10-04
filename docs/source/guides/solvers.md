@@ -95,16 +95,16 @@ rho = xp.zeros(n_local)
 phi = xp.zeros(n_local)
 rho_vec, phi_vec = xp.petsc.petsc_vec(rho), xp.petsc.petsc_vec(phi)
 
-A = assemble_laplacian()      # a PETSc Mat
-A.setType("aijcusparse")      # keep the matrix on the GPU too
+A = assemble_laplacian()  # a PETSc Mat
+A.setType("aijcusparse")  # keep the matrix on the GPU too
 ksp = PETSc.KSP().create()
 ksp.setOperators(A)
 
 for step in range(n_steps):
     deposit(rho)
-    xp.synchronize()          # CuPy finished writing rho
+    xp.synchronize()  # CuPy finished writing rho
     ksp.solve(rho_vec, phi_vec)
-    xp.synchronize()          # PETSc finished writing phi
+    xp.synchronize()  # PETSc finished writing phi
     gather(phi)
 ```
 
@@ -137,5 +137,6 @@ extern "C" __global__ void push_and_energy(double* x, double* v, const double* E
 }
 ```
 
-The block size must be a multiple of 32, and every thread must reach the
-reduction. See the API reference for the warp and block functions.
+Every thread must reach the reduction; block functions also support partial
+warps. Warp functions accept explicit masks for subsets of lanes. See the API
+reference for the warp and block functions and prefix scans.

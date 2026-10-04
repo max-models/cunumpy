@@ -15,7 +15,8 @@ from cunumpy.cuda import CudaKernel
 from cunumpy.memory import DeviceMirror
 
 requires_gpu = pytest.mark.skipif(
-    not xp.cupy_available(), reason="CuPy/GPU not available or not functional"
+    not xp.cupy_available(),
+    reason="CuPy/GPU not available or not functional",
 )
 
 BIN_ADD = r"""
@@ -247,7 +248,7 @@ def test_atomic_add_2d_matches_bincount():
     weights = rng.random(n)
     flat = rows * shape[1] + cols
     expected = np.bincount(flat, weights=weights, minlength=np.prod(shape)).reshape(
-        shape
+        shape,
     )
 
     out = np.zeros(shape)

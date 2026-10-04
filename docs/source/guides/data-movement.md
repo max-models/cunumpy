@@ -33,10 +33,10 @@ import cunumpy as xp
 
 xp.set_backend("cupy")
 
-signal = xp.to_cunumpy(np.load("signal.npy"))   # one host-to-device copy
+signal = xp.to_cunumpy(np.load("signal.npy"))  # one host-to-device copy
 spectrum = xp.abs(xp.fft.rfft(signal)) ** 2
-peak = int(xp.argmax(spectrum))                  # one tiny device-to-host copy
-np.save("spectrum.npy", xp.to_numpy(spectrum))   # one device-to-host copy
+peak = int(xp.argmax(spectrum))  # one tiny device-to-host copy
+np.save("spectrum.npy", xp.to_numpy(spectrum))  # one device-to-host copy
 ```
 
 Typical boundaries are file I/O, plotting, calls into host-only libraries
@@ -47,9 +47,9 @@ An anti-pattern to avoid:
 
 ```python
 for step in range(n_steps):
-    state = xp.to_cupy(state)       # copied up every step
+    state = xp.to_cupy(state)  # copied up every step
     state = advance(state, dt)
-    state = xp.to_numpy(state)      # and down again
+    state = xp.to_numpy(state)  # and down again
     if step % 100 == 0:
         write_output(state)
 ```

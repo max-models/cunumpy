@@ -75,7 +75,7 @@ class StagedCopy:
             raise RuntimeError(
                 "this staged copy's host buffer was reused by a later copy; call "
                 "result() before starting more copies than there are buffers, or "
-                "keep result().copy()"
+                "keep result().copy()",
             )
 
     def ready(self) -> bool:
@@ -115,7 +115,10 @@ class HostStaging:
     """
 
     def __init__(
-        self, shape: tuple[int, ...] | int, dtype: Any, buffers: int = 2
+        self,
+        shape: tuple[int, ...] | int,
+        dtype: Any,
+        buffers: int = 2,
     ) -> None:
         if buffers < 1:
             raise ValueError(f"buffers must be at least 1, got {buffers}")
@@ -165,7 +168,7 @@ class HostStaging:
         if tuple(array.shape) != self.shape or np.dtype(array.dtype) != self.dtype:
             raise ValueError(
                 f"HostStaging for {self.shape} {self.dtype} got an array of shape "
-                f"{tuple(array.shape)} and dtype {array.dtype}"
+                f"{tuple(array.shape)} and dtype {array.dtype}",
             )
         device = _is_device_array(array)
         slot = self._slot(device)

@@ -25,7 +25,7 @@ microseconds regardless of the problem size:
 
 ```python
 start = time.perf_counter()
-solve(field)                         # only queues the kernels
+solve(field)  # only queues the kernels
 elapsed = time.perf_counter() - start  # wrong on the GPU
 ```
 
@@ -48,8 +48,7 @@ with xp.profiling.nvtx_range("push markers"):
 
 
 @xp.profiling.nvtx_range("time step")
-def step(state, dt):
-    ...
+def step(state, dt): ...
 ```
 
 On CuPy this pushes an NVTX range, so the region appears as a labelled bar on

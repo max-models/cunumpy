@@ -43,7 +43,7 @@ def _petsc() -> Any:
         from petsc4py import PETSc
     except ImportError as error:
         raise ImportError(
-            "xp.petsc.petsc_vec needs petsc4py (pip install petsc4py)"
+            "xp.petsc.petsc_vec needs petsc4py (pip install petsc4py)",
         ) from error
     return PETSc
 
@@ -92,13 +92,13 @@ def petsc_vec(array: Any, comm: Any = None) -> Any:
     device = _is_device_array(array)
     if not (device or isinstance(array, np.ndarray)):
         raise TypeError(
-            f"petsc_vec takes a NumPy or CuPy array, got {type(array).__name__}"
+            f"petsc_vec takes a NumPy or CuPy array, got {type(array).__name__}",
         )
     scalar = np.dtype(PETSc.ScalarType)
     if array.dtype != scalar:
         raise TypeError(
             f"petsc_vec needs an array of PETSc's scalar type {scalar}, got "
-            f"{array.dtype} (convert it once, outside the time loop)"
+            f"{array.dtype} (convert it once, outside the time loop)",
         )
     if not array.flags.c_contiguous:
         raise ValueError("petsc_vec needs a C-contiguous array (no copy is made)")
@@ -109,14 +109,14 @@ def petsc_vec(array: Any, comm: Any = None) -> Any:
         if device:
             raise RuntimeError(
                 "petsc4py could not wrap the CuPy array; it needs a PETSc built "
-                "with CUDA or HIP support (--with-cuda / --with-hip)"
+                "with CUDA or HIP support (--with-cuda / --with-hip)",
             ) from error
         raise
     if device and not any(t in vec.getType() for t in _DEVICE_VEC_TYPES):
         vec.destroy()
         raise RuntimeError(
             f"petsc4py created a {vec.getType()!r} vector for a CuPy array; it "
-            "needs a PETSc built with CUDA or HIP support"
+            "needs a PETSc built with CUDA or HIP support",
         )
     vec.setAttr("cunumpy_array", array)  # the vector does not own the memory
     return vec

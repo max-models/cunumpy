@@ -3,21 +3,12 @@ import re as _re
 import warnings as _warnings
 from importlib.metadata import PackageNotFoundError, version
 
-from . import (
-    algorithms,
-    cuda,
-    kernels,
-    memory,
-    mpi,
-    petsc,
-    profiling,
-    rng,
-    xp,
-)
+from . import algorithms, cuda, kernels, memory, mpi, petsc, profiling, rng, xp
 from ._scipy_backend import scipy
 from .xp import (
     as_device_array,
     assert_same_backend,
+    backend_info,
     cupy_available,
     default_float_dtype,
     get_array_backend,
@@ -89,7 +80,7 @@ def require_version(minimum: str) -> None:
     if _version_key(__version__) < _version_key(minimum):
         raise ImportError(
             f"cunumpy {minimum} or newer is required, but {__version__} is "
-            "installed: pip install --upgrade cunumpy"
+            "installed: pip install --upgrade cunumpy",
         )
 
 
@@ -98,6 +89,7 @@ __all__ = [
     "algorithms",
     "as_device_array",
     "assert_same_backend",
+    "backend_info",
     "cuda",
     "cupy_available",
     "cupy_backend",

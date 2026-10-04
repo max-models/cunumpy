@@ -16,11 +16,11 @@
 //     }
 //
 // Rules:
-// * Every thread of the block must call a block function, and all 32 lanes of
-//   the warp a warp function: do not return early. Threads without a value
+// * Every thread of the block must call a block function, and every lane named
+//   in the mask a warp function with the same mask: do not return early.
+//   Warp functions default to all 32 lanes. Threads without a value
 //   pass the identity (0 for a sum, the largest value for a minimum, ...).
-// * The number of threads per block must be a multiple of 32 (CudaKernel's
-//   default block size is 128).
+// * Block functions also support partial warps (any legal block size).
 // * The result is returned to every thread (warp functions: every lane).
 // * Supported types are those of the shuffle intrinsics: int, unsigned,
 //   long long, unsigned long long, float, double.
@@ -72,24 +72,50 @@ __device__ __forceinline__ int cunumpy_block_threads()
     return blockDim.x * blockDim.y * blockDim.z;
 }
 
-// Reduce v over the 32 lanes of the warp; every lane gets the result.
+// Reduce v over the named lanes of the warp; every participating lane gets the result.
 template <class T, class Op>
-__device__ __forceinline__ T cunumpy_warp_reduce(T v, Op op)
+__device__ __forceinline__ T cunumpy_warp_reduce(
+    T v, Op op, unsigned mask = CUNUMPY_FULL_WARP_MASK)
 {
-    for (int mask = CUNUMPY_WARP_SIZE / 2; mask > 0; mask /= 2) {
-        v = op(v, __shfl_xor_sync(CUNUMPY_FULL_WARP_MASK, v, mask));
+    if (mask == CUNUMPY_FULL_WARP_MASK) {
+        for (int offset = CUNUMPY_WARP_SIZE / 2; offset > 0; offset /= 2)
+            v = op(v, __shfl_xor_sync(mask, v, offset));
+        return v;
     }
-    return v;
+    // Broadcast only from participating lanes; works for arbitrary sparse masks.
+    // The mask must be nonzero and include the caller's lane.
+    unsigned remaining = mask;
+    int source = __ffs(remaining) - 1;
+    T result = __shfl_sync(mask, v, source);
+    remaining &= remaining - 1;
+    while (remaining) {
+        source = __ffs(remaining) - 1;
+        result = op(result, __shfl_sync(mask, v, source));
+        remaining &= remaining - 1;
+    }
+    return result;
 }
 
 template <class T>
-__device__ __forceinline__ T cunumpy_warp_sum(T v) { return cunumpy_warp_reduce(v, cunumpy_sum_op()); }
+__device__ __forceinline__ T cunumpy_warp_sum(T v, unsigned mask = CUNUMPY_FULL_WARP_MASK)
+{ return cunumpy_warp_reduce(v, cunumpy_sum_op(), mask); }
 
 template <class T>
-__device__ __forceinline__ T cunumpy_warp_min(T v) { return cunumpy_warp_reduce(v, cunumpy_min_op()); }
+__device__ __forceinline__ T cunumpy_warp_min(T v, unsigned mask = CUNUMPY_FULL_WARP_MASK)
+{ return cunumpy_warp_reduce(v, cunumpy_min_op(), mask); }
 
 template <class T>
-__device__ __forceinline__ T cunumpy_warp_max(T v) { return cunumpy_warp_reduce(v, cunumpy_max_op()); }
+__device__ __forceinline__ T cunumpy_warp_max(T v, unsigned mask = CUNUMPY_FULL_WARP_MASK)
+{ return cunumpy_warp_reduce(v, cunumpy_max_op(), mask); }
+
+// Mask of the physically present lanes of the caller's warp. All threads of
+// the block must reach the collective; this is not a divergent-branch mask.
+__device__ __forceinline__ unsigned cunumpy_block_warp_mask()
+{
+    const int warp = cunumpy_block_thread() / CUNUMPY_WARP_SIZE;
+    const int lanes = cunumpy_block_threads() - warp * CUNUMPY_WARP_SIZE;
+    return lanes >= CUNUMPY_WARP_SIZE ? CUNUMPY_FULL_WARP_MASK : (1u << lanes) - 1u;
+}
 
 // Reduce v over all threads of the block; every thread gets the result.
 // Uses 32 values of static shared memory per type and synchronizes the block
@@ -103,13 +129,14 @@ __device__ T cunumpy_block_reduce(T v, Op op)
     const int warp = thread / CUNUMPY_WARP_SIZE;
     const int n_warps = (cunumpy_block_threads() + CUNUMPY_WARP_SIZE - 1) / CUNUMPY_WARP_SIZE;
 
-    v = cunumpy_warp_reduce(v, op);
+    const unsigned mask = cunumpy_block_warp_mask();
+    v = cunumpy_warp_reduce(v, op, mask);
     __syncthreads();  // a previous call may still be reading partial
     if (lane == 0) partial[warp] = v;
     __syncthreads();
     if (warp == 0) {
         v = lane < n_warps ? partial[lane] : Op::fill(partial);
-        v = cunumpy_warp_reduce(v, op);
+        v = cunumpy_warp_reduce(v, op, mask);
         if (lane == 0) partial[0] = v;
     }
     __syncthreads();
@@ -149,6 +176,14 @@ __device__ __forceinline__ void cunumpy_block_sum_to(unsigned long long* out, un
 {
     const unsigned long long total = cunumpy_block_sum(v);
     if (cunumpy_block_thread() == 0) atomicAdd(out, total);
+}
+
+// Also covers unsigned int and signed long long counters.
+template <class T>
+__device__ __forceinline__ void cunumpy_block_sum_to(T* out, T v)
+{
+    const T total = cunumpy_block_sum(v);
+    if (cunumpy_block_thread() == 0) cunumpy_atomic_add(out, total);
 }
 
 #endif  // CUNUMPY_REDUCE_CUH

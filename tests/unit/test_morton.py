@@ -60,7 +60,7 @@ def test_keys_cells_and_clipping():
             [0.999, 0.5],
             [1.0, 1.0],  # upper face: the last cell
             [-5.0, 7.0],  # outside: the nearest face
-        ]
+        ],
     )
     keys = xp.algorithms.morton_keys(positions, [0.0, 0.0], [1.0, 1.0], levels)
     cells = [(0, 0), (1, 0), (7, 4), (7, 7), (0, 7)]
@@ -71,7 +71,10 @@ def test_reversed_axis():
     # lower > upper on y: cell 0 at the top, like a quadtree with y < mid as
     # its second quadrant bit
     keys = xp.algorithms.morton_keys(
-        np.array([[0.2, 0.9], [0.2, 0.1]]), [0, 1], [1, 0], 1
+        np.array([[0.2, 0.9], [0.2, 0.1]]),
+        [0, 1],
+        [1, 0],
+        1,
     )
     assert keys.tolist() == [0, 2]
 
@@ -94,7 +97,8 @@ def test_sorted_keys_make_tree_nodes_contiguous():
     positions = rng.random((2000, 2))
     levels = 10
     keys, _, sorted_positions = xp.algorithms.sort_by_key(
-        xp.algorithms.morton_keys(positions, [0, 0], [1, 1], levels), positions
+        xp.algorithms.morton_keys(positions, [0, 0], [1, 1], levels),
+        positions,
     )
     for level in (1, 2, 3):
         node = keys >> np.uint64(2 * (levels - level))
@@ -111,7 +115,9 @@ def test_sort_by_key_is_stable_and_reorders_all_arrays():
     ids = np.arange(5)
     rows = np.arange(10.0).reshape(5, 2)
     sorted_keys, order, sorted_ids, sorted_rows = xp.algorithms.sort_by_key(
-        keys, ids, rows
+        keys,
+        ids,
+        rows,
     )
     assert order.dtype == np.int64
     assert order.tolist() == [1, 3, 2, 0, 4]
@@ -167,7 +173,9 @@ def _cases(ndim):
     levels = xp.algorithms.MAX_MORTON_LEVELS[ndim]
     # points on cell boundaries, where rounding would show
     edges = np.array(lower) + np.arange(5)[:, None] / xp.algorithms.morton_scales(
-        lower, upper, levels
+        lower,
+        upper,
+        levels,
     )
     positions = np.ascontiguousarray(np.vstack([positions, edges]))
     return positions, lower, upper, levels
@@ -217,7 +225,8 @@ def test_cupy_arrays_stay_on_the_device():
     keys = xp.algorithms.morton_keys(cp.asarray(positions), lower, upper, levels)
     assert isinstance(keys, cp.ndarray)
     np.testing.assert_array_equal(
-        cp.asnumpy(keys), xp.algorithms.morton_keys(positions, lower, upper, levels)
+        cp.asnumpy(keys),
+        xp.algorithms.morton_keys(positions, lower, upper, levels),
     )
     sorted_keys, order, _ = xp.algorithms.sort_by_key(keys, cp.asarray(positions))
     assert isinstance(order, cp.ndarray)
