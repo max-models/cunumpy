@@ -6,16 +6,20 @@ where newly created arrays live.
 
 ## Select the backend at start-up
 
-The backend is NumPy unless the environment variable `ARRAY_BACKEND=cupy` is
+The backend is NumPy unless the environment variable `CUNUMPY_BACKEND=cupy` is
 set when CuNumpy is first imported:
 
 ```bash
-ARRAY_BACKEND=cupy python simulate.py
+CUNUMPY_BACKEND=cupy python simulate.py
 ```
 
 This is the least intrusive option for scripts and batch jobs: the code does
 not change, and a job script decides whether it runs on a GPU. The variable is
 read once, at import; setting it later in `os.environ` has no effect.
+
+The startup setting is named `CUNUMPY_BACKEND`; migrate existing job scripts
+from `ARRAY_BACKEND`. CuNumpy-owned environment options share the `CUNUMPY_`
+prefix; the complete list is in [Installation](../installation.md).
 
 To choose from inside the program, for example from a command-line flag, call
 `set_backend()` once, early, before arrays are created:

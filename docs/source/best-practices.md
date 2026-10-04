@@ -7,7 +7,7 @@ A condensed checklist. Each item links to the guide with the reasoning.
 * Import as `import cunumpy as xp` and always call `xp.<name>(...)`; never
   `from cunumpy import <array function>`. ([Backend-agnostic
   code](guides/portable-code.md))
-* Choose the backend once, in the entry point, with `ARRAY_BACKEND` or
+* Choose the backend once, in the entry point, with `CUNUMPY_BACKEND` or
   `set_backend()`. Library code never calls `set_backend()`. ([Choosing a
   backend](guides/backends.md))
 * Read back `xp.get_backend()` after requesting CuPy; log it with

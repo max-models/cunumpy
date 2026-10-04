@@ -26,14 +26,15 @@ def axpy_host(a, x, y, n):
 
 axpy = xp.kernels.Kernel(axpy_host, xp.cuda.CudaKernel(AXPY, "axpy"), name="axpy")
 
-axpy(2.0, x, y, x.size, n_threads=x.size)
+axpy(2.0, x, y, x.size)  # infer n_threads = x.shape[0]
 ```
 
 * On the **NumPy backend** the host kernel is called with the positional
   arguments; `n_threads`, `grid`, `block`, `shared_mem` and `stream` are
   ignored.
-* On the **CuPy backend** the CUDA kernel is launched; `n_threads` (or `grid`)
-  is required.
+* On the **CuPy backend** the CUDA kernel is launched; thread counts default to
+  the first array's leading shape axes. Explicit `n_threads` or `grid` overrides
+  this choice; `n_threads_from=None` requires an explicit size.
 * A plain host function is wrapped in a [`PyccelKernel`](pyccel-kernel.md);
   pass `host_options={"outputs": (2,)}` to configure that wrapper, or pass a
   `PyccelKernel` you built yourself.
@@ -179,7 +180,7 @@ xp.kernels.set_kernel_implementation(None)  # back to the default
 ```
 
 or `CUNUMPY_KERNEL_IMPLEMENTATION=numpy` for a whole run (read at import, like
-`ARRAY_BACKEND`). A chosen implementation that a kernel does not have, or
+`CUNUMPY_BACKEND`). A chosen implementation that a kernel does not have, or
 cannot load, raises `LookupError` instead of running another one: a benchmark
 of numba never silently measures NumPy. `kernel.implementations` lists the
 implementations, `kernel.selected()` names the one a call with host arrays runs

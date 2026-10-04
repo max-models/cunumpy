@@ -31,7 +31,7 @@ await pyodide.runPythonAsync(`
 `);
 ```
 
-NumPy is selected by default when `ARRAY_BACKEND` is unset. Leave it unset or set
+NumPy is selected by default when `CUNUMPY_BACKEND` is unset. Leave it unset or set
 it to `numpy` before importing cuNumPy. `to_numpy` and `to_cunumpy` preserve
 existing NumPy arrays, including views. `synchronize` and `set_device` are no-ops
 on this backend.

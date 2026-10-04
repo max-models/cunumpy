@@ -85,9 +85,11 @@ def test_kernel_on_cupy():
     with xp.use_backend("cupy"):
         assert kernel.get_kernel() is kernel.cuda_kernel
         kernel(x, 3, 300, n_threads=300)
+        kernel(x, 2, 300)
+        kernel.cuda_kernel.n_threads_from = None
         with pytest.raises(ValueError, match="n_threads is required"):
             kernel(x, 3, 300)
-    assert cp.all(x == 3.0)
+    assert cp.all(x == 6.0)
 
 
 def test_missing_cuda_raises_on_cupy():
@@ -261,9 +263,11 @@ def test_kernel_launch_configuration_on_cupy():
     with xp.use_backend("cupy"):
         kernel(x, 2.0, 300, grid=5, block=64)  # 320 threads
         kernel(x, 2.0, 300, n_threads=300, block=32, stream=cp.cuda.Stream.null)
+        kernel(x, 2.0, 300, block=32)
+        kernel.cuda_kernel.n_threads_from = None
         with pytest.raises(ValueError, match="n_threads is required"):
             kernel(x, 2.0, 300, block=32)
-    assert cp.all(x == 4.0)
+    assert cp.all(x == 8.0)
 
 
 def test_compile(kernel_package_factory):

@@ -121,7 +121,7 @@ def test_switching_the_backend_replaces_the_names():
         "xp.set_backend('numpy')\n"
         "assert type(xp.arange(3)).__module__ == 'numpy'\n"
     )
-    env = {**os.environ, "CUNUMPY_FAKE_CUPY": "1", "ARRAY_BACKEND": "numpy"}
+    env = {**os.environ, "CUNUMPY_FAKE_CUPY": "1", "CUNUMPY_BACKEND": "numpy"}
     subprocess.run([sys.executable, "-c", code], check=True, env=env)
 
 

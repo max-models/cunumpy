@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- CUDA launches infer thread counts from the first array by default, including
+  arrays in argument objects. 1D blocks use rows; multidimensional blocks use
+  matching leading shape axes. Explicit sizes and callbacks override inference.
 - Per-device eager CUDA compilation, compiler log streams and explicit `recompile()`.
 - Launch validation against actual device/kernel dimensions, thread limits and
   static plus dynamic shared memory, with cached per-device opt-in state.
@@ -57,6 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for Python 3.8 and 3.9 (both end-of-life); `cunumpy` now requires Python 3.10 or newer.
 
 ### Changed
+- Renamed the startup backend selector from `ARRAY_BACKEND` to `CUNUMPY_BACKEND`;
+  update batch-job environments. CuNumpy-owned environment options use `CUNUMPY_*`.
 - `Kernel(..., dispatch="arrays")` calls the host kernel directly for host arguments, without `PyccelKernel`'s check for device arrays to convert, which converted nothing but ran while CuPy was the active backend (unless the `PyccelKernel` was built with `use_cupy=True`).
 - `Kernel.check_signature()` (and `KernelCatalog.check_signatures()`) also compares the parameters of every host implementation (numba, NumPy; nothing is compiled) and of a `CompiledHostKernel`'s fallback with those of the host kernel.
 - `KernelCatalog.from_package(..., compile_host=..., host_fallback=...)` builds `HostImplementations` instead of `CompiledHostKernel`s: `host_fallback` becomes the `"numpy"` implementation, and `<name>_numba.py`/`<name>_numpy.py` files in a kernel folder are picked up.
@@ -75,7 +80,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cunumpy/morton.cuh` and `xp.morton_keys`, `morton_encode`, `morton_decode`, `morton_scales`, `MAX_MORTON_LEVELS`: Morton (Z-order) keys of 2D and 3D points (`uint64`, up to 32 and 21 bits per axis), the same in a kernel and on the host (bit for bit), for sorting particles along a space-filling curve and building quadtrees and octrees from sorted keys.
 - `xp.sort_by_key(keys, *arrays)`: one stable argsort of `keys` applied to every array; returns the sorted keys, the order and the sorted arrays.
 - `Kernel.from_folder(package, ...)`: the kernel of one kernel folder, with the options of `KernelCatalog.from_package` (`host_suffix`, `compile_host`, `dispatch`, `include_dirs`, CUDA options...). Every version in the folder is an implementation: `<name><host_suffix>.py` (`"pyccel"`, compiled with `compile_host`, and `"python"`, uncompiled), `<name>_numba.py`, `<name>_numpy.py` and `<name>_cuda.cu`. A folder's own `__init__.py` can declare `kernel = xp.Kernel.from_folder(__name__, ...)`, so code imports the kernel from where it is written; `from_package` now builds each kernel with it. `Kernel.implementations` lists them, `Kernel.selected(device=False)` tells which one a call runs.
-- `xp.HostImplementations` and `xp.HOST_IMPLEMENTATIONS`: the host implementations of a kernel, loaded on first use; a call runs the default, the first available of pyccel, numba and NumPy (the uncompiled Python version, with a warning, if none is), or the one chosen with `xp.set_kernel_implementation(name)` / `with xp.use_kernel_implementation(name):` / `CUNUMPY_KERNEL_IMPLEMENTATION=name` (read at import), like `set_backend`/`use_backend`/`ARRAY_BACKEND`; a chosen implementation that a kernel lacks or cannot load raises instead of running another. `xp.get_kernel_implementation()` reads the setting.
+- `xp.HostImplementations` and `xp.HOST_IMPLEMENTATIONS`: the host implementations of a kernel, loaded on first use; a call runs the default, the first available of pyccel, numba and NumPy (the uncompiled Python version, with a warning, if none is), or the one chosen with `xp.set_kernel_implementation(name)` / `with xp.use_kernel_implementation(name):` / `CUNUMPY_KERNEL_IMPLEMENTATION=name` (read at import), like `set_backend`/`use_backend`/`CUNUMPY_BACKEND`; a chosen implementation that a kernel lacks or cannot load raises instead of running another. `xp.get_kernel_implementation()` reads the setting.
 - `xp.as_kernel_array(value, like, dtype=None)` and `xp.kernel_output(out, like, dtype=None)`: bring the arguments of a `dispatch="arrays"` kernel to the side of the main array `like` (CuPy or NumPy, C-contiguous, `dtype`), without a copy when they already fit; `kernel_output` yields the buffer the kernel writes and copies it back into `out` if it had to be converted.
 - `CompiledHostKernel.fallback` returns the fallback.
 - `cunumpy/random.cuh` and `xp.philox_uniform`, `philox_uniform2`, `philox_normal`, `philox_normal2`, `philox4x32_10`: counter-based random numbers (Philox4x32-10, passing the Random123 known-answer tests) as a pure function of `(seed, stream, counter)`, the same in a kernel and on the host (uniform numbers bit for bit, normal numbers up to the last bits of the math functions), so kernels that draw random numbers can be compared with their host versions.

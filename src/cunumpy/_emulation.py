@@ -312,7 +312,9 @@ def emulate_cuda_kernel(
     compiler = compiler or emulation_compiler()
     if compiler is None:
         raise RuntimeError("emulation needs a C++ compiler (set CXX or install c++)")
-    grid_shape, block_shape = kernel.launch_shape(n_threads, grid=grid, block=block)
+    grid_shape, block_shape = kernel.launch_shape(
+        n_threads, grid=grid, block=block, args=args
+    )
     grid_shape = tuple(grid_shape) + (1,) * (3 - len(grid_shape))
     block_shape = tuple(block_shape) + (1,) * (3 - len(block_shape))
 

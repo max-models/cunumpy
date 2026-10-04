@@ -24,7 +24,7 @@ unchanged.
 
 ## Which one do I need?
 
-* **"I just want my existing code to run with `ARRAY_BACKEND=cupy`."** Wrap the
+* **"I just want my existing code to run with `CUNUMPY_BACKEND=cupy`."** Wrap the
   host kernels in `PyccelKernel`. Everything works, but every kernel call
   copies its arrays to the host and back. This is a correct starting point, not
   a fast one.

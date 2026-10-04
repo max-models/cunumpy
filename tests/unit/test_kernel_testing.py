@@ -149,7 +149,7 @@ def test_assert_kernels_agree_arguments():
         assert_kernels_agree(scale, make_scale_args, n_threads=300)
     with pytest.raises(ValueError, match="has no CUDA version"):
         assert_kernels_agree(Kernel(scale), make_scale_args, n_threads=300)
-    kernel = Kernel(scale, CudaKernel(SCALE_CUDA, "scale"))
+    kernel = Kernel(scale, CudaKernel(SCALE_CUDA, "scale", n_threads_from=None))
     with pytest.raises(TypeError, match="n_threads"):
         assert_kernels_agree(kernel, make_scale_args)
     with pytest.raises(ValueError, match="n_calls"):
@@ -172,7 +172,7 @@ def test_assert_kernels_agree_skips_without_cupy():
 @pytest.mark.skipif(not xp.cupy_available(), reason="CuPy/GPU not available")
 def test_assert_kernels_agree_on_gpu():
     kernel = Kernel(scale, CudaKernel(SCALE_CUDA, "scale"))
-    host = assert_kernels_agree(kernel, make_scale_args, n_threads=300, n_calls=2)
+    host = assert_kernels_agree(kernel, make_scale_args, n_calls=2)
     expected = 4 * np.random.default_rng(0).random(300)
     np.testing.assert_allclose(host["argument 0"], expected)
 

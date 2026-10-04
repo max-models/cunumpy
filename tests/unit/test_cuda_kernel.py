@@ -2224,6 +2224,27 @@ def test_n_threads_from_first_array(recorded):
         as_option.n_threads_from((1.0, 2))
 
 
+def test_default_launch_size_and_overrides(recorded):
+    kernel, raw = recorded
+    x = FakeDeviceArray(np.float64, shape=(1000, 6))
+    y = FakeDeviceArray(np.float64, shape=(1000, 6))
+    kernel(2.0, x, y, 1000)
+    assert raw.launches == [((8,), (128,), 0)]
+    kernel(2.0, x, y, 1000, n_threads=10)
+    kernel(2.0, x, y, 1000, grid=2)
+    assert raw.launches[-2:] == [((1,), (128,), 0), ((2,), (128,), 0)]
+
+
+def test_empty_default_launch_does_not_compile(recorded, monkeypatch):
+    kernel, raw = recorded
+    monkeypatch.setattr(kernel, "compile", lambda: pytest.fail("empty launch compiled"))
+    x = FakeDeviceArray(
+        np.float64, shape=(0, 6), flags=SimpleNamespace(c_contiguous=True)
+    )
+    kernel(2.0, x, x, 0)
+    assert raw.launches == []
+
+
 def test_shared_memory_above_the_default_is_opted_in(recorded):
     kernel, raw = recorded
     x, y = FakeDeviceArray(np.float64), FakeDeviceArray(np.float64)

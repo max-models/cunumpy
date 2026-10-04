@@ -55,7 +55,7 @@ explanation and examples.
 
 ## Choose a backend
 
-CuNumpy starts with NumPy unless `ARRAY_BACKEND=cupy` is set before import.
+CuNumpy starts with NumPy unless `CUNUMPY_BACKEND=cupy` is set before import.
 You can also choose at runtime:
 
 ```python
@@ -303,7 +303,10 @@ for `object_modules`, `is_array`, aliasing, and output declarations.
 
 `CudaKernel` wraps a CUDA C kernel (compiled with NVRTC through
 `cupy.RawKernel`) so that it is called with the same arguments as the host
-kernel it mirrors, plus the number of threads. Arrays are never copied: they
+kernel it mirrors. Thread counts default to the first array's leading shape
+axes: one thread per row for 1D blocks, matching axes for 2D/3D blocks. Explicit
+`n_threads`, `grid`, or a custom `n_threads_from` controls the launch when needed.
+Arrays are never copied: they
 must be C-contiguous CuPy arrays. The `extern "C" __global__` signature is
 parsed once and every call is checked against it: Python scalars are cast to
 the declared C types, and a wrong argument count, an array of the wrong dtype
@@ -335,7 +338,7 @@ kernel = xp.kernels.Kernel(axpy, xp.cuda.CudaKernel(AXPY, "axpy"))
 with xp.use_backend("cupy"):
     x = xp.arange(1000, dtype=xp.float64)
     y = xp.zeros(1000)
-    kernel(2.0, x, y, 1000, n_threads=1000)  # runs the CUDA kernel
+    kernel(2.0, x, y, 1000)  # infer n_threads = x.shape[0], run the CUDA kernel
 ```
 
 On the CuPy backend, a `Kernel` without CUDA kernel raises

@@ -293,8 +293,9 @@ def assert_kernels_agree(
         Launch configuration of the CUDA kernel, see
         :meth:`CudaKernel.__call__ <cunumpy.cuda.CudaKernel.__call__>`. `n_threads`
         may also be a function of the tuple of arguments, e.g.
-        ``lambda args: args[0].shape[0]``. One of `n_threads` and `grid` is
-        required unless the CUDA kernel has ``n_threads_from``.
+        ``lambda args: args[0].shape[0]``. Omitted sizes use the CUDA kernel's
+        shape-based default or its configured ``n_threads_from``; explicit sizes
+        are required when inference is disabled.
     rtol, atol : float
         Tolerances of ``numpy.testing.assert_allclose``.
     n_calls : int

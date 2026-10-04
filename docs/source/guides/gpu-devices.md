@@ -30,7 +30,7 @@ The usual alternative is to restrict visibility from outside the process,
 which also works for libraries that do not know about CuNumpy:
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 ARRAY_BACKEND=cupy python simulate.py
+CUDA_VISIBLE_DEVICES=1 CUNUMPY_BACKEND=cupy python simulate.py
 ```
 
 For MPI programs with one rank per GPU, use `bind_local_device()` instead

@@ -274,7 +274,7 @@ transfer counting, the backend branches of a simulation) runs only with CuPy
 present. For CI machines without a GPU, cunumpy ships a strict stand-in:
 
 ```bash
-CUNUMPY_FAKE_CUPY=1 ARRAY_BACKEND=cupy pytest tests/
+CUNUMPY_FAKE_CUPY=1 CUNUMPY_BACKEND=cupy pytest tests/
 ```
 
 Its arrays live in host memory but are not NumPy arrays: `numpy.asarray(a)`
@@ -328,7 +328,7 @@ offsets.
   are reported as skipped, and `emulate_cuda_kernel` tests check the CUDA
   kernels' arithmetic (the runner needs a C++ compiler, which Linux images
   have).
-* Run it a second time with `CUNUMPY_FAKE_CUPY=1 ARRAY_BACKEND=cupy`, so the
+* Run it a second time with `CUNUMPY_FAKE_CUPY=1 CUNUMPY_BACKEND=cupy`, so the
   CuPy code paths are exercised on the CPU runner too (kernel launches are
   skipped).
 * Run the same suite on a GPU runner, optionally with `CUNUMPY_CUDA_DEBUG=1` so
