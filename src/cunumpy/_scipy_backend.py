@@ -28,7 +28,7 @@ import importlib
 from types import ModuleType
 from typing import Any
 
-from .xp import get_backend
+from cunumpy.xp import get_backend
 
 __all__ = ["SUBMODULES", "ScipyNamespace", "scipy"]
 

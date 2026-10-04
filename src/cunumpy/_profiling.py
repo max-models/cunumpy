@@ -9,7 +9,7 @@ from contextlib import ContextDecorator, contextmanager
 from dataclasses import dataclass
 from types import ModuleType
 
-from .xp import array_backend, synchronize
+from cunumpy.xp import array_backend, synchronize
 
 
 def _nvtx_module() -> ModuleType | None:

@@ -19,10 +19,10 @@ The CUDA-only classes (:class:`~cunumpy.cuda.CudaKernel`, ...) are in
 :mod:`cunumpy.kernel_testing`.
 """
 
-from ._cuda_kernel import PyccelStructArguments
-from ._dispatch import Kernel, KernelCatalog
-from ._fusion import fuse
-from ._kernel import (
+from cunumpy._cuda_kernel import PyccelStructArguments
+from cunumpy._dispatch import Kernel, KernelCatalog
+from cunumpy._fusion import fuse
+from cunumpy._kernel import (
     HOST_IMPLEMENTATIONS,
     CompiledHostKernel,
     HostImplementations,

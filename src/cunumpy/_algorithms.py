@@ -8,7 +8,7 @@ from typing import Any
 
 import array_api_compat.numpy as np
 
-from .xp import assert_same_backend, get_array_backend, get_array_module
+from cunumpy.xp import assert_same_backend, get_array_backend, get_array_module
 
 
 def _integer_keys(keys: Any) -> tuple[Any, Any]:
@@ -77,7 +77,7 @@ _SUM_KERNELS: dict[str, Any] = {}
 def _sum_kernel(dtype: Any) -> Any:
     name = np.dtype(dtype).name
     if name not in _SUM_KERNELS:
-        from ._cuda_kernel import CudaKernel
+        from cunumpy._cuda_kernel import CudaKernel
 
         ctype = "float" if name == "float32" else "double"
         _SUM_KERNELS[name] = CudaKernel(

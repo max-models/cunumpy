@@ -10,14 +10,14 @@ kernel), a stable sort of several arrays by one key, and sums per key::
     charge = xp.algorithms.segment_sum(q, cell, n_cells)
 """
 
-from ._algorithms import (
+from cunumpy._algorithms import (
     SegmentPlan,
     cell_offsets,
     segment_boundaries,
     segment_sum,
     sort_by_key,
 )
-from ._morton import (
+from cunumpy._morton import (
     MAX_MORTON_LEVELS,
     morton_decode,
     morton_encode,

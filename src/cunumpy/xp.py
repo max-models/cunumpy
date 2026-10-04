@@ -13,12 +13,12 @@ from typing import TYPE_CHECKING, Any, Literal
 import array_api_compat
 import array_api_compat.numpy as np
 
-from ._transfers import _ACTIVE as _COUNTERS
-from ._transfers import _describe, _record
+from cunumpy._transfers import _ACTIVE as _COUNTERS
+from cunumpy._transfers import _describe, _record
 
 if os.environ.get("CUNUMPY_FAKE_CUPY", "").strip().lower() in ("1", "true", "yes"):
     # tests without a GPU: a strict host stand-in for CuPy, see cunumpy._fake_cupy
-    from ._fake_cupy import install as _install_fake_cupy
+    from cunumpy._fake_cupy import install as _install_fake_cupy
 
     _install_fake_cupy()
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .xp import get_backend
+from cunumpy.xp import get_backend
 
 
 class HostEvent:

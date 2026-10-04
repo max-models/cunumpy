@@ -18,7 +18,7 @@ from typing import Any
 
 import numpy as np
 
-from .xp import _cupy_backend, to_cupy
+from cunumpy.xp import _cupy_backend, to_cupy
 
 __all__ = ["DeviceMirror"]
 
