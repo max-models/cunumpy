@@ -248,6 +248,20 @@ def test_stream_on_another_device_is_rejected(runtime):
         CudaKernel(EMPTY, "empty")(grid=1, stream=types.SimpleNamespace(device_id=1))
 
 
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_array_on_another_device_is_rejected_before_launch(runtime, wrapped):
+    array = types.SimpleNamespace(
+        __cuda_array_interface__={}, device=types.SimpleNamespace(id=1)
+    )
+    argument = (
+        types.SimpleNamespace(__cuda_args__=lambda: (array,)) if wrapped else array
+    )
+    kernel = CudaKernel(EMPTY, "empty", check_signature=False)
+    with pytest.raises(ValueError, match="belongs to CUDA device 1"):
+        kernel(argument, grid=1)
+    assert runtime.raw[0].launches == []
+
+
 def test_empty_launch_does_not_compile(runtime):
     CudaKernel(EMPTY, "empty")(n_threads=0)
     assert runtime.compilations == []

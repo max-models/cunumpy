@@ -238,6 +238,14 @@ def _device_pointer(array: Any) -> int | None:
     return None if data is None else data[0]
 
 
+def _is_device_copy(source: Any, result: Any) -> bool:
+    """Distinguish a newly allocated conversion from a view of the same storage."""
+    if result is source:
+        return False
+    pointer = _device_pointer(source)
+    return pointer is None or pointer != _device_pointer(result)
+
+
 @contextmanager
 def count_transfers() -> Generator[TransferCounter, None, None]:
     """Count the host/device transfers made through cunumpy in the block.

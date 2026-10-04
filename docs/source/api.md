@@ -350,10 +350,13 @@ argument object is built, never per kernel call:
 * a CuPy array that already has `dtype` (any dtype if `dtype` is `None`) and
   is C-contiguous is returned unchanged, the same object without a copy, so
   kernels write into the caller's array;
-* anything else becomes one C-contiguous device copy,
+* anything else is converted to a C-contiguous device array using
   `cupy.ascontiguousarray(cupy.asarray(value, dtype))`: tuples and lists
   (`degree = (3, 3, 3)`), host NumPy arrays (one explicit transfer at build
   time), device arrays of another dtype, and non-contiguous views.
+
+Dtype and layout conversion can require separate device copies; each copy
+through this helper appears in transfer accounting.
 
 The result passes the pointer checks of `CudaKernel` and `CudaStruct`. On the
 NumPy backend it raises `RuntimeError`: device arguments are only built when
@@ -374,7 +377,7 @@ class DeviceParticles(xp.cuda.CudaArguments):
 For the arguments of a `Kernel` with `dispatch="arrays"`, whose choice follows
 the arrays. `as_kernel_array` returns `value` on the side of `like` (a CuPy
 array if `like` is one, a NumPy array otherwise), C-contiguous and with `dtype`
-(any if `None`): `value` itself if it already is such an array, else one copy,
+(any if `None`): `value` itself if it already is such an array, else a conversion,
 moved across if needed (counted by `count_transfers()`). `kernel_output` is a
 context manager yielding the buffer for an array the kernel writes: `out`
 itself if `as_kernel_array` takes it unchanged, else a converted copy whose

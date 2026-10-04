@@ -290,6 +290,10 @@ xp.cuda.cuda_include_dir()
   `ArrayND<T>` params: CuPy arrays of dtype T and ndim N, any strides.
 * Compiled lazily with NVRTC on first call; cached on disk by CuPy; quoted
   `#include "..."` headers are hashed into the options so edits recompile.
+  `compile()` compiles eagerly and reuses successful per-device state;
+  `recompile()` refreshes that state after header/debug changes. Each launch
+  validates actual device/kernel dimensions, threads and static+dynamic shared
+  memory. Use the returned CuPy raw kernel's attributes for resource inspection.
 * Creating a `CudaKernel` does not import CuPy; compiling needs a GPU.
 
 Shipped CUDA headers (always on the include path):
@@ -381,7 +385,7 @@ m = xp.memory.DeviceMirror(host_numpy_array)  # TypeError if not numpy.ndarray
 m.device  # CuPy copy (lazy) on CuPy; the host array itself on NumPy
 m.zero()
 m.to_device()
-m.to_host(stream=None, event=None)  # copies in place; no-op on NumPy; pass at most one dependency
+m.to_host(stream=None, event=None)  # in place; pass at most one dependency
 m.rebind(new_host_array)  # after the owner reallocates
 ```
 

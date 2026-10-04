@@ -371,7 +371,8 @@ When building such argument objects, `xp.as_device_array(value, dtype,
 ndim=None)` applies the "reference or copy once" rule: a CuPy array that
 already has the dtype and is C-contiguous is returned as it is, anything else
 (a tuple such as `degree = (3, 3, 3)`, a host array, another dtype, a
-non-contiguous view) becomes one device copy. Call it once when the object is
+non-contiguous view) is converted; dtype and layout changes can require separate
+device copies. Call it once when the object is
 built, not per kernel call; on the NumPy backend it raises, so host data is
 never copied to the device implicitly.
 When the host kernel takes such a group as one object too (e.g. a Pyccel class

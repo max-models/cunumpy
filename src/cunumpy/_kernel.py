@@ -35,7 +35,7 @@ import array_api_compat
 import numpy as np
 
 from cunumpy._transfers import _ACTIVE as _COUNTERS
-from cunumpy._transfers import _describe, _nbytes, _record
+from cunumpy._transfers import _describe, _is_device_copy, _nbytes, _record
 from cunumpy.xp import _cupy_backend, _to_cupy, _to_numpy, is_gpu, to_cupy, to_numpy
 
 __all__ = ["CompiledHostKernel", "KernelArguments", "PyccelKernel", "resolve_host_args"]
@@ -836,7 +836,7 @@ def as_kernel_array(value: Any, like: Any, dtype: Any = None) -> Any:
         if not is_gpu(value):
             value = to_cupy(value)
         result = cupy.ascontiguousarray(value, dtype=dtype)
-        if _COUNTERS and result is not value:
+        if _COUNTERS and _is_device_copy(value, result):
             _record(
                 "device_copy",
                 f"as_kernel_array({_describe(value)})",

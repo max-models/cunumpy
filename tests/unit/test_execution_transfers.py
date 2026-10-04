@@ -219,3 +219,23 @@ def test_interoperable_device_reference_does_not_report_host_transfer(device):
     with xp.profiling.assert_no_transfers() as counter:
         assert xp.as_device_array(exported) is array
     assert counter.total == 0
+
+
+@pytest.mark.parametrize("helper", ["as_device_array", "as_kernel_array"])
+def test_reference_only_layout_view_is_not_counted_as_copy(device, helper):
+    scalar = device.ndarray(np.array(3.0))
+    view = device.ndarray(scalar.array.reshape(1))
+    device.ascontiguousarray = lambda value, dtype=None: view
+    if helper == "as_device_array":
+        # An interoperable exporter takes the conversion path. The resulting
+        # one-dimensional view still references the original scalar's storage.
+        exported = types.SimpleNamespace(
+            __cuda_array_interface__={"data": (scalar.data.ptr, False)}
+        )
+        device.asarray = lambda value, dtype=None: scalar
+        convert, value, kwargs = xp.as_device_array, exported, {}
+    else:
+        convert, value, kwargs = xp.kernels.as_kernel_array, scalar, {"like": scalar}
+    with xp.profiling.count_transfers() as counter:
+        assert convert(value, **kwargs) is view
+    assert counter.total == 0

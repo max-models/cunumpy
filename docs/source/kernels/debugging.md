@@ -46,8 +46,9 @@ with xp.cuda.cuda_debug():
 
 Compile options are fixed when a kernel is compiled. A kernel that was already
 compiled before debug mode was enabled keeps its options (the synchronization
-still applies). Enable debug mode before the kernels are first called, or set
-`CUNUMPY_CUDA_DEBUG=1` in the environment. `kernel.debug_active()` and
+still applies). Enable debug mode before the kernels are first called, call
+`kernel.recompile()` after enabling it, or set `CUNUMPY_CUDA_DEBUG=1` in the
+environment. Finish in-flight launches before rebuilding. `kernel.debug_active()` and
 `kernel.compile_options()` show what applies to a kernel.
 
 Use `-DCUNUMPY_BOUNDS_CHECK` in your own code too:
@@ -108,7 +109,7 @@ on for the kernel under suspicion, not in production.
 | correct on small inputs, wrong on large ones | `int` overflow in index computations; use `long long`. |
 | results differ slightly between runs | floating-point atomics in a different order; compare with a tolerance. |
 | results occasionally garbage after MPI | missing `synchronize_for_mpi()` before the MPI call. |
-| a header change has no effect | the header is included with angle brackets (not hashed) or the kernel object was compiled before the change; see "Headers and the compile cache" in [Writing CUDA kernels](cuda-kernel.md). |
+| a header change has no effect | the kernel object was compiled before the change; call `kernel.recompile()`. Headers must resolve through the configured include directories to be hashed; see "Headers and the compile cache" in [Writing CUDA kernels](cuda-kernel.md). |
 
 After an illegal memory access the CUDA context of the process is unusable: all
 later CUDA calls fail. Restart the process (or the pytest run) after fixing the

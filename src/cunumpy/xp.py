@@ -14,7 +14,13 @@ import array_api_compat
 import array_api_compat.numpy as np
 
 from cunumpy._transfers import _ACTIVE as _COUNTERS
-from cunumpy._transfers import _describe, _device_pointer, _nbytes, _record
+from cunumpy._transfers import (
+    _describe,
+    _device_pointer,
+    _is_device_copy,
+    _nbytes,
+    _record,
+)
 
 if os.environ.get("CUNUMPY_FAKE_CUPY", "").strip().lower() in ("1", "true", "yes"):
     # tests without a GPU: a strict host stand-in for CuPy, see cunumpy._fake_cupy
@@ -301,9 +307,7 @@ def to_cupy(array: Any) -> Any:
         )
         if not device:
             _record("to_device", f"to_cupy({_describe(array)})", nbytes=_nbytes(result))
-        elif _device_pointer(array) is not None and _device_pointer(
-            array
-        ) != _device_pointer(result):
+        elif _device_pointer(array) is not None and _is_device_copy(array, result):
             _record(
                 "device_copy", f"to_cupy({_describe(array)})", nbytes=_nbytes(result)
             )
@@ -382,14 +386,14 @@ def as_device_array(
                 value,
                 "__cuda_array_interface__",
             )
-            if not device_only or _device_pointer(value) != _device_pointer(converted):
+            if not device_only or _is_device_copy(value, converted):
                 _record(
                     "device_copy" if device_only else "to_device",
                     f"as_device_array({_describe(value)})",
                     nbytes=_nbytes(converted),
                 )
         result = cp.ascontiguousarray(converted)
-        if _COUNTERS and result is not converted:
+        if _COUNTERS and _is_device_copy(converted, result):
             _record(
                 "device_copy",
                 f"as_device_array({_describe(converted)}) layout",
