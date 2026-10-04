@@ -16,15 +16,11 @@ import pytest
 import cunumpy as xp
 import cunumpy.kernel_testing
 from cunumpy.cuda import CudaArguments, CudaKernel, parse_cuda_signature
-from cunumpy.kernel_testing import (
-    BACKENDS,
-    _collect_arrays,
-    _compare_results,
-    assert_kernels_agree,
-    backend,  # noqa: F401 - the fixture is used by name
-    device_function_kernel,
-    requires_cupy,
-)
+from cunumpy.kernel_testing import \
+    backend  # noqa: F401 - the fixture is used by name
+from cunumpy.kernel_testing import (BACKENDS, _collect_arrays,
+                                    _compare_results, assert_kernels_agree,
+                                    device_function_kernel, requires_cupy)
 from cunumpy.kernels import Kernel
 
 SCALE_CUDA = r"""

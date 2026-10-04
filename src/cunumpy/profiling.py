@@ -14,12 +14,8 @@ host and device that cunumpy makes inside a block::
 """
 
 from ._profiling import Timing, nvtx_range, timed_region
-from ._transfers import (
-    TransferCounter,
-    TransferEvent,
-    assert_no_transfers,
-    count_transfers,
-)
+from ._transfers import (TransferCounter, TransferEvent, assert_no_transfers,
+                         count_transfers)
 
 __all__ = [
     "Timing",

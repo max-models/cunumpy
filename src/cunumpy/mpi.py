@@ -21,25 +21,12 @@ finds out which. :func:`local_rank` is the rank of this process on its node
 mpi4py is imported only by the functions that need it.
 """
 
-from ._mpi import (
-    MPIStaging,
-    get_mpi_cuda_aware,
-    mpi_buffer,
-    mpi_is_cuda_aware,
-    require_cuda_aware_mpi,
-    set_mpi_cuda_aware,
-    synchronize_for_mpi,
-)
-from ._mpi_serial import (
-    OVERRIDE_VARIABLE,
-    SerialComm,
-    SerialMPI,
-    SerialRequest,
-    SerialStatus,
-    get_mpi,
-    launched_under_mpi,
-    local_rank,
-)
+from ._mpi import (MPIStaging, get_mpi_cuda_aware, mpi_buffer,
+                   mpi_is_cuda_aware, require_cuda_aware_mpi,
+                   set_mpi_cuda_aware, synchronize_for_mpi)
+from ._mpi_serial import (OVERRIDE_VARIABLE, SerialComm, SerialMPI,
+                          SerialRequest, SerialStatus, get_mpi,
+                          launched_under_mpi, local_rank)
 
 __all__ = [
     "OVERRIDE_VARIABLE",

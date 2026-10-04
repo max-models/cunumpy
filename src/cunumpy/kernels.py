@@ -22,19 +22,11 @@ The CUDA-only classes (:class:`~cunumpy.cuda.CudaKernel`, ...) are in
 from ._cuda_kernel import PyccelStructArguments
 from ._dispatch import Kernel, KernelCatalog
 from ._fusion import fuse
-from ._kernel import (
-    HOST_IMPLEMENTATIONS,
-    CompiledHostKernel,
-    HostImplementations,
-    KernelArguments,
-    PyccelKernel,
-    as_kernel_array,
-    get_kernel_implementation,
-    kernel_output,
-    resolve_host_args,
-    set_kernel_implementation,
-    use_kernel_implementation,
-)
+from ._kernel import (HOST_IMPLEMENTATIONS, CompiledHostKernel,
+                      HostImplementations, KernelArguments, PyccelKernel,
+                      as_kernel_array, get_kernel_implementation,
+                      kernel_output, resolve_host_args,
+                      set_kernel_implementation, use_kernel_implementation)
 
 __all__ = [
     "HOST_IMPLEMENTATIONS",

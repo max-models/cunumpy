@@ -3,37 +3,13 @@ import re as _re
 import warnings as _warnings
 from importlib.metadata import PackageNotFoundError, version
 
-from . import (
-    algorithms,
-    cuda,
-    kernels,
-    memory,
-    mpi,
-    petsc,
-    profiling,
-    rng,
-    xp,
-)
+from . import algorithms, cuda, kernels, memory, mpi, petsc, profiling, rng, xp
 from ._scipy_backend import scipy
-from .xp import (
-    as_device_array,
-    assert_same_backend,
-    backend_info,
-    cupy_available,
-    default_float_dtype,
-    get_array_backend,
-    get_array_module,
-    get_backend,
-    is_cpu,
-    is_gpu,
-    same_backend,
-    set_backend,
-    synchronize,
-    to_cunumpy,
-    to_cupy,
-    to_numpy,
-    use_backend,
-)
+from .xp import (as_device_array, assert_same_backend, backend_info,
+                 cupy_available, default_float_dtype, get_array_backend,
+                 get_array_module, get_backend, is_cpu, is_gpu, same_backend,
+                 set_backend, synchronize, to_cunumpy, to_cupy, to_numpy,
+                 use_backend)
 
 # Names that were at the top level before cunumpy 0.5, and the submodule each
 # moved to. They still resolve (with a DeprecationWarning) until cunumpy 0.6.

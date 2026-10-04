@@ -55,13 +55,8 @@ from typing import Any
 
 import numpy as np
 
-from ._cuda_kernel import (
-    CudaKernel,
-    CudaParameter,
-    _scalar_checker,
-    _strip_comments,
-    cuda_include_dir,
-)
+from ._cuda_kernel import (CudaKernel, CudaParameter, _scalar_checker,
+                           _strip_comments, cuda_include_dir)
 
 __all__ = ["emulate_cuda_kernel", "emulation_compiler"]
 

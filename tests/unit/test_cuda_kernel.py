@@ -15,20 +15,11 @@ import pytest
 import cunumpy as xp
 import cunumpy._device as device_module
 from cunumpy import as_device_array
-from cunumpy.cuda import (
-    CudaArguments,
-    CudaKernel,
-    CudaKernelVariants,
-    CudaStruct,
-    CudaStructValue,
-    ctype_of,
-    cuda_include_dir,
-    cuda_kernel_names,
-    include_hash,
-    parse_cuda_signature,
-    resolve_includes,
-    write_cuda_header,
-)
+from cunumpy.cuda import (CudaArguments, CudaKernel, CudaKernelVariants,
+                          CudaStruct, CudaStructValue, ctype_of,
+                          cuda_include_dir, cuda_kernel_names, include_hash,
+                          parse_cuda_signature, resolve_includes,
+                          write_cuda_header)
 
 AXPY = r"""
 // y = a * x + y
@@ -468,9 +459,7 @@ PARTICLES = CudaStruct(
     ],
 )
 
-PUSH_SOURCE = (
-    PARTICLES.declaration
-    + r"""
+PUSH_SOURCE = PARTICLES.declaration + r"""
 extern "C" __global__
 void push(Particles p, double dt, double* out, unsigned long long* size) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
@@ -481,7 +470,6 @@ void push(Particles p, double dt, double* out, unsigned long long* size) {
     if (i < p.n && p.alive[i]) p.x[i] += dt * p.charge;
 }
 """
-)
 
 
 def test_struct_layout_and_declaration():

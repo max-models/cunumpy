@@ -11,7 +11,8 @@ from typing import Any
 import array_api_compat
 import array_api_compat.numpy as np
 
-from ._mpi_serial import _LOCAL_RANK_VARIABLES, local_rank  # noqa: F401 - re-exported
+from ._mpi_serial import (_LOCAL_RANK_VARIABLES,  # noqa: F401 - re-exported
+                          local_rank)
 from ._transfers import _ACTIVE as _COUNTERS
 from ._transfers import _describe, _record
 from .xp import array_backend, cupy_available, to_numpy
