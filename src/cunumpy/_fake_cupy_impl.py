@@ -401,6 +401,9 @@ class _NoGPU:
     def __call__(self, *args, **kwargs):
         raise NotImplementedError("fake CuPy cannot run CUDA kernels")
 
+    def compile(self, log_stream=None):
+        raise NotImplementedError("fake CuPy cannot compile CUDA kernels")
+
     def get_function(self, name):
         return _NoGPU()
 

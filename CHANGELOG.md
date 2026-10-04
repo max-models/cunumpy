@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Per-device eager CUDA compilation, compiler log streams and explicit `recompile()`.
+- Launch validation against actual device/kernel dimensions, thread limits and
+  static plus dynamic shared memory, with cached per-device opt-in state.
+- Transfer payload byte counts, mirror-refresh and kernel-output accounting, and
+  separate device-only conversion observations.
+- Producer `stream=`/`event=` dependencies for output staging and mirror downloads;
+  device-bound retained storage and CPU-to-pinned staging upgrades.
+- GPU CI requires real hardware and runs focused Compute Sanitizer memory,
+  shared-memory race and synchronization checks.
 - Reusable `cuda.create_stream`, `create_event`, `record_event`, and `wait_event`,
   with synchronous host equivalents; `cuda.stream(existing)` selects an existing stream.
 - `mpi.MPIStaging` reuses host staging storage and rejects overlapping device uses.

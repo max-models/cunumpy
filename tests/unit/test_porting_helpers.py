@@ -274,18 +274,29 @@ def test_pyccel_struct_arguments_requires_host_class():
 # ---------------------------------------------------------------------------
 
 
-def _launching(kernel):
+def _launching(kernel, monkeypatch):
     """Replace compilation by a recorder of (grid, block) launches."""
     launches = []
-    kernel.compile = lambda: (
-        lambda grid, block, values, shared_mem: launches.append(grid)
+    raw = lambda grid, block, values, shared_mem: launches.append(grid)
+    kernel.compile = lambda: raw
+    kernel._compiled[0] = cuda_kernel_module._CompiledKernel(
+        raw,
+        {
+            "maxThreadsDim": (1024, 1024, 64),
+            "maxGridSize": (2**31 - 1, 65535, 65535),
+            "maxThreadsPerBlock": 1024,
+            "sharedMemPerBlock": 49152,
+        },
+        {"max_threads_per_block": 1024, "shared_size_bytes": 0},
+        49152,
     )
+    monkeypatch.setattr(cuda_kernel_module, "_current_device", lambda: 0)
     return launches
 
 
-def test_n_threads_from():
+def test_n_threads_from(monkeypatch):
     kernel = CudaKernel(SCALE, "scale", n_threads_from=lambda args: args[2])
-    launches = _launching(kernel)
+    launches = _launching(kernel, monkeypatch)
     kernel(FakeDeviceArray(np.float64), 2.0, 300)
     assert launches == [(3,)]
     kernel(FakeDeviceArray(np.float64), 2.0, 300, n_threads=10)  # explicit wins
@@ -300,7 +311,7 @@ def test_n_threads_from():
 def test_check_finite(monkeypatch):
     kernel = CudaKernel(SCALE, "scale", check_finite=True)
     assert kernel.check_finite
-    _launching(kernel)
+    _launching(kernel, monkeypatch)
     kernel._synchronize_after_launch = lambda *a: None
     fake_cupy = ModuleType("cupy")
     fake_cupy.isfinite = np.isfinite

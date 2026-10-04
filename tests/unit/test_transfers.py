@@ -84,7 +84,7 @@ def test_empty_counter():
     assert counter.events == [] and counter.kernel_conversion_calls == []
     assert counter.report().startswith("0 transfer(s) through cunumpy")
     assert repr(counter) == (
-        "TransferCounter(to_host=0, to_device=0, kernel_conversion=0, fallback=0)"
+        "TransferCounter(to_host=0, to_device=0, kernel_conversion=0, fallback=0, device_copy=0)"
     )
 
 
@@ -189,7 +189,7 @@ def test_report_groups_events_by_kind_and_call_site(fake_device):
     lines = report.splitlines()
     assert lines[0] == (
         "4 transfer(s) through cunumpy "
-        "(3 to_host, 1 to_device, 0 kernel_conversion, 0 fallback)"
+        "(3 to_host, 1 to_device, 0 kernel_conversion, 0 fallback, 0 device_copy)"
     )
     assert "  to_host (3):" in lines
     assert "  to_device (1):" in lines
@@ -278,7 +278,9 @@ def test_pyccel_kernel_conversion_is_counted_once_per_call(fake_device):
     assert np.array_equal(x.data, np.full(3, 18.0))  # 1 * 2 * 3 * 3 (aliased)
     assert np.array_equal(y.data, np.full(3, 2.0))
     assert counter.kernel_conversions == 2
-    assert counter.total == 2, "the copies inside the call are not counted twice"
+    assert counter.total == 8  # six copies and two conversion markers
+    assert counter.to_host == counter.to_device == 3
+    assert counter.bytes_to_host == counter.bytes_to_device == 3 * 3 * 8
     first, second = counter.kernel_conversion_calls
     assert first.kind == "kernel_conversion"
     assert first.description == (
@@ -377,8 +379,9 @@ def test_real_pyccel_kernel_conversion_is_counted():
         PyccelKernel(scale)(x, 2.0)
 
     assert cp.all(x == 2.0)
-    assert counter.kernel_conversions == 1 and counter.total == 1
-    assert counter.events[0].description == (
+    assert counter.kernel_conversions == 1 and counter.total == 3
+    assert counter.bytes_to_host == counter.bytes_to_device == x.nbytes
+    assert counter.kernel_conversion_calls[0].description == (
         "PyccelKernel 'scale': 1 device array(s) copied to the host"
     )
 
@@ -403,7 +406,7 @@ def test_real_kernel_fallback_is_counted():
     assert cp.all(x == 2.0)
     assert counter.fallbacks == 1
     assert counter.kernel_conversions == 1, "the fallback converts on the host"
-    assert counter.total == 2
+    assert counter.total == 4  # two copies, conversion and fallback markers
 
 
 @requires_cupy

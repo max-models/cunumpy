@@ -59,8 +59,8 @@ Move the conversions out of the loop and convert inside the `if` only.
 ## Count the transfers
 
 The classic performance bug of a GPU port is a transfer that sneaks into the
-time loop. `count_transfers()` records every copy made through CuNumpy in a
-block, with the file and line that caused it:
+time loop. `count_transfers()` records copies made through CuNumpy's conversion
+and execution helpers, with the file and line that caused them:
 
 ```python
 with xp.profiling.count_transfers() as counter:
@@ -72,23 +72,29 @@ print(counter.report())
 ```
 
 ```text
-20 transfer(s) through cunumpy (10 to_host, 10 to_device, 0 kernel_conversion, 0 fallback)
+20 transfer(s) through cunumpy (10 to_host, 10 to_device, 0 kernel_conversion, 0 fallback, 0 device_copy)
   to_host (10):
     /home/me/sim/diagnostics.py:42: to_numpy(shape=(100000,), dtype=float64) (x10)
   to_device (10):
     /home/me/sim/step.py:17: to_cupy(shape=(100000,), dtype=float64) (x10)
 ```
 
-Four kinds of events are recorded: `to_host`, `to_device`,
-`kernel_conversion` (a [`PyccelKernel`](../kernels/pyccel-kernel.md) that copied
-device arrays to the host and back) and `fallback` (a
-[`Kernel`](../kernels/dispatch.md) without CUDA version running its host kernel
-on the GPU backend). Calls that do not copy, such as `to_numpy()` of a NumPy
-array, are not counted, so a `count_transfers()` block on the NumPy backend
-reports zero.
+Physical copies are recorded as `to_host`, `to_device`, or `device_copy`
+(device-only dtype/layout conversions). Mirror refreshes, staging, and kernel
+output copies are included. Each copy has an `event.nbytes` payload size;
+`counter.bytes_to_host`, `counter.bytes_to_device`, and `counter.bytes(kind)`
+sum the known sizes.
 
-In tests, `assert_no_transfers()` turns this into a check that fails with the
-report:
+`kernel_conversion` marks a [`PyccelKernel`](../kernels/pyccel-kernel.md) call
+that copied device arrays to the host and back, and `fallback` marks a
+[`Kernel`](../kernels/dispatch.md) without a CUDA version running its host kernel
+on the GPU backend. Physical copies are recorded separately from these markers,
+which add no bytes. `counter.total` includes markers; `counter.to_host +
+counter.to_device` counts physical host/device copies. Reference-only calls,
+such as `to_numpy()` of a NumPy array, record nothing.
+
+In tests, `assert_no_transfers()` rejects host/device copies and host execution
+on the GPU backend, with the report below. It allows device-only conversions:
 
 ```python
 def test_step_stays_on_device():
@@ -97,7 +103,8 @@ def test_step_stays_on_device():
         step(state, dt)
 ```
 
-The counter only sees transfers made through CuNumpy. Raw `cupy.asarray(host)`,
+The counter only sees transfers made through CuNumpy helpers. Forwarded backend
+operations such as `xp.asarray(host)`, raw `cupy.asarray(host)`,
 `device_array.get()`, `float(device_scalar)` and conversions inside other
 libraries are invisible to it; use `nsys` to find those (see [Timing and
 profiling](profiling.md)).
@@ -135,6 +142,13 @@ two transfers explicit: `mirror.device` is the array kernels write into, and
 place. On the NumPy backend `mirror.device` *is* the host array and the copies
 are no-ops. See [Accumulation kernels](../kernels/accumulation.md) for the full
 pattern.
+
+Both directions appear in transfer accounting. A retained device buffer is
+bound to its CUDA device; make that device current before using it. Pass
+`mirror.to_host(stream=producer)` or `mirror.to_host(event=completion)` when
+the kernel ran on another stream. The refresh blocks until the host data is
+ready. After CPU work changes the host buffer, call `mirror.to_device()` before
+resuming GPU work.
 
 ## Pinned memory
 

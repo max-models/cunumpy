@@ -283,30 +283,34 @@ with xp.profiling.count_transfers() as counter:
 assert counter.total == 0, counter.report()
 ```
 
-Four kinds of events are recorded:
+Five kinds of events are recorded:
 
-* `to_host`: `to_numpy()` (or `to_cunumpy()`) called with a CuPy array;
-* `to_device`: `to_cupy()` (or `to_cunumpy()`) called with anything that is not
-  a CuPy array already;
+* `to_host`: an actual device-to-host copy through conversion, mirror, staging,
+  serial MPI, or host kernel helpers;
+* `to_device`: an actual host-to-device copy through those helpers, including
+  `as_device_array()` and `kernel_output()` copy-back;
 * `kernel_conversion`: a `PyccelKernel` call that copied device arrays to the
   host (and back), one event per call, naming the kernel and the number of
   arrays converted;
 * `fallback`: a `Kernel` without CUDA kernel calling its host kernel on the
   CuPy backend (`missing_cuda="fallback"`), one event per call, naming the
-  kernel. The host copies it makes are counted as one `kernel_conversion`
-  event in addition.
+  kernel. Physical copies and a `kernel_conversion` marker are recorded separately;
+* `device_copy`: a device-only dtype/layout conversion through CuNumpy helpers.
 
 Only real transfers count: `to_numpy()` of a NumPy array or `to_cupy()` of a
 CuPy array records nothing. The counter has the attributes `to_host`,
 `to_device`, `kernel_conversions`, `fallbacks` (counts per kind), `total`,
-`events` (a list of `TransferEvent(kind, description, where)`, where `where`
-is the `file:line` of the caller outside CuNumpy) and
-`kernel_conversion_calls` (the `kernel_conversion` events). `report()` returns
+`device_copies`, `bytes_to_host`, `bytes_to_device`, and `bytes(kind)`.
+`total` includes physical copies and conversion/fallback markers. Byte totals
+include only physical copies, so markers do not double-count bytes.
+`events` is a list of `TransferEvent(kind, description, where, nbytes=None)`;
+`where` is the caller's `file:line` and `nbytes` is None for markers/unknown sizes.
+`kernel_conversion_calls` selects the conversion markers. `report()` returns
 a multi-line string with the events grouped by kind and call site, with
 counts:
 
 ```text
-4 transfer(s) through cunumpy (3 to_host, 1 to_device, 0 kernel_conversion, 0 fallback)
+4 transfer(s) through cunumpy (3 to_host, 1 to_device, 0 kernel_conversion, 0 fallback, 0 device_copy)
   to_host (3):
     /home/me/sim/diagnostics.py:42: to_numpy(shape=(100000,), dtype=float64) (x3)
   to_device (1):
@@ -320,13 +324,15 @@ not thread-safe.
 
 **Limitation:** only transfers made through CuNumpy are seen. Raw
 `cupy.ndarray.get()`, `cupy.asarray(numpy_array)`, `numpy.asarray(cupy_array)`,
-`float(device_array)`, and implicit conversions inside other libraries are
+`float(device_array)`, forwarded backend calls such as `xp.asarray()`, and
+implicit conversions inside other libraries are
 not counted. Use `nsys` (or CuPy's profiling hooks) to find those.
 
 ### `profiling.assert_no_transfers()`
 
 Context manager that raises `AssertionError` with the counter's `report()` if
-the block makes a transfer through CuNumpy. It yields the `TransferCounter`
+the block makes a host/device transfer or host fallback through CuNumpy.
+Device-only dtype/layout conversions are allowed. It yields the `TransferCounter`
 too. An exception raised inside the block propagates as it is:
 
 ```python
@@ -871,7 +877,12 @@ Wraps the `__global__` function `name` in the CUDA C `source` (declared
 through CuPy on the first call (or by `compile()`), and cached, also on disk by
 CuPy. CuPy is imported only then, so kernels can be created and their
 signatures parsed without CuPy; `compile()` raises `RuntimeError` without a
-GPU.
+GPU. `compile(log_stream=None)` compiles eagerly and returns the CuPy raw kernel;
+repeated calls reuse successful state on the current device. `is_compiled`
+reports that device's state. `recompile(log_stream=None)` refreshes headers and
+options on the current device; finish in-flight launches before rebuilding.
+Compiler failures remain retryable and a writable `log_stream` receives compiler
+output. Catalog compilation therefore reports errors during setup.
 
 `from_file` reads the source from a file; the kernel name defaults to the file
 name without `suffix` (`axpy_cuda.cu` -> `axpy`), and the directory of the file
@@ -972,10 +983,10 @@ shape is given either by `n_threads` or by `grid`:
 * `grid`: number of blocks per dimension, instead of `n_threads`.
 * `block`: block shape for this call, instead of `block_size`.
 * `shared_mem`: dynamic shared memory per block in bytes, for
-  `extern __shared__` arrays. Above 48 KiB (the limit every device has) the
-  compiled kernel's `max_dynamic_shared_size_bytes` is raised to `shared_mem`
-  once, up to the device's opt-in limit (`xp.cuda.max_shared_memory_per_block(
-  opt_in=True)`); a larger request raises `ValueError` before the launch.
+  `extern __shared__` arrays. Static plus dynamic storage is checked against
+  the device's opt-in limit. Dynamic storage above the default allowance after
+  subtracting static storage opts in through `max_dynamic_shared_size_bytes`.
+  Block/grid dimensions and device/kernel thread limits are also checked.
 
 Without `n_threads` and `grid`, a launch uses `n_threads_from(args)` if the
 kernel has one (constructor argument and settable property): a function of the
@@ -1175,7 +1186,7 @@ too); `xp.cuda.get_cuda_debug()` returns the current setting. A kernel created w
 enabling it also affects kernels created earlier; `debug=True` or
 `debug=False` fix the mode for one kernel. Only the compile options are fixed
 at compile time: a kernel compiled before debug mode was enabled keeps its
-options, so call `compile()` after enabling, or create the kernels after
+options, so call `recompile()` after enabling, or create the kernels after
 enabling. `kernel.debug_active()` tells whether debug mode applies to a
 kernel now, and `kernel.compile_options()` returns the options a compilation
 now would use.
@@ -1972,6 +1983,16 @@ buffer is reused `buffers` copies later; a stale result raises
 the NumPy backend copy at once. Device copies are counted by
 `count_transfers()`. The arrays must have the staging shape and dtype.
 
+`copy(array, *, stream=None, event=None)` accepts an explicit producer stream or
+event (at most one). An event queues a wait before snapshotting on the current
+stream. Later writes on another stream must wait for the snapshot/copy;
+`copy.result()` is a conservative completion point. Keep the source's device
+current when submitting copies. Storage binds to that device and rejects another
+device. `ready()`/`result()` temporarily select the owning device and restore the
+caller's device. The first GPU use of CPU-initialized storage allocates fresh
+pinned slots; previous completed CPU handles keep their snapshots. `shape` and
+`dtype` are read-only.
+
 ## `memory.DeviceMirror`
 
 ```python
@@ -1989,7 +2010,7 @@ raises `TypeError`.
   transfer). On the NumPy backend it is the host array itself, so the same
   code runs without any copy on the CPU.
 * `to_device()`: copies the host array into the existing device array;
-  `to_host()`: copies the device array into the host array, in place, so the
+  `to_host(stream=None, event=None)`: copies the device array into the host array, in place, so the
   host array keeps its identity and the owning library sees the new values.
   Both are no-ops on the NumPy backend.
 * `zero()`: zeroes the device array (allocating it empty if needed), or the
@@ -2000,6 +2021,14 @@ raises `TypeError`.
   `ValueError`.
 * `host`, `shape`, `dtype` properties. `to_device()`, `to_host()`, `zero()`
   and `rebind()` return the mirror, for chaining.
+
+Make the mirror's device current before using its device storage. A mismatched
+device raises before copying or zeroing. Pass an explicit producer `stream=` or
+`event=` to `to_host()` when production happened outside the current stream;
+the host copy is complete on return. Initial uploads and refreshes in both
+directions appear in transfer accounting, with payload byte counts. Switching
+to NumPy uses the host array; explicitly refresh with `to_device()` after CPU
+changes before resuming GPU work.
 
 The transfers are explicit so that one per accumulation is visible and
 bounded:

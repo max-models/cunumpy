@@ -149,17 +149,20 @@ with xp.use_backend("cupy"):
 
 To verify that a block, such as a time step, makes no transfer at all, count
 them: `count_transfers()` records every `to_numpy()`, `to_cupy()` and
-`to_cunumpy()` call that actually copies, every `PyccelKernel` call that
-converts device arrays, and every `Kernel` fallback to the host kernel, with
-the call site of each. `assert_no_transfers()` raises with that report if
-anything was counted. Only transfers made through CuNumpy are seen; raw
+`to_cunumpy()` call that actually copies, mirror/staging refreshes, argument
+conversion and kernel output copy-back, with call sites and payload byte counts.
+Host kernel conversions and fallbacks have separate explanatory markers.
+`assert_no_transfers()` rejects host/device movement and permits device-only
+conversions. Only CuNumpy execution/conversion helpers are counted; forwarded
+backend calls such as `xp.asarray()` and raw
 `cupy.ndarray.get()` or `cupy.asarray()` calls need a profiler such as `nsys`.
 
 ```python
 with xp.profiling.count_transfers() as counter:
     propagator(dt)
 
-assert counter.total == 0, counter.report()
+assert counter.to_host == counter.to_device == 0, counter.report()
+print(counter.bytes_to_host, counter.bytes_to_device)
 ```
 
 ## Random numbers and dtypes

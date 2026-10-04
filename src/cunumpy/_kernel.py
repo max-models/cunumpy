@@ -35,7 +35,7 @@ import array_api_compat
 import numpy as np
 
 from cunumpy._transfers import _ACTIVE as _COUNTERS
-from cunumpy._transfers import _record
+from cunumpy._transfers import _describe, _nbytes, _record
 from cunumpy.xp import _cupy_backend, _to_cupy, _to_numpy, is_gpu, to_cupy, to_numpy
 
 __all__ = ["CompiledHostKernel", "KernelArguments", "PyccelKernel", "resolve_host_args"]
@@ -278,6 +278,12 @@ class PyccelKernel:
 
         if _is_device_array(value):
             value_np = _device_to_host(value)
+            if _COUNTERS:
+                _record(
+                    "to_host",
+                    f"PyccelKernel {self.name!r} input ({_describe(value)})",
+                    nbytes=_nbytes(value_np),
+                )
             memo[key] = value_np
             converted.append((value, value_np))
             return value_np
@@ -323,12 +329,22 @@ class PyccelKernel:
     def _convert_from_numpy(self, value: Any) -> Any:
         """Move host arrays returned by the kernel back to the device."""
         if self._is_array(value):
-            return _host_to_device(value)
+            return self._copy_to_device(value)
         if isinstance(value, tuple):
             return tuple(self._convert_from_numpy(item) for item in value)
         if isinstance(value, list):
             return [self._convert_from_numpy(item) for item in value]
         return value
+
+    def _copy_to_device(self, value: Any) -> Any:
+        result = _host_to_device(value)
+        if _COUNTERS:
+            _record(
+                "to_device",
+                f"PyccelKernel {self.name!r} output ({_describe(value)})",
+                nbytes=_nbytes(value),
+            )
+        return result
 
     def _collect_host_arrays(self, value: Any, found: set[int], seen: set[int]) -> None:
         """Record the id of every host array reachable from `value`.
@@ -479,7 +495,7 @@ class PyccelKernel:
         # Copy in-place kernel updates back to the device arrays.
         for device_array, host_array in converted:
             if writeable is None or id(host_array) in writeable:
-                device_array[...] = _host_to_device(host_array)
+                device_array[...] = self._copy_to_device(host_array)
 
         return self._convert_from_numpy(result)
 
@@ -819,7 +835,14 @@ def as_kernel_array(value: Any, like: Any, dtype: Any = None) -> Any:
 
         if not is_gpu(value):
             value = to_cupy(value)
-        return cupy.ascontiguousarray(value, dtype=dtype)
+        result = cupy.ascontiguousarray(value, dtype=dtype)
+        if _COUNTERS and result is not value:
+            _record(
+                "device_copy",
+                f"as_kernel_array({_describe(value)})",
+                nbytes=_nbytes(result),
+            )
+        return result
     return np.ascontiguousarray(to_numpy(value), dtype=dtype)
 
 
@@ -838,4 +861,9 @@ def kernel_output(out: Any, like: Any, dtype: Any = None) -> Generator[Any]:
     buffer = as_kernel_array(out, like, dtype)
     yield buffer
     if buffer is not out:
-        out[...] = buffer if is_gpu(out) or not is_gpu(buffer) else to_numpy(buffer)
+        if is_gpu(out) and not is_gpu(buffer):
+            out[...] = to_cupy(buffer)
+        elif not is_gpu(out) and is_gpu(buffer):
+            out[...] = to_numpy(buffer)
+        else:
+            out[...] = buffer

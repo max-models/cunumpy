@@ -236,7 +236,11 @@ def _copy(source: Any, target: Any, offset: int = 0) -> None:
     if source is _IN_PLACE or source is None or target is None:
         return
     if hasattr(source, "get") and not hasattr(target, "get"):
+        from cunumpy._transfers import _ACTIVE, _nbytes, _record
+
         source = source.get()
+        if _ACTIVE:
+            _record("to_host", "SerialComm receive from device", nbytes=_nbytes(source))
     if not target.flags.c_contiguous:
         raise ValueError("the receive buffer must be C-contiguous")
     flat = target.reshape(-1)
@@ -247,6 +251,11 @@ def _copy(source: Any, target: Any, offset: int = 0) -> None:
             f"at offset {offset}",
         )
     flat[offset : offset + source.size] = source
+    if not hasattr(source, "get") and hasattr(target, "get"):
+        from cunumpy._transfers import _ACTIVE, _nbytes, _record
+
+        if _ACTIVE:
+            _record("to_device", "SerialComm receive from host", nbytes=_nbytes(source))
 
 
 def _check_rank(rank: int, what: str) -> None:

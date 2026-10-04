@@ -18,6 +18,8 @@ from typing import Any
 
 import numpy as np
 
+from cunumpy._transfers import _ACTIVE as _COUNTERS
+from cunumpy._transfers import _describe, _nbytes, _record
 from cunumpy.xp import _cupy_backend, to_cupy
 
 __all__ = ["DeviceMirror"]
@@ -104,12 +106,23 @@ class DeviceMirror:
         """
         if not _cupy_backend():
             return self._host
+        self._check_bound()
+        self._check_device()
         if self._device is None:
-            self._check_bound()
             # The only host -> device allocation; it goes through to_cupy so
             # that it is visible wherever transfers are accounted for.
             self._device = to_cupy(self._host)
         return self._device
+
+    def _check_device(self) -> None:
+        if self._device is not None:
+            import cupy as cp
+
+            if cp.cuda.runtime.getDevice() != self._device.device.id:
+                raise ValueError(
+                    f"DeviceMirror is bound to CUDA device {self._device.device.id}; "
+                    "make that device current before using the mirror",
+                )
 
     def _check_bound(self) -> None:
         """Raise if the host array no longer has the shape/dtype it was bound with."""
@@ -156,37 +169,78 @@ class DeviceMirror:
         self._check_bound()
         if not _cupy_backend():
             return self
+        self._check_device()
         if self._device is None:
             _ = self.device  # allocates as a copy of the host, through to_cupy
         else:
             # host -> device copy into the existing device buffer
             self._device.set(self._host)
+            if _COUNTERS:
+                _record(
+                    "to_device",
+                    f"DeviceMirror.to_device({_describe(self._host)})",
+                    nbytes=_nbytes(self._host),
+                )
         return self
 
-    def to_host(self) -> DeviceMirror:
+    def to_host(self, *, stream: Any = None, event: Any = None) -> DeviceMirror:
         """Copy the device array into the host array, in place.
 
         The host array keeps its identity, so a library that holds the buffer
         sees the new values. No-op on the NumPy backend, and if no device
         array has been created yet.
 
+        Make the mirror's device current. Pass ``stream=`` to copy on a known
+        producer stream, or ``event=`` to wait for production on the current
+        stream. With neither, only the current stream's work is ordered.
+        The method blocks until the host copy is complete.
+
         Raises
         ------
         ValueError
             If the host array was reallocated with another shape or dtype.
         """
+        if stream is not None and event is not None:
+            raise ValueError("pass only one of stream and event")
         self._check_bound()
         if not _cupy_backend() or self._device is None:
             return self
+        self._check_device()
+        from cunumpy._streams import HostEvent, HostStream
+
+        if isinstance(event, HostEvent) or isinstance(stream, HostStream):
+            raise TypeError("device copies require a CUDA producer stream or event")
+        import cupy as cp
+
+        if stream is not None and getattr(
+            stream, "device_id", self._device.device.id
+        ) not in (
+            self._device.device.id,
+            -1,
+        ):
+            raise ValueError("DeviceMirror producer stream belongs to another device")
+        if event is not None:
+            cp.cuda.get_current_stream().wait_event(event)
         # device -> host copy into the existing host buffer
-        self._device.get(out=self._host)
+        if stream is None:
+            self._device.get(out=self._host)
+        else:
+            self._device.get(out=self._host, stream=stream)
+        if _COUNTERS:
+            _record(
+                "to_host",
+                f"DeviceMirror.to_host({_describe(self._host)})",
+                nbytes=_nbytes(self._host),
+            )
         return self
 
     def zero(self) -> DeviceMirror:
         """Zero the array kernels write into (the device array, or the host on NumPy)."""
+        self._check_bound()
         if not _cupy_backend():
             self._host.fill(0)
             return self
+        self._check_device()
         if self._device is None:
             self._check_bound()
             import cupy as cp

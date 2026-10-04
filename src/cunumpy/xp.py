@@ -14,7 +14,7 @@ import array_api_compat
 import array_api_compat.numpy as np
 
 from cunumpy._transfers import _ACTIVE as _COUNTERS
-from cunumpy._transfers import _describe, _record
+from cunumpy._transfers import _describe, _device_pointer, _nbytes, _record
 
 if os.environ.get("CUNUMPY_FAKE_CUPY", "").strip().lower() in ("1", "true", "yes"):
     # tests without a GPU: a strict host stand-in for CuPy, see cunumpy._fake_cupy
@@ -281,20 +281,33 @@ def to_numpy(array: Any) -> np.ndarray:
     A CuPy array is copied to the host, which `count_transfers()` counts as a
     ``to_host`` transfer; anything else is passed through `numpy.asarray`.
     """
+    result = _to_numpy(array)
     if _COUNTERS and get_array_backend(array) == "cupy":
-        _record("to_host", f"to_numpy({_describe(array)})")
-    return _to_numpy(array)
+        _record("to_host", f"to_numpy({_describe(array)})", nbytes=_nbytes(result))
+    return result
 
 
 def to_cupy(array: Any) -> Any:
     """Convert an array to a CuPy array.
 
-    Anything that is not a CuPy array already is copied to the device, which
-    `count_transfers()` counts as a ``to_device`` transfer.
+    Host input is copied to the device and counted as a ``to_device`` transfer.
+    CUDA-array-interface inputs may be referenced without a copy; device-only
+    copies are recorded separately as ``device_copy``.
     """
-    if _COUNTERS and get_array_backend(array) != "cupy":
-        _record("to_device", f"to_cupy({_describe(array)})")
-    return _to_cupy(array)
+    result = _to_cupy(array)
+    if _COUNTERS:
+        device = get_array_backend(array) == "cupy" or hasattr(
+            array, "__cuda_array_interface__"
+        )
+        if not device:
+            _record("to_device", f"to_cupy({_describe(array)})", nbytes=_nbytes(result))
+        elif _device_pointer(array) is not None and _device_pointer(
+            array
+        ) != _device_pointer(result):
+            _record(
+                "device_copy", f"to_cupy({_describe(array)})", nbytes=_nbytes(result)
+            )
+    return result
 
 
 def as_device_array(
@@ -304,18 +317,20 @@ def as_device_array(
     *,
     name: str | None = None,
 ) -> Any:
-    """Reference `value` on the device, or make one device copy of it.
+    """Reference `value` on the device, or convert it to a contiguous device array.
 
     The "reference or copy once" rule for building CUDA argument objects
     (`CudaArguments` subclasses, `CudaStruct` values): call it once when the
     argument object is built, never per kernel call. A CuPy array that already
     has the requested `dtype` (any dtype if `dtype` is None) and is C-contiguous
     is returned unchanged, the same object without a copy, so kernels write
-    into the caller's array. Anything else is converted with one device copy,
+    into the caller's array. Anything else is converted with
     ``cupy.ascontiguousarray(cupy.asarray(value, dtype))``: a tuple or list
     (e.g. ``degree = (3, 3, 3)``), a host NumPy array (one explicit transfer
     at build time), a device array of another dtype, or a non-contiguous view.
     The result passes the pointer checks of `CudaKernel` and `CudaStruct`.
+    Dtype and layout conversion can require separate device copies; each copy
+    through this helper is visible in transfer accounting.
 
     Raises on the NumPy backend: device argument objects are only built when
     running on CuPy, and host data is never copied to the device implicitly.
@@ -361,7 +376,25 @@ def as_device_array(
     ):
         result = value
     else:
-        result = cp.ascontiguousarray(cp.asarray(value, dtype=dtype))
+        converted = cp.asarray(value, dtype=dtype)
+        if _COUNTERS:
+            device_only = isinstance(value, cp.ndarray) or hasattr(
+                value,
+                "__cuda_array_interface__",
+            )
+            if not device_only or _device_pointer(value) != _device_pointer(converted):
+                _record(
+                    "device_copy" if device_only else "to_device",
+                    f"as_device_array({_describe(value)})",
+                    nbytes=_nbytes(converted),
+                )
+        result = cp.ascontiguousarray(converted)
+        if _COUNTERS and result is not converted:
+            _record(
+                "device_copy",
+                f"as_device_array({_describe(converted)}) layout",
+                nbytes=_nbytes(result),
+            )
     if ndim is not None and result.ndim != ndim:
         raise ValueError(
             f"{what} must have {ndim} dimension(s), got {result.ndim} "

@@ -11,7 +11,7 @@ all::
         propagator(dt)
     assert counter.total == 0, counter.report()
 
-or, equivalently::
+or, to reject host/device copies and host execution on the GPU backend::
 
     with xp.profiling.assert_no_transfers():
         propagator(dt)
@@ -25,13 +25,21 @@ Counted are
 * ``kernel_conversion``: a :class:`~cunumpy.kernels.PyccelKernel` call that copied
   device arrays to the host (and back), one event per call;
 * ``fallback``: a :class:`~cunumpy.kernels.Kernel` without CUDA kernel calling its host
-  kernel on the CuPy backend (``missing_cuda="fallback"``), one event per call.
+  kernel on the CuPy backend (``missing_cuda="fallback"``), one event per call;
+* ``device_copy``: device-only dtype/layout conversions in CuNumpy helpers.
+
+Mirror refreshes, argument conversions, staging, serial MPI and kernel output
+copy-back are also counted. Each physical host/device copy is recorded with its
+payload size; conversion/fallback markers have no byte count. ``total`` counts
+all observations, including markers. ``assert_no_transfers`` allows device-only
+copies and rejects host/device copies and host fallback/conversion markers.
 
 Limitations
 -----------
 Only transfers made *through cunumpy* are seen. Raw ``cupy.ndarray.get()``,
 ``cupy.asarray(numpy_array)``, ``numpy.asarray(cupy_array)``, ``float(device_array)``,
-and implicit conversions inside other libraries are not counted; use ``nsys``
+forwarded backend operations such as ``xp.asarray`` and implicit conversions
+inside other libraries are not counted; use ``nsys``
 (or CuPy's own profiling hooks) to find those.
 
 Like the backend selection, the set of active counters is process-wide state
@@ -41,6 +49,7 @@ thread.
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 from collections.abc import Generator
@@ -56,7 +65,7 @@ __all__ = [
 ]
 
 #: Event kinds, in the order they are reported.
-KINDS = ("to_host", "to_device", "kernel_conversion", "fallback")
+KINDS = ("to_host", "to_device", "kernel_conversion", "fallback", "device_copy")
 
 # The currently active counters, innermost last. Instrumented code checks
 # ``if _ACTIVE:`` before doing any work, so the overhead of an inactive counter
@@ -75,17 +84,20 @@ class TransferEvent:
     ----------
     kind : str
         One of ``"to_host"``, ``"to_device"``, ``"kernel_conversion"`` or
-        ``"fallback"``.
+        ``"fallback"``, or ``"device_copy"``.
     description : str
         What was transferred, e.g. ``"to_numpy(shape=(1000,), dtype=float64)"``
         or ``"PyccelKernel 'push': 3 array(s) copied to the host"``.
     where : str
         The call site outside cunumpy, as ``"file:line"``.
+    nbytes : int | None
+        Payload bytes of a physical copy. None for markers or unknown sizes.
     """
 
     kind: str
     description: str
     where: str
+    nbytes: int | None = None
 
     def __str__(self) -> str:
         return f"{self.where}: {self.kind}: {self.description}"
@@ -141,8 +153,27 @@ class TransferCounter:
 
     @property
     def total(self) -> int:
-        """Number of recorded transfers of all kinds."""
+        """Number of observations, including conversion/fallback markers."""
         return len(self.events)
+
+    def bytes(self, kind: str) -> int:
+        """Known bytes copied for `kind`; markers and unknown sizes add zero."""
+        return sum(e.nbytes or 0 for e in self.events if e.kind == kind)
+
+    @property
+    def bytes_to_host(self) -> int:
+        """Known payload bytes copied from device to host."""
+        return self.bytes("to_host")
+
+    @property
+    def bytes_to_device(self) -> int:
+        """Known payload bytes copied from host to device."""
+        return self.bytes("to_device")
+
+    @property
+    def device_copies(self) -> int:
+        """Device-only conversions recorded by CuNumpy helpers."""
+        return self.count("device_copy")
 
     def report(self) -> str:
         """A readable summary: events grouped by kind and call site, with counts."""
@@ -174,9 +205,9 @@ def _caller() -> str:
     return "<unknown>"
 
 
-def _record(kind: str, description: str) -> None:
+def _record(kind: str, description: str, *, nbytes: int | None = None) -> None:
     """Record a transfer in every active counter (call only ``if _ACTIVE:``)."""
-    event = TransferEvent(kind, description, _caller())
+    event = TransferEvent(kind, description, _caller(), nbytes)
     for counter in _ACTIVE:
         counter._add(event)
 
@@ -188,6 +219,23 @@ def _describe(array: Any) -> str:
     if shape is None or dtype is None:
         return type(array).__name__
     return f"shape={tuple(shape)}, dtype={dtype}"
+
+
+def _nbytes(array: Any) -> int | None:
+    """Array payload size, without copying data or reading a device scalar."""
+    shape, dtype = getattr(array, "shape", None), getattr(array, "dtype", None)
+    if shape is None or dtype is None:
+        return None
+    return math.prod(shape) * dtype.itemsize
+
+
+def _device_pointer(array: Any) -> int | None:
+    pointer = getattr(getattr(array, "data", None), "ptr", None)
+    if pointer is not None:
+        return pointer
+    interface = getattr(array, "__cuda_array_interface__", {})
+    data = interface.get("data")
+    return None if data is None else data[0]
 
 
 @contextmanager
@@ -225,7 +273,8 @@ def assert_no_transfers() -> Generator[TransferCounter, None, None]:
     """Raise ``AssertionError`` if the block makes a transfer through cunumpy.
 
     A :func:`count_transfers` block that, on exit, raises with the counter's
-    :meth:`~TransferCounter.report` if anything was counted. Only checked if
+    :meth:`~TransferCounter.report` if a host/device copy or host conversion/
+    fallback was counted. Device-only conversions are allowed. Only checked if
     the block exits normally; an exception raised inside propagates as it is.
 
     Examples
@@ -235,7 +284,7 @@ def assert_no_transfers() -> Generator[TransferCounter, None, None]:
     """
     with count_transfers() as counter:
         yield counter
-    if counter.total:
+    if any(event.kind != "device_copy" for event in counter.events):
         raise AssertionError(
             "host/device transfers inside a block that must not transfer:\n"
             + counter.report(),

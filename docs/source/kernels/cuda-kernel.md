@@ -98,6 +98,11 @@ kernel(*args, n_threads=None, grid=None, block=None, shared_mem=0, stream=None)
 * **Stream**: `stream=s` queues the launch on a stream, see [Devices, memory and
   streams](../guides/gpu-devices.md).
 
+Launches validate block/grid dimensions, threads per block against both device
+and compiled-kernel limits, and static plus dynamic shared memory. Dynamic
+storage above the default allowance opts in where supported. Queries and opt-in
+state are cached per device. Invalid configurations raise before launching.
+
 A zero-sized launch (`n_threads=0`) launches nothing. `launch_shape()` returns
 the `(grid, block)` a call would use, which is how to size per-block outputs:
 
@@ -248,8 +253,16 @@ The first call of each kernel compiles it, which takes from a fraction of a
 second to several seconds. Call `kernel.compile()` (or
 `catalog.compile_all(jobs=8)` for a whole catalog, in parallel threads) during
 setup so the first time step is not slower than the rest and compilation errors
-appear before the simulation starts. `kernel.is_compiled` tells whether it has
-happened. Compiling requires a GPU (`RuntimeError` otherwise).
+appear before the simulation starts. `kernel.is_compiled` reports successful
+compilation on the current device. Failed compilation can be retried. Compiling
+requires a GPU (`RuntimeError` otherwise). Parallel catalog compilation preserves
+the device selected by its caller.
+
+`kernel.compile(log_stream=log)` accepts a writable compiler log stream.
+`kernel.recompile(log_stream=log)` refreshes headers and debug options on the
+current device; other devices keep their compiled versions. Finish in-flight
+launches before rebuilding. Scope-profiler can inspect the returned CuPy kernel's
+existing `attributes`; CuNumpy does not add a separate resource-reporting API.
 
 ## Tips for writing kernels
 
