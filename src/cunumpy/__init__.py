@@ -66,7 +66,7 @@ def require_version(minimum: str) -> None:
     if _version_key(__version__) < _version_key(minimum):
         raise ImportError(
             f"cunumpy {minimum} or newer is required, but {__version__} is "
-            "installed: pip install --upgrade cunumpy"
+            "installed: pip install --upgrade cunumpy",
         )
 
 

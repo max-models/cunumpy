@@ -69,7 +69,7 @@ class DeviceMirror:
         if not isinstance(host, np.ndarray):
             raise TypeError(
                 "DeviceMirror needs a NumPy array as host buffer, got "
-                f"{type(host).__name__}"
+                f"{type(host).__name__}",
             )
         return host
 
@@ -118,7 +118,7 @@ class DeviceMirror:
                 "the host array was reallocated: DeviceMirror was bound to "
                 f"shape {self._shape} and dtype {self._dtype}, but the host now "
                 f"has shape {self._host.shape} and dtype {self._host.dtype}; "
-                "call rebind(host) with the new array"
+                "call rebind(host) with the new array",
             )
 
     def rebind(self, host: np.ndarray) -> DeviceMirror:

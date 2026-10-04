@@ -69,7 +69,9 @@ def _typed_scalars(args: tuple, kwargs: dict) -> tuple[tuple, dict]:
 
 
 def fuse(
-    function: F | None = None, *, kernel_name: str | None = None
+    function: F | None = None,
+    *,
+    kernel_name: str | None = None,
 ) -> F | Callable[[F], F]:
     """Fuse an elementwise function into one kernel when called with CuPy arrays.
 

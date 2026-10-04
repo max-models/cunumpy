@@ -97,10 +97,14 @@ def fake_device(monkeypatch):
     fake = types.SimpleNamespace(cuda=cuda, empty=empty)
     monkeypatch.setattr(staging_module, "_cupy", lambda: fake)
     monkeypatch.setattr(
-        staging_module, "_empty_pinned", lambda s, dtype: np.empty(s, dtype)
+        staging_module,
+        "_empty_pinned",
+        lambda s, dtype: np.empty(s, dtype),
     )
     monkeypatch.setattr(
-        staging_module, "_is_device_array", lambda a: isinstance(a, DeviceArray)
+        staging_module,
+        "_is_device_array",
+        lambda a: isinstance(a, DeviceArray),
     )
     return DeviceArray.log
 

@@ -111,7 +111,9 @@ DEFAULT_SHARED_MEMORY_PER_BLOCK = 48 * 1024
 
 
 def max_shared_memory_per_block(
-    device: int | None = None, *, opt_in: bool = False
+    device: int | None = None,
+    *,
+    opt_in: bool = False,
 ) -> int:
     """Bytes of shared memory a block of a CUDA kernel may use on `device`.
 

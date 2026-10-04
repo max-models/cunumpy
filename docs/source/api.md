@@ -377,7 +377,9 @@ an error.
 
 ```python
 with xp.kernels.kernel_output(result, like=field, dtype=float) as buffer:
-    gather(xp.kernels.as_kernel_array(positions, like=field, dtype=float), field, buffer)
+    gather(
+        xp.kernels.as_kernel_array(positions, like=field, dtype=float), field, buffer
+    )
 ```
 
 ## Random numbers and dtype
@@ -399,7 +401,7 @@ sequences across NumPy and CuPy.
 ```python
 xp.rng.random_streams.seed(42, rank=comm.Get_rank(), bit_generator="PCG64")
 v = xp.rng.random_streams.normal(0.0, v_th, (n, 3))
-rng = xp.rng.random_streams.generator()           # numpy or cupy Generator
+rng = xp.rng.random_streams.generator()  # numpy or cupy Generator
 own = xp.rng.random_streams.make_generator(seed)  # a component's own generator
 ```
 
@@ -473,12 +475,12 @@ otherwise the serial stand-in, so that the same code runs with and without
 MPI:
 
 ```python
-MPI = xp.mpi.get_mpi()           # decided once per process
+MPI = xp.mpi.get_mpi()  # decided once per process
 comm = MPI.COMM_WORLD
-comm.Allreduce(MPI.IN_PLACE, rho, op=MPI.SUM)   # nothing to do on one process
-n_total = comm.allreduce(n_local)               # n_local itself
+comm.Allreduce(MPI.IN_PLACE, rho, op=MPI.SUM)  # nothing to do on one process
+n_total = comm.allreduce(n_local)  # n_local itself
 if isinstance(MPI, xp.mpi.SerialMPI):
-    ...                                          # a serial run
+    ...  # a serial run
 ```
 
 `get_mpi(True)` imports mpi4py (`ImportError` if missing), `get_mpi(False)`
@@ -731,8 +733,7 @@ with xp.profiling.nvtx_range("push markers"):
 
 
 @xp.profiling.nvtx_range("accumulate")
-def accumulate(particles, grid):
-    ...
+def accumulate(particles, grid): ...
 ```
 
 ### `profiling.timed_region(name, *, sync=True)`
@@ -803,6 +804,7 @@ CuPy arrays.
 def scale_and_shift(scale, values, out):
     out[:] = scale * values + 1
     return out
+
 
 kernel = xp.kernels.PyccelKernel(scale_and_shift, outputs=(2,))
 
@@ -924,8 +926,8 @@ with a hash of their contents to the options:
 
 ```python
 kernel = xp.cuda.CudaKernel.from_file("push/push_cuda.cu", include_dirs=[src_root])
-kernel.included_headers   # (Path('push/helpers.cuh'), Path('.../common.cuh'))
-kernel.options            # ('-Ipush', '-I<src_root>')
+kernel.included_headers  # (Path('push/helpers.cuh'), Path('.../common.cuh'))
+kernel.options  # ('-Ipush', '-I<src_root>')
 kernel.compile_options()  # options + ('-DCUNUMPY_INCLUDE_HASH=0x3f9a...',)
 ```
 
@@ -1070,7 +1072,7 @@ void scale_column(Array2D<double> a, long long column, double factor) {
 }
 """
 scale_column = xp.cuda.CudaKernel(SCALE_COLUMN, "scale_column")
-view = markers[::2, 1:5]                     # non-contiguous is fine
+view = markers[::2, 1:5]  # non-contiguous is fine
 scale_column(view, 1, 10.0, n_threads=view.shape[0])
 ```
 
@@ -1125,10 +1127,12 @@ key:
 
 ```python
 matvec = xp.cuda.CudaKernelVariants(
-    lambda ndim, dtype: xp.cuda.CudaKernel(make_source(ndim, xp.cuda.ctype_of(dtype)), "matvec")
+    lambda ndim, dtype: xp.cuda.CudaKernel(
+        make_source(ndim, xp.cuda.ctype_of(dtype)), "matvec"
+    )
 )
 matvec.get(3, np.float64)(mat, x, out, n_threads=out.size)  # created once
-matvec.compile_all([(3, np.float64), (3, np.complex128)])   # at setup
+matvec.compile_all([(3, np.float64), (3, np.complex128)])  # at setup
 ```
 
 `get(*key)` calls the factory the first time a key is used; `keys()`,
@@ -1141,7 +1145,7 @@ threads (see `KernelCatalog.compile_all`).
 ```python
 xp.cuda.set_cuda_debug(enabled)
 xp.cuda.get_cuda_debug()
-xp.cuda.cuda_debug(enabled=True)   # context manager
+xp.cuda.cuda_debug(enabled=True)  # context manager
 xp.cuda.CudaKernel(..., debug=None)
 kernel.debug_active()
 kernel.compile_options()
@@ -1179,7 +1183,9 @@ now would use.
 ```python
 with xp.cuda.cuda_debug():
     kernel = xp.cuda.CudaKernel(SOURCE, "kernel")
-    kernel(x, y, n, n_threads=n)  # RuntimeError: CUDA error after launching kernel 'kernel' ...
+    kernel(
+        x, y, n, n_threads=n
+    )  # RuntimeError: CUDA error after launching kernel 'kernel' ...
 ```
 
 The `RuntimeError` says which kernel failed, not where. The next step is
@@ -1200,12 +1206,15 @@ Particles = xp.cuda.CudaStruct(
     "Particles",
     [("x", "double*"), ("v", "double*"), ("n", "int"), ("charge", "double")],
 )
-source = Particles.declaration + r"""
+source = (
+    Particles.declaration
+    + r"""
 extern "C" __global__ void push(Particles p, double dt) {
     int i = blockDim.x * blockIdx.x + threadIdx.x;
     if (i < p.n) p.x[i] += dt * p.charge * p.v[i];
 }
 """
+)
 push = xp.cuda.CudaKernel(source, "push", structs=[Particles])
 push(Particles(x=x, v=v, n=x.size, charge=-1.0), 0.1, n_threads=x.size)
 ```
@@ -1251,9 +1260,9 @@ into it when passed to a kernel.
 ### Structs from Python annotations
 
 ```python
-class MarkerArguments:          # the pyccel argument class, e.g. in struphy
-    def __init__(self, markers: "float[:, :]", n_markers: int, valid: "bool[:]"):
-        ...
+class MarkerArguments:  # the pyccel argument class, e.g. in struphy
+    def __init__(self, markers: "float[:, :]", n_markers: int, valid: "bool[:]"): ...
+
 
 MarkerArgs = xp.cuda.CudaStruct.from_signature(MarkerArguments.__init__, "MarkerArgs")
 print(MarkerArgs.declaration)
@@ -1308,7 +1317,9 @@ to the kernels that `#include` it, and keep it in sync with a test:
 
 ```python
 def test_pusher_args_header_is_up_to_date():
-    generated = xp.cuda.write_cuda_header(tmp_path / "pusher_args.cuh", [MarkerArgs, DomainArgs])
+    generated = xp.cuda.write_cuda_header(
+        tmp_path / "pusher_args.cuh", [MarkerArgs, DomainArgs]
+    )
     assert Path("kernels/pusher_args.cuh").read_text() == generated
 ```
 
@@ -1327,6 +1338,7 @@ class MarkerArguments(xp.cuda.CudaStructArguments):
         self.valid = valid
         self.n_markers = markers.shape[0]
         self.pack()
+
 
 push = xp.cuda.CudaKernel(source, "push", structs=[MarkerArguments.struct])
 push(MarkerArguments(markers, valid), dt, n_threads=markers.shape[0])
@@ -1384,6 +1396,7 @@ class Particles(xp.cuda.CudaArguments):
     def __init__(self, positions, velocities):
         self.positions = positions
         super().__init__(positions, velocities, positions.shape[0])
+
 
 kernel(dt, Particles(x, v), n_threads=x.shape[0])
 ```
@@ -1646,10 +1659,11 @@ build a catalog by hand.
 
 ```python
 # my_sim/kernels/push/__init__.py
-kernel = xp.kernels.Kernel.from_folder(__name__, host_suffix="_pyccel", dispatch="arrays",
-                               compile_host=compile_kernels)
-kernel.implementations   # ("pyccel", "numpy", "python", "cuda")
-kernel.selected()        # "pyccel": what a call with host arrays runs now
+kernel = xp.kernels.Kernel.from_folder(
+    __name__, host_suffix="_pyccel", dispatch="arrays", compile_host=compile_kernels
+)
+kernel.implementations  # ("pyccel", "numpy", "python", "cuda")
+kernel.selected()  # "pyccel": what a call with host arrays runs now
 ```
 
 The kernel of one kernel folder `package` (its dotted name, `__name__` in its
@@ -1669,11 +1683,13 @@ no host kernel module and `ModuleNotFoundError` if `package` is not a package.
 ## `kernels.HostImplementations`, `kernels.set_kernel_implementation`
 
 ```python
-host = xp.kernels.HostImplementations("push", {"pyccel": load_compiled, "numpy": lambda: push_numpy,
-                                       "python": lambda: push})
-host(*args)                              # the default implementation
-xp.kernels.set_kernel_implementation("numpy")    # every kernel: like xp.set_backend
-with xp.kernels.use_kernel_implementation("python"):   # like xp.use_backend
+host = xp.kernels.HostImplementations(
+    "push",
+    {"pyccel": load_compiled, "numpy": lambda: push_numpy, "python": lambda: push},
+)
+host(*args)  # the default implementation
+xp.kernels.set_kernel_implementation("numpy")  # every kernel: like xp.set_backend
+with xp.kernels.use_kernel_implementation("python"):  # like xp.use_backend
     host(*args)
 ```
 
@@ -1695,7 +1711,9 @@ setting is global, not per thread, and applies to host calls only.
 ## `kernels.CompiledHostKernel`
 
 ```python
-kernel = xp.kernels.CompiledHostKernel(my_kernels_module, "push", compiler, fallback=push_numpy)
+kernel = xp.kernels.CompiledHostKernel(
+    my_kernels_module, "push", compiler, fallback=push_numpy
+)
 kernel(*args)
 ```
 
@@ -1860,7 +1878,9 @@ extern "C" __global__ void find_span_kernel(
 ```
 
 ```python
-find_span = device_function_kernel(BSPLINES_CUH, "int find_span(const double* t, int p, double eta)")
+find_span = device_function_kernel(
+    BSPLINES_CUH, "int find_span(const double* t, int p, double eta)"
+)
 find_span(t, p, eta, spans, eta.size, n_threads=eta.size)
 ```
 
@@ -2057,12 +2077,16 @@ same box form a contiguous range, the starting point of tree builds on the
 GPU.
 
 ```python
-keys = xp.algorithms.morton_keys(positions, lower, upper, levels)  # (n, 2|3) -> (n,) uint64
+keys = xp.algorithms.morton_keys(
+    positions, lower, upper, levels
+)  # (n, 2|3) -> (n,) uint64
 keys, order, positions = xp.algorithms.sort_by_key(keys, positions)
-node = keys >> np.uint64(ndim * (levels - level))       # node index at `level`
-cells = xp.algorithms.morton_decode(node, ndim)                    # its integer coordinates
-key = xp.algorithms.morton_encode(ix, iy)                          # from integer cells
-scales = xp.algorithms.morton_scales(lower, upper, levels)         # 2**levels / (upper - lower)
+node = keys >> np.uint64(ndim * (levels - level))  # node index at `level`
+cells = xp.algorithms.morton_decode(node, ndim)  # its integer coordinates
+key = xp.algorithms.morton_encode(ix, iy)  # from integer cells
+scales = xp.algorithms.morton_scales(
+    lower, upper, levels
+)  # 2**levels / (upper - lower)
 ```
 
 ```c
@@ -2187,10 +2211,10 @@ control flow on array values or indexing. Test the CuPy path: a function
 ## `petsc.petsc_vec(array, comm=None)`
 
 ```python
-b_vec = xp.petsc.petsc_vec(b)        # b: NumPy or CuPy array, shared, never copied
+b_vec = xp.petsc.petsc_vec(b)  # b: NumPy or CuPy array, shared, never copied
 x_vec = xp.petsc.petsc_vec(x)
 xp.synchronize()
-ksp.solve(b_vec, x_vec)        # PETSc writes into x
+ksp.solve(b_vec, x_vec)  # PETSc writes into x
 xp.synchronize()
 ```
 

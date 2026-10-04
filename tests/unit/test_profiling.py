@@ -22,7 +22,7 @@ def fake_nvtx(monkeypatch):
 
     nvtx = ModuleType("cupy.cuda.nvtx")
     nvtx.RangePush = lambda message, id_color=-1: calls.append(
-        ("push", message, id_color)
+        ("push", message, id_color),
     )
     nvtx.RangePop = lambda: calls.append(("pop",))
     cuda = ModuleType("cupy.cuda")

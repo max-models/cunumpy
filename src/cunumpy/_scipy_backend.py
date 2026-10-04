@@ -70,7 +70,7 @@ class ScipyNamespace:
         if path and path not in SUBMODULES:
             raise ValueError(
                 f"scipy.{path} is not forwarded; forwarded subpackages: "
-                f"{', '.join(SUBMODULES)}"
+                f"{', '.join(SUBMODULES)}",
             )
         self._path = path
         self._children: dict[str, ScipyNamespace] = {}
@@ -100,7 +100,7 @@ class ScipyNamespace:
             return importlib.import_module(name)
         except ImportError as error:
             raise ImportError(
-                f"xp.scipy on the {backend} backend needs {name}: {_INSTALL[backend]}"
+                f"xp.scipy on the {backend} backend needs {name}: {_INSTALL[backend]}",
             ) from error
 
     def __getattr__(self, name: str) -> Any:
@@ -119,7 +119,7 @@ class ScipyNamespace:
             raise AttributeError(
                 f"{module.__name__} has no attribute {name!r}: it is not available "
                 f"on the {get_backend()} backend (it may exist in "
-                f"{self._name(_ROOTS[other])})"
+                f"{self._name(_ROOTS[other])})",
             ) from None
 
     def available(self, name: str) -> bool:

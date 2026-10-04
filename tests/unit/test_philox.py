@@ -66,7 +66,9 @@ def test_streams_counters_and_seeds_differ():
 
 def test_broadcasting():
     u = xp.rng.philox_uniform(
-        np.uint64(3), np.arange(4, dtype=np.uint64)[:, None], np.arange(5)
+        np.uint64(3),
+        np.arange(4, dtype=np.uint64)[:, None],
+        np.arange(5),
     )
     assert u.shape == (4, 5)
     assert u[2, 3] == xp.rng.philox_uniform(3, 2, 3)
@@ -131,5 +133,6 @@ def test_header_matches_the_host_functions_on_gpu():
     du0, _ = xp.rng.philox_uniform2(7, cp.arange(10, dtype=cp.uint64), 1)
     assert isinstance(du0, cp.ndarray)
     np.testing.assert_array_equal(
-        du0.get(), xp.rng.philox_uniform2(7, np.arange(10, dtype=np.uint64), 1)[0]
+        du0.get(),
+        xp.rng.philox_uniform2(7, np.arange(10, dtype=np.uint64), 1)[0],
     )

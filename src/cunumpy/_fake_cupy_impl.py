@@ -18,7 +18,7 @@ _HOST = _np.ndarray
 def _err(obj, where=""):
     return TypeError(
         f"Unsupported type {type(obj)}{where} (fake CuPy: host arrays/lists are "
-        "not accepted)"
+        "not accepted)",
     )
 
 
@@ -34,7 +34,7 @@ class ndarray:
     def __array__(self, *args, **kwargs):
         raise TypeError(
             "Implicit conversion to a NumPy array is not allowed. Please use "
-            "`.get()` to construct a NumPy array explicitly."
+            "`.get()` to construct a NumPy array explicitly.",
         )
 
     def get(self, stream=None, order="C", out=None, blocking=True):
@@ -157,7 +157,8 @@ def _wrap(x):
     if isinstance(x, _HOST):
         return ndarray(x)
     if isinstance(x, _np.generic) and not isinstance(
-        x, (_np.str_, _np.bytes_, _np.void)
+        x,
+        (_np.str_, _np.bytes_, _np.void),
     ):
         return ndarray(_np.asarray(x))
     if isinstance(x, tuple):
@@ -329,21 +330,27 @@ def _module_attr(name, src=_np, prefix="cupy"):
     if name in _SEQUENCE:
         return _wrap_callable(attr, strict=True, name=f"{prefix}.{name}")
     return _wrap_callable(
-        attr, strict=True, name=f"{prefix}.{name}", first_is_data=True
+        attr,
+        strict=True,
+        name=f"{prefix}.{name}",
+        first_is_data=True,
     )
 
 
 def asarray(a, dtype=None, order=None, **kwargs):
     return ndarray(
         _np.array(
-            _unwrap(a), dtype=dtype, order=order or "K", copy=kwargs.pop("copy", None)
-        )
+            _unwrap(a),
+            dtype=dtype,
+            order=order or "K",
+            copy=kwargs.pop("copy", None),
+        ),
     )
 
 
 def array(a, dtype=None, copy=True, order="K", ndmin=0, **kwargs):
     return ndarray(
-        _np.array(_unwrap(a), dtype=dtype, copy=copy, order=order, ndmin=ndmin)
+        _np.array(_unwrap(a), dtype=dtype, copy=copy, order=order, ndmin=ndmin),
     )
 
 
@@ -506,7 +513,9 @@ class _RNGProxy:
 random = types.ModuleType("cupy.random")
 random.default_rng = lambda seed=None: _RNGProxy(_np.random.default_rng(_unwrap(seed)))
 random.__getattr__ = lambda attr: _wrap_callable(
-    getattr(_np.random, attr), strict=False, name=f"cupy.random.{attr}"
+    getattr(_np.random, attr),
+    strict=False,
+    name=f"cupy.random.{attr}",
 )
 
 for _m in (cuda, cuda.device, cuda.runtime, linalg, fft, random):
@@ -532,7 +541,7 @@ __all__ = sorted(  # noqa: PLE0605 - the NumPy namespace plus the CuPy extras
         "is_available",
         "bool_",
         "fuse",
-    }
+    },
 )
 
 

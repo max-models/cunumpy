@@ -10,19 +10,23 @@ CuNumpy provides one helper per step.
 import cunumpy as xp
 
 xp.set_backend("cupy")
-xp.cuda.bind_local_device()        # 1. pick this rank's GPU, before MPI_Init
+xp.cuda.bind_local_device()  # 1. pick this rank's GPU, before MPI_Init
 
-from mpi4py import MPI        # 2. MPI_Init happens here
+from mpi4py import MPI  # 2. MPI_Init happens here
 
-xp.mpi.require_cuda_aware_mpi()   # 3. fail clearly if MPI cannot take GPU buffers
+xp.mpi.require_cuda_aware_mpi()  # 3. fail clearly if MPI cannot take GPU buffers
 
 comm = MPI.COMM_WORLD
 send = xp.full(1000, comm.rank, dtype=xp.float64)
 recv = xp.empty_like(send)
 
 xp.mpi.synchronize_for_mpi(send, recv)  # 4. before every MPI call on device buffers
-comm.Sendrecv(send, dest=(comm.rank + 1) % comm.size,
-              recvbuf=recv, source=(comm.rank - 1) % comm.size)
+comm.Sendrecv(
+    send,
+    dest=(comm.rank + 1) % comm.size,
+    recvbuf=recv,
+    source=(comm.rank - 1) % comm.size,
+)
 ```
 
 The same file runs on the NumPy backend: `bind_local_device()` returns `None`,
@@ -116,7 +120,10 @@ does the right thing for each case, so the MPI call is written once:
 ```python
 xp.mpi.mpi_is_cuda_aware(comm)  # once at startup; the answer is remembered
 
-with xp.mpi.mpi_buffer(send_r) as sendbuf, xp.mpi.mpi_buffer(recv_l, send=False, recv=True) as recvbuf:
+with (
+    xp.mpi.mpi_buffer(send_r) as sendbuf,
+    xp.mpi.mpi_buffer(recv_l, send=False, recv=True) as recvbuf,
+):
     comm.Sendrecv(sendbuf, dest=right, recvbuf=recvbuf, source=left)
 ```
 
@@ -163,6 +170,7 @@ Print the binding once at start-up to catch mapping errors early:
 ```python
 device = xp.cuda.bind_local_device()
 from mpi4py import MPI
+
 print(f"rank {MPI.COMM_WORLD.rank}: local rank {xp.mpi.local_rank()}, device {device}")
 ```
 

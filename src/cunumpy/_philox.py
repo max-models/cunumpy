@@ -93,7 +93,8 @@ def _random_bits(seed: Any, stream: Any, counter: Any) -> Any:
     mask, shift = xp.uint64(_MASK32), xp.uint64(32)
     seed, stream, counter = xp.broadcast_arrays(seed, stream, counter)
     words = xp.stack(
-        [counter & mask, counter >> shift, stream & mask, stream >> shift], axis=-1
+        [counter & mask, counter >> shift, stream & mask, stream >> shift],
+        axis=-1,
     )
     return philox4x32_10(words, seed & mask, seed >> shift)
 

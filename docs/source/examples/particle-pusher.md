@@ -56,7 +56,9 @@ def push(x: "float[:]", v: "float[:]", n: int, dt: float, length: float):
 
 ```python
 # pic/kernels/deposit/deposit_kernels.py
-def deposit(x: "float[:]", rho: "float[:]", n: int, dx: float, n_cells: int, weight: float):
+def deposit(
+    x: "float[:]", rho: "float[:]", n: int, dx: float, n_cells: int, weight: float
+):
     for i in range(n):
         cell = min(int(x[i] / dx), n_cells - 1)
         rho[cell] += weight / dx
@@ -64,8 +66,15 @@ def deposit(x: "float[:]", rho: "float[:]", n: int, dx: float, n_cells: int, wei
 
 ```python
 # pic/kernels/accelerate/accelerate_kernels.py
-def accelerate(x: "float[:]", v: "float[:]", e: "float[:]", n: int, dx: float,
-               n_cells: int, qm_dt: float):
+def accelerate(
+    x: "float[:]",
+    v: "float[:]",
+    e: "float[:]",
+    n: int,
+    dx: float,
+    n_cells: int,
+    qm_dt: float,
+):
     for i in range(n):
         cell = min(int(x[i] / dx), n_cells - 1)
         v[i] += qm_dt * e[cell]
@@ -122,11 +131,19 @@ class Simulation:
 
     def step(self, dt):
         self.rho[:] = 0.0
-        catalog["deposit"](self.x, self.rho, self.n, self.dx, self.n_cells,
-                           self.weight, n_threads=self.n)
+        catalog["deposit"](
+            self.x,
+            self.rho,
+            self.n,
+            self.dx,
+            self.n_cells,
+            self.weight,
+            n_threads=self.n,
+        )
         self.solve_field()
-        catalog["accelerate"](self.x, self.v, self.e, self.n, self.dx,
-                              self.n_cells, -dt, n_threads=self.n)
+        catalog["accelerate"](
+            self.x, self.v, self.e, self.n, self.dx, self.n_cells, -dt, n_threads=self.n
+        )
         catalog["push"](self.x, self.v, self.n, dt, self.length, n_threads=self.n)
 
     def field_energy(self):
@@ -142,7 +159,7 @@ from pic.kernels import catalog
 from pic.simulation import Simulation
 
 xp.set_backend("cupy")
-print(catalog.summary())        # CUDA kernels: 0 of 3 (missing: accelerate, deposit, push)
+print(catalog.summary())  # CUDA kernels: 0 of 3 (missing: accelerate, deposit, push)
 
 sim = Simulation()
 with xp.profiling.count_transfers() as counter:
@@ -307,7 +324,9 @@ with xp.profiling.timed_region("100 steps") as timing:
     for _ in range(100):
         with xp.profiling.nvtx_range("step"):
             sim.step(0.05)
-print(f"{timing.elapsed / 100 * 1e3:.2f} ms/step, field energy {sim.field_energy():.4e}")
+print(
+    f"{timing.elapsed / 100 * 1e3:.2f} ms/step, field energy {sim.field_energy():.4e}"
+)
 ```
 
 The same script, without `set_backend("cupy")`, runs the Pyccel-compiled (or,

@@ -44,10 +44,10 @@ copies back *every* converted array, which is correct but doubles the
 transfers. `outputs` lists the arguments that may be written:
 
 ```python
-xp.kernels.PyccelKernel(smooth, outputs=(1,))           # positional argument 1
-xp.kernels.PyccelKernel(update, outputs=(0, -1))        # first and last argument
-xp.kernels.PyccelKernel(solve, outputs=("out",))        # solve(a, b, out=out)
-xp.kernels.PyccelKernel(norm, outputs=())               # writes nothing
+xp.kernels.PyccelKernel(smooth, outputs=(1,))  # positional argument 1
+xp.kernels.PyccelKernel(update, outputs=(0, -1))  # first and last argument
+xp.kernels.PyccelKernel(solve, outputs=("out",))  # solve(a, b, out=out)
+xp.kernels.PyccelKernel(norm, outputs=())  # writes nothing
 ```
 
 * Positional arguments are declared by index (negative indices count from the

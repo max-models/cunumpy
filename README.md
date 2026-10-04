@@ -259,8 +259,7 @@ print(timing.elapsed, timing.synced)
 
 
 @xp.profiling.nvtx_range("step")
-def step(dt):
-    ...
+def step(dt): ...
 ```
 
 ## Use NumPy-only kernels with CuPy arrays
@@ -408,11 +407,13 @@ class is the one definition, and written to a header that a test keeps in sync:
 
 ```python
 class MarkerArguments:
-    def __init__(self, markers: "float[:, :]", n_markers: int, valid: "bool[:]"):
-        ...
+    def __init__(self, markers: "float[:, :]", n_markers: int, valid: "bool[:]"): ...
+
 
 MarkerArgs = xp.cuda.CudaStruct.from_signature(MarkerArguments.__init__, "MarkerArgs")
-MarkerArgs.to_header("marker_args.cuh")  # Array2D<double> markers; long long n_markers; ...
+MarkerArgs.to_header(
+    "marker_args.cuh"
+)  # Array2D<double> markers; long long n_markers; ...
 push = xp.cuda.CudaKernel(
     r"""
     #include "marker_args.cuh"
@@ -425,8 +426,11 @@ push = xp.cuda.CudaKernel(
     structs=[MarkerArgs],
     include_dirs=["."],
 )
-push(MarkerArgs(markers=markers, n_markers=markers.shape[0], valid=valid), 0.1,
-     n_threads=markers.shape[0])
+push(
+    MarkerArgs(markers=markers, n_markers=markers.shape[0], valid=valid),
+    0.1,
+    n_threads=markers.shape[0],
+)
 ```
 
 Launches can be 1D to 3D (`n_threads=(nx, ny)`, `block_size=(16, 16)`) or use

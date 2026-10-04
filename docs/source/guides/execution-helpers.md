@@ -64,9 +64,10 @@ recv = xp.zeros_like(send)
 send_staging = xp.mpi.MPIStaging(send.shape, send.dtype)
 recv_staging = xp.mpi.MPIStaging(recv.shape, recv.dtype)
 
-with send_staging.buffer(send, cuda_aware=False) as sendbuf, recv_staging.buffer(
-    recv, send=False, recv=True, cuda_aware=False
-) as recvbuf:
+with (
+    send_staging.buffer(send, cuda_aware=False) as sendbuf,
+    recv_staging.buffer(recv, send=False, recv=True, cuda_aware=False) as recvbuf,
+):
     comm.Sendrecv(sendbuf, dest=0, recvbuf=recvbuf, source=0)
 ```
 

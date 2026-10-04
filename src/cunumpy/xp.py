@@ -86,7 +86,7 @@ class ArrayBackend:
             else:
                 if verbose:
                     print(
-                        "CuPy not available or not functional. Falling back to NumPy."
+                        "CuPy not available or not functional. Falling back to NumPy.",
                     )
                 self._backend = "numpy"
                 return np
@@ -124,14 +124,17 @@ class ArrayBackend:
         if strict and backend == "cupy" and not cupy_available():
             raise RuntimeError(
                 "Cannot select the CuPy backend: "
-                + (_CUPY_UNAVAILABLE_REASON or "CuPy/CUDA is unavailable")
+                + (_CUPY_UNAVAILABLE_REASON or "CuPy/CUDA is unavailable"),
             )
         module = self._load_backend(backend)  # sets self._backend to the effective one
         self._set(self._backend, module)
 
     @contextmanager
     def use_backend(
-        self, backend: BackendType, *, strict: bool = False
+        self,
+        backend: BackendType,
+        *,
+        strict: bool = False,
     ) -> Generator[None, None, None]:
         """Temporarily change the backend."""
         old_backend = self._backend
@@ -152,7 +155,9 @@ array_backend = ArrayBackend(
 
 
 def use_backend(
-    backend: BackendType, *, strict: bool = False
+    backend: BackendType,
+    *,
+    strict: bool = False,
 ) -> Generator[None, None, None]:
     """Temporarily change the backend."""
     return array_backend.use_backend(backend, strict=strict)
@@ -344,7 +349,7 @@ def as_device_array(
         raise RuntimeError(
             f"{what}: the active backend is {array_backend.backend!r}; device "
             "arguments are only built on the CuPy backend, and host data is never "
-            "copied to the device implicitly (build host arguments instead)"
+            "copied to the device implicitly (build host arguments instead)",
         )
 
     import cupy as cp
@@ -360,7 +365,7 @@ def as_device_array(
     if ndim is not None and result.ndim != ndim:
         raise ValueError(
             f"{what} must have {ndim} dimension(s), got {result.ndim} "
-            f"(shape {result.shape})"
+            f"(shape {result.shape})",
         )
     return result
 
@@ -432,7 +437,7 @@ def assert_same_backend(*arrays: Any) -> None:
         backends = [get_array_backend(array) for array in arrays]
         raise TypeError(
             f"Arrays are on mismatched backends: {backends}. Use "
-            "xp.to_cunumpy()/xp.to_numpy()/xp.to_cupy() to align them first."
+            "xp.to_cunumpy()/xp.to_numpy()/xp.to_cupy() to align them first.",
         )
 
 

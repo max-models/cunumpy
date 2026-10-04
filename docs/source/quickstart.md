@@ -31,7 +31,7 @@ or in the program:
 ```python
 xp.set_backend("cupy")
 a = xp.linspace(0.0, 1.0, 5)  # now a cupy.ndarray on the GPU
-print(xp.get_backend())       # 'cupy', or 'numpy' if no usable GPU
+print(xp.get_backend())  # 'cupy', or 'numpy' if no usable GPU
 ```
 
 If CuPy cannot be used, CuNumpy falls back to NumPy, so the same script runs on
@@ -56,7 +56,7 @@ Existing arrays never move by themselves. Convert at boundaries such as file
 output or plotting:
 
 ```python
-host = xp.to_numpy(a)      # always a NumPy array on the host
+host = xp.to_numpy(a)  # always a NumPy array on the host
 device = xp.to_cupy(host)  # a CuPy array (needs a GPU)
 active = xp.to_cunumpy(host)  # whatever backend is active
 ```

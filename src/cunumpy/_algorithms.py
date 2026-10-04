@@ -47,7 +47,7 @@ def segment_boundaries(sorted_keys: Any) -> tuple[Any, Any, Any]:
     if keys.size == 0:
         return keys.copy(), xpm.empty(0, dtype=np.int64), xpm.empty(0, dtype=np.int64)
     starts = xpm.concatenate(
-        (xpm.zeros(1, dtype=np.int64), xpm.nonzero(keys[1:] != keys[:-1])[0] + 1)
+        (xpm.zeros(1, dtype=np.int64), xpm.nonzero(keys[1:] != keys[:-1])[0] + 1),
     ).astype(np.int64, copy=False)
     stops = xpm.concatenate((starts[1:], xpm.full(1, keys.size, dtype=np.int64)))
     return keys[starts], starts, stops
@@ -65,7 +65,9 @@ def cell_offsets(sorted_cells: Any, n_cells: int) -> Any:
     if bool(((cells < 0) | (cells >= n_cells)).any()):
         raise ValueError("cell IDs must be in [0, n_cells)")
     return xpm.searchsorted(
-        cells, xpm.arange(n_cells + 1, dtype=np.int64), side="left"
+        cells,
+        xpm.arange(n_cells + 1, dtype=np.int64),
+        side="left",
     ).astype(np.int64, copy=False)
 
 
@@ -142,7 +144,7 @@ class SegmentPlan:
 
             if values.device.id != self._device or cp.cuda.Device().id != self._device:
                 raise ValueError(
-                    "segment plan and values require their CUDA device current"
+                    "segment plan and values require their CUDA device current",
                 )
         dtype = values.dtype if values.dtype.kind in "fc" else np.dtype(np.float64)
         if self._device is not None and np.dtype(dtype).name not in (
@@ -160,7 +162,7 @@ class SegmentPlan:
             assert_same_backend(self._keys, out)
             if out.shape != shape or out.dtype != dtype or not out.flags.c_contiguous:
                 raise ValueError(
-                    "out must have the exact shape/dtype and be C-contiguous"
+                    "out must have the exact shape/dtype and be C-contiguous",
                 )
             if not getattr(out.flags, "writeable", True):
                 raise ValueError("out must be writable")
@@ -245,7 +247,7 @@ def sort_by_key(keys: Any, *arrays: Any) -> tuple[Any, ...]:
     for array in arrays:
         if array.shape[:1] != keys.shape:
             raise ValueError(
-                f"every array needs {keys.shape[0]} rows, got shape {array.shape}"
+                f"every array needs {keys.shape[0]} rows, got shape {array.shape}",
             )
     order = xpm.argsort(keys, kind="stable").astype(xpm.int64, copy=False)
     return (keys[order], order, *(array[order] for array in arrays))

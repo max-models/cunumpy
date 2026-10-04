@@ -66,13 +66,13 @@ def install() -> types.ModuleType:
             return existing
         raise RuntimeError(
             "the real CuPy is already imported; the fake CuPy must be installed "
-            "before CuPy (set CUNUMPY_FAKE_CUPY=1 or call install() first)"
+            "before CuPy (set CUNUMPY_FAKE_CUPY=1 or call install() first)",
         )
     xp = sys.modules.get("cunumpy.xp")
     if xp is not None and getattr(xp, "_CUPY_AVAILABLE_CACHE", None) is not None:
         raise RuntimeError(
             "cunumpy has already checked for CuPy; install the fake CuPy before "
-            "the first backend use (set CUNUMPY_FAKE_CUPY=1 in the environment)"
+            "the first backend use (set CUNUMPY_FAKE_CUPY=1 in the environment)",
         )
     module = types.ModuleType("cupy")
     module.__file__ = str(_IMPLEMENTATION)

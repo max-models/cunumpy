@@ -64,8 +64,10 @@ def test_slurm_batch_script_is_not_an_mpi_launch(clean_env):
 
 @pytest.mark.parametrize(
     ("value", "launcher", "expected"),
-    [("1", False, True), ("on", False, True), ("0", True, False), ("no", True, False),
-     ("maybe", True, True), ("maybe", False, False)],
+    [
+        ("1", False, True), ("on", False, True), ("0", True, False), ("no", True, False),
+        ("maybe", True, True), ("maybe", False, False),
+    ],
 )  # fmt: skip
 def test_override(clean_env, value, launcher, expected):
     clean_env.setenv("CUNUMPY_MPI", value)
@@ -261,7 +263,8 @@ def test_module_functions():
 
 def test_constants_used_by_struphy_and_feectools():
     assert isinstance(MPI.DOUBLE, MPI.Datatype) and not isinstance(
-        MPI.SUM, MPI.Datatype
+        MPI.SUM,
+        MPI.Datatype,
     )
     assert isinstance(MPI.LOR, MPI.Op)
     assert MPI._typedict[np.dtype(np.float64).char] is MPI.DOUBLE
@@ -274,8 +277,15 @@ def test_constants_used_by_struphy_and_feectools():
     assert (MPI.Intracomm | None) is not None
 
 
-@pytest.mark.parametrize("backend", ["numpy", pytest.param("cupy", marks=pytest.mark.skipif(
-    not xp.cupy_available(), reason="CuPy/GPU not available"))])  # fmt: skip
+@pytest.mark.parametrize(
+    "backend", [
+        "numpy", pytest.param(
+            "cupy", marks=pytest.mark.skipif(
+            not xp.cupy_available(), reason="CuPy/GPU not available",
+            ),
+        ),
+    ],
+)  # fmt: skip
 def test_buffers_on_either_backend(backend):
     with xp.use_backend(backend):
         send = xp.arange(4.0)

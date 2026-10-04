@@ -45,7 +45,7 @@ from cunumpy.kernel_testing import backend  # noqa: F401
 
 ```python
 def test_energy_is_conserved(backend):
-    state = make_state()              # arrays land on the active backend
+    state = make_state()  # arrays land on the active backend
     e0 = energy(state)
     for _ in range(100):
         step(state, 1e-3)
@@ -187,10 +187,20 @@ def test_gather_cuda_arithmetic():
     rng = np.random.default_rng(0)
     positions, field = rng.random((500, 2)), rng.normal(size=(17, 9, 2))
     expected, result = np.zeros((500, 2)), np.zeros((500, 2))
-    catalog["gather"].host_kernel(positions, field, expected, 0.0, 0.0, 0.06, 0.11, 17, 9)
+    catalog["gather"].host_kernel(
+        positions, field, expected, 0.0, 0.0, 0.06, 0.11, 17, 9
+    )
     emulate_cuda_kernel(
         catalog["gather"].cuda_kernel,
-        positions, field, result, 0.0, 0.0, 0.06, 0.11, 17, 9,
+        positions,
+        field,
+        result,
+        0.0,
+        0.0,
+        0.06,
+        0.11,
+        17,
+        9,
         n_threads=500,
     )
     np.testing.assert_allclose(result, expected, rtol=1e-12, atol=1e-14)
@@ -295,7 +305,7 @@ real CuPy is importable.
 def test_time_step_has_no_transfers():
     with xp.use_backend("cupy"):
         state = make_state()
-        step(state, 1e-3)              # warm-up: compilation, allocations
+        step(state, 1e-3)  # warm-up: compilation, allocations
         with xp.profiling.assert_no_transfers():
             step(state, 1e-3)
 ```

@@ -61,7 +61,9 @@ def device(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        _mpi.array_api_compat, "is_cupy_array", lambda a: isinstance(a, Array)
+        _mpi.array_api_compat,
+        "is_cupy_array",
+        lambda a: isinstance(a, Array),
     )
 
     def allocate(shape, dtype):
@@ -132,7 +134,11 @@ def test_explicit_producer_dependencies_and_receive_only(device):
     data = Array([1.0, 2.0])
     producer = SimpleNamespace(synchronize=lambda: log.append(("producer",)))
     with mpi_buffer(
-        data, send=False, recv=True, cuda_aware=False, event=producer
+        data,
+        send=False,
+        recv=True,
+        cuda_aware=False,
+        event=producer,
     ) as host:
         host[:] = [9, 10]
     assert ("producer",) in log

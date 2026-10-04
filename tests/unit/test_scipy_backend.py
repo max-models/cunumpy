@@ -75,7 +75,8 @@ def test_cupy_backend_forwards_to_cupyx(fake_cupyx):
     assert xp.scipy.sparse.linalg.cg == "device cg"
     assert xp.scipy.special.resolve() is fake_cupyx["cupyx.scipy.special"]
     with pytest.raises(
-        AttributeError, match=r"cupy backend \(it may exist in scipy\.special\)"
+        AttributeError,
+        match=r"cupy backend \(it may exist in scipy\.special\)",
     ):
         xp.scipy.special.erfcx  # noqa: B018
     # a subpackage cupyx does not provide
@@ -98,7 +99,8 @@ def test_missing_scipy(monkeypatch):
     monkeypatch.setitem(sys.modules, "scipy", None)  # import scipy raises ImportError
     monkeypatch.setitem(sys.modules, "scipy.special", None)
     with pytest.raises(
-        ImportError, match=r"needs scipy.special: SciPy is not installed"
+        ImportError,
+        match=r"needs scipy.special: SciPy is not installed",
     ):
         xp.scipy.special.erf  # noqa: B018
     assert not xp.scipy.special.available("erf")

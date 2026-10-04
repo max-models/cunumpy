@@ -14,18 +14,21 @@ def test_dense_and_sparse_boundaries(backend):
     with xp.use_backend(backend, strict=True):
         cells = xp.asarray([0, 0, 2, 4, 4], dtype=xp.int64)
         np.testing.assert_array_equal(
-            xp.to_numpy(cell_offsets(cells, 6)), [0, 2, 2, 3, 3, 5, 5]
+            xp.to_numpy(cell_offsets(cells, 6)),
+            [0, 2, 2, 3, 3, 5, 5],
         )
         unique, starts, stops = segment_boundaries(cells)
         for got, expected in zip(
-            (unique, starts, stops), ([0, 2, 4], [0, 2, 3], [2, 3, 5])
+            (unique, starts, stops),
+            ([0, 2, 4], [0, 2, 3], [2, 3, 5]),
         ):
             assert xp.get_array_backend(got) == backend
             np.testing.assert_array_equal(xp.to_numpy(got), expected)
         large = xp.asarray([2**63 + 1, 2**63 + 1, 2**64 - 1], dtype=xp.uint64)
         unique, starts, stops = segment_boundaries(large)
         np.testing.assert_array_equal(
-            xp.to_numpy(unique), np.array([2**63 + 1, 2**64 - 1], dtype=np.uint64)
+            xp.to_numpy(unique),
+            np.array([2**63 + 1, 2**64 - 1], dtype=np.uint64),
         )
         np.testing.assert_array_equal(xp.to_numpy(starts), [0, 2])
         np.testing.assert_array_equal(xp.to_numpy(stops), [2, 3])

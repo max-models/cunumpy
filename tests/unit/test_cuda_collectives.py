@@ -26,7 +26,8 @@ __global__ void typed_scan(const T* x, T* inclusive, T* exclusive, T* total) {
 
 @requires_cuda
 @pytest.mark.parametrize(
-    "dtype", [np.int32, np.uint32, np.int64, np.uint64, np.float32, np.float64]
+    "dtype",
+    [np.int32, np.uint32, np.int64, np.uint64, np.float32, np.float64],
 )
 def test_scans_and_block_atomic_totals_for_shuffle_types(dtype):
     import cupy as cp
@@ -35,7 +36,10 @@ def test_scans_and_block_atomic_totals_for_shuffle_types(dtype):
     data = cp.asarray(host)
     inc, exc, total = cp.zeros_like(data), cp.zeros_like(data), cp.zeros(1, dtype=dtype)
     kernel = CudaKernel(
-        TYPED_SOURCE, "typed_scan", template_args=(dtype,), block_size=35
+        TYPED_SOURCE,
+        "typed_scan",
+        template_args=(dtype,),
+        block_size=35,
     )
     kernel(data, inc, exc, total, grid=2)
     expected = np.cumsum(host.reshape(2, 35), axis=1)
@@ -68,7 +72,8 @@ extern "C" __global__ void collectives(const double* x, double* inclusive,
 
 @requires_cuda
 @pytest.mark.parametrize(
-    "block", [1, 17, 31, 32, 33, 64, 127, 128, 1024, (7, 5), (3, 4, 3)]
+    "block",
+    [1, 17, 31, 32, 33, 64, 127, 128, 1024, (7, 5), (3, 4, 3)],
 )
 def test_partial_warps_multidimensional_blocks_and_repeated_collectives(block):
     import cupy as cp
@@ -132,7 +137,8 @@ def test_arbitrary_sparse_masks(mask):
     for got, want in zip(out, expected):
         result = cp.asnumpy(got)
         np.testing.assert_array_equal(
-            result[active], np.broadcast_to(want, active.shape)
+            result[active],
+            np.broadcast_to(want, active.shape),
         )
         np.testing.assert_array_equal(result[inactive], -999)
 
@@ -147,7 +153,10 @@ def test_exclusive_scan_preserves_small_previous_values(mask):
     host[active[0]], host[active[1]] = 1.0, 1e20
     out = [cp.zeros(32) for _ in range(5)]
     CudaKernel(MASKED_SOURCE, "masked", block_size=32)(
-        cp.asarray(host), mask, *out, n_threads=32
+        cp.asarray(host),
+        mask,
+        *out,
+        n_threads=32,
     )
     assert float(out[-1][active[1]]) == 1.0
 

@@ -105,7 +105,9 @@ def _fake_petsc(monkeypatch, vec_type=None, error=False):
     monkeypatch.setitem(sys.modules, "petsc4py", package)
     monkeypatch.setitem(sys.modules, "petsc4py.PETSc", PETSc)
     monkeypatch.setattr(
-        petsc, "_is_device_array", lambda a: isinstance(a, FakeDeviceArray)
+        petsc,
+        "_is_device_array",
+        lambda a: isinstance(a, FakeDeviceArray),
     )
     return Vec
 

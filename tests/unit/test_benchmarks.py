@@ -6,7 +6,8 @@ import cunumpy as xp
 
 
 @pytest.mark.skipif(
-    not xp.cupy_available(), reason="CuPy/GPU not available or not functional"
+    not xp.cupy_available(),
+    reason="CuPy/GPU not available or not functional",
 )
 def test_benchmark_matmul():
     """Benchmark matrix multiplication to show CuPy performance gain."""
@@ -49,7 +50,8 @@ def test_benchmark_matmul():
 
 
 @pytest.mark.skipif(
-    not xp.cupy_available(), reason="CuPy/GPU not available or not functional"
+    not xp.cupy_available(),
+    reason="CuPy/GPU not available or not functional",
 )
 def test_benchmark_fft():
     """Benchmark FFT performance."""

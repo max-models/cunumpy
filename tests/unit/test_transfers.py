@@ -23,7 +23,8 @@ from cunumpy.profiling import TransferCounter, TransferEvent
 THIS_FILE = str(Path(__file__))
 
 requires_cupy = pytest.mark.skipif(
-    not xp.cupy_available(), reason="CuPy not installed or not functional"
+    not xp.cupy_available(),
+    reason="CuPy not installed or not functional",
 )
 
 
@@ -58,7 +59,9 @@ def fake_device(monkeypatch):
     monkeypatch.setattr(xp_module, "get_array_backend", get_array_backend)
     monkeypatch.setattr(xp_module, "_to_cupy", _FakeDeviceArray)
     monkeypatch.setattr(
-        kernel_module, "_is_device_array", lambda v: isinstance(v, _FakeDeviceArray)
+        kernel_module,
+        "_is_device_array",
+        lambda v: isinstance(v, _FakeDeviceArray),
     )
     monkeypatch.setattr(kernel_module, "_device_to_host", lambda v: v.get())
     monkeypatch.setattr(kernel_module, "_host_to_device", _FakeDeviceArray)

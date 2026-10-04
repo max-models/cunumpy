@@ -244,7 +244,7 @@ def _copy(source: Any, target: Any, offset: int = 0) -> None:
     if offset + source.size > flat.size:
         raise ValueError(
             f"receive buffer too small: {flat.size} elements for {source.size} "
-            f"at offset {offset}"
+            f"at offset {offset}",
         )
     flat[offset : offset + source.size] = source
 

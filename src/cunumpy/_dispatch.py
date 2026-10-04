@@ -62,7 +62,7 @@ def _on_device(arg: Any) -> bool:
         return True
     kind = type(arg)
     return callable(getattr(kind, "__cuda_args__", None)) and not callable(
-        getattr(kind, "__host_args__", None)
+        getattr(kind, "__host_args__", None),
     )
 
 
@@ -208,19 +208,19 @@ class Kernel:
         self._dispatch = dispatch
         if missing_cuda not in _MISSING_CUDA:
             raise ValueError(
-                f"missing_cuda must be one of {_MISSING_CUDA}, got {missing_cuda!r}"
+                f"missing_cuda must be one of {_MISSING_CUDA}, got {missing_cuda!r}",
             )
         if cuda_kernel is not None and not isinstance(cuda_kernel, CudaKernel):
             raise TypeError(
                 "cuda_kernel must be a CudaKernel or None, "
-                f"got {type(cuda_kernel).__name__}"
+                f"got {type(cuda_kernel).__name__}",
             )
         if not isinstance(host_kernel, PyccelKernel):
             host_kernel = PyccelKernel(host_kernel, **(host_options or {}))
         elif host_options:
             raise ValueError(
                 "host_options are for wrapping a plain callable; configure the "
-                "given PyccelKernel directly"
+                "given PyccelKernel directly",
             )
         self._host_kernel = host_kernel
         self._cuda_kernel = cuda_kernel
@@ -316,7 +316,7 @@ class Kernel:
         name = package.rpartition(".")[2]
         if not (folder / f"{name}{host_suffix}.py").is_file():
             raise FileNotFoundError(
-                f"kernel folder {folder} has no host kernel {name}{host_suffix}.py"
+                f"kernel folder {folder} has no host kernel {name}{host_suffix}.py",
             )
         wrapper = f"bind_c_{name}{host_suffix}"
         if check_name_length and len(wrapper) > FORTRAN_NAME_LIMIT:
@@ -348,7 +348,8 @@ class Kernel:
         for implementation in ("numba", "numpy"):
             if (folder / f"{name}_{implementation}.py").is_file():
                 loaders[implementation] = _import_loader(
-                    f"{package}.{name}_{implementation}", name
+                    f"{package}.{name}_{implementation}",
+                    name,
                 )
         loaders.update(extra_implementations or {})
         host = HostImplementations(name, loaders)
@@ -473,7 +474,7 @@ class Kernel:
             if host != cuda:
                 raise ValueError(
                     f"kernel {self._name!r}: the host kernel takes "
-                    f"({', '.join(host)}), the CUDA kernel ({', '.join(cuda)})"
+                    f"({', '.join(host)}), the CUDA kernel ({', '.join(cuda)})",
                 )
         function = self._host_kernel.kernel
         others: dict[str, Any] = {}
@@ -491,7 +492,7 @@ class Kernel:
                 which = "its fallback" if name == "fallback" else f"the {name} version"
                 raise ValueError(
                     f"kernel {self._name!r}: the host kernel takes "
-                    f"({', '.join(host)}), {which} ({', '.join(parameters)})"
+                    f"({', '.join(host)}), {which} ({', '.join(parameters)})",
                 )
 
     @property
@@ -548,7 +549,7 @@ class Kernel:
                 "" if self._cuda_path is None else f" (expected {self._cuda_path})"
             )
             raise NotImplementedError(
-                f"No CUDA version of kernel {self._name!r}{expected}."
+                f"No CUDA version of kernel {self._name!r}{expected}.",
             )
         if not self._warned:
             warnings.warn(
@@ -622,7 +623,7 @@ class Kernel:
         if n_threads is None and grid is None and kernel.n_threads_from is None:
             raise ValueError(
                 f"{self._name}: n_threads is required to launch the CUDA kernel "
-                "(or pass grid, or set cuda_kernel.n_threads_from)"
+                "(or pass grid, or set cuda_kernel.n_threads_from)",
             )
         return kernel(
             *args,
@@ -856,7 +857,7 @@ class KernelCatalog(Mapping):
         if problems:
             raise ValueError(
                 "host and CUDA kernels take different parameters:\n  "
-                + "\n  ".join(problems)
+                + "\n  ".join(problems),
             )
 
     def compile_all(self, jobs: int | None = 1) -> list[str]:

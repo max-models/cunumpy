@@ -238,5 +238,5 @@ def assert_no_transfers() -> Generator[TransferCounter, None, None]:
     if counter.total:
         raise AssertionError(
             "host/device transfers inside a block that must not transfer:\n"
-            + counter.report()
+            + counter.report(),
         )

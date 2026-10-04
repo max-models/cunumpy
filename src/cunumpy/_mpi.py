@@ -11,8 +11,8 @@ from typing import Any
 import array_api_compat
 import array_api_compat.numpy as np
 
-from ._mpi_serial import (_LOCAL_RANK_VARIABLES,  # noqa: F401 - re-exported
-                          local_rank)
+from ._mpi_serial import _LOCAL_RANK_VARIABLES  # noqa: F401 - re-exported
+from ._mpi_serial import local_rank
 from ._transfers import _ACTIVE as _COUNTERS
 from ._transfers import _describe, _record
 from .xp import array_backend, cupy_available, to_numpy
@@ -88,7 +88,7 @@ def _pinned_or_host_empty(shape: tuple[int, ...], dtype: Any) -> np.ndarray:
         nbytes = int(np.prod(shape, dtype=np.int64)) * np.dtype(dtype).itemsize
         mem = cp.cuda.alloc_pinned_memory(max(nbytes, 1))
         return np.frombuffer(mem, dtype, int(np.prod(shape, dtype=np.int64))).reshape(
-            shape
+            shape,
         )
     except Exception:  # noqa: BLE001 - no CuPy, no pinned memory, the fake CuPy, ...
         return np.empty(shape, dtype=dtype)
@@ -227,7 +227,7 @@ def mpi_buffer(
         raise RuntimeError(
             "mpi_buffer(): it is not known whether MPI can take device buffers; "
             "call xp.mpi.mpi_is_cuda_aware(comm) once at startup (every rank), or "
-            "xp.mpi.set_mpi_cuda_aware(True/False), or pass cuda_aware="
+            "xp.mpi.set_mpi_cuda_aware(True/False), or pass cuda_aware=",
         )
     if cuda_aware:
         synchronize_for_mpi(array, stream=stream, event=event)
@@ -265,7 +265,7 @@ def _mpi_module() -> Any:
     except ImportError as e:
         raise ImportError(
             "mpi4py is required for the CUDA-aware MPI check: install it, or "
-            "pass a communicator explicitly."
+            "pass a communicator explicitly.",
         ) from e
     return MPI
 
@@ -329,7 +329,7 @@ def mpi_is_cuda_aware(comm: Any = None, *, method: str = "probe") -> bool:
     if method != "probe":
         raise ValueError(
             f"Unknown method {method!r}; only 'probe' is available (mpi4py does "
-            "not expose a reliable CUDA support query)."
+            "not expose a reliable CUDA support query).",
         )
     if not _device_buffers_in_use():
         return False
@@ -383,5 +383,5 @@ def require_cuda_aware_mpi(comm: Any = None) -> None:
         "--with-device=ch4:ucx on a CUDA-enabled UCX; on clusters, load the "
         "CUDA-aware MPI module (its name differs per site) and rebuild mpi4py "
         "against it. Alternatively, copy the buffers to the host with "
-        "xp.to_numpy() before every MPI call."
+        "xp.to_numpy() before every MPI call.",
     )

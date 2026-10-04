@@ -52,8 +52,10 @@ def test_cuda_factories_and_event_ordering(monkeypatch):
         "cupy",
         SimpleNamespace(
             cuda=SimpleNamespace(
-                Stream=Stream, Event=Event, get_current_stream=lambda: current
-            )
+                Stream=Stream,
+                Event=Event,
+                get_current_stream=lambda: current,
+            ),
         ),
     )
     stream = xp.cuda.create_stream(non_blocking=False)

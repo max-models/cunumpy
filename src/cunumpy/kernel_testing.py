@@ -113,7 +113,7 @@ def _pytest() -> Any:
         import pytest
     except ImportError:  # pragma: no cover - pytest is installed in the test suite
         raise ImportError(
-            "cunumpy.kernel_testing needs pytest for this feature: pip install pytest"
+            "cunumpy.kernel_testing needs pytest for this feature: pip install pytest",
         ) from None
     return pytest
 
@@ -150,7 +150,7 @@ def __getattr__(name: str) -> Any:
 
 def _is_array(value: Any) -> bool:
     return array_api_compat.is_numpy_array(value) or array_api_compat.is_cupy_array(
-        value
+        value,
     )
 
 
@@ -161,7 +161,8 @@ def _arrays_in(value: Any, name: str, found: dict[str, Any], depth: int) -> None
     elif depth == 0:
         return
     elif isinstance(value, (CudaStructArguments, CudaStructValue)) and hasattr(
-        value, "struct"
+        value,
+        "struct",
     ):
         # by field name, like the attributes of the host argument object; the
         # fields of a CudaStructArguments may be properties (not in vars())
@@ -184,7 +185,8 @@ def _arrays_in(value: Any, name: str, found: dict[str, Any], depth: int) -> None
 
 
 def _collect_arrays(
-    args: Sequence[Any], outputs: Sequence[int] | None = None
+    args: Sequence[Any],
+    outputs: Sequence[int] | None = None,
 ) -> dict[str, Any]:
     """The arrays among `args` (or among the arguments `outputs`), by name.
 
@@ -204,13 +206,13 @@ def _collect_arrays(
         if not isinstance(entry, int) or isinstance(entry, bool):
             raise TypeError(
                 "outputs must be positional argument indices (kernels take "
-                f"positional arguments only), got {entry!r}"
+                f"positional arguments only), got {entry!r}",
             )
         index = entry + len(args) if entry < 0 else entry
         if not 0 <= index < len(args):
             raise IndexError(
                 f"output argument {entry} does not exist: there are {len(args)} "
-                "arguments"
+                "arguments",
             )
         _arrays_in(args[index], f"argument {index}", found, depth=2)
     return found
@@ -234,7 +236,7 @@ def _compare_results(
     if host.keys() != device.keys():
         raise AssertionError(
             f"{kernel_name}: the host and CUDA calls do not have the same array "
-            f"arguments: host {sorted(host)}, CUDA {sorted(device)}"
+            f"arguments: host {sorted(host)}, CUDA {sorted(device)}",
         )
     for name, expected in host.items():
         np.testing.assert_allclose(
@@ -392,7 +394,7 @@ def parity_cases(catalog: Any) -> list[Any]:
             marks = (
                 pytest.mark.skip(
                     reason=f"no test arguments for {name!r}: add {name}_test_args.py "
-                    "with make_args(backend, seed) and N_THREADS to its folder"
+                    "with make_args(backend, seed) and N_THREADS to its folder",
                 ),
             )
         cases.append(pytest.param(kernel, id=name, marks=marks))
@@ -426,7 +428,7 @@ def check_parity(kernel: Kernel, **overrides: Any) -> dict[str, np.ndarray]:
     if module is None:
         raise ValueError(
             f"kernel {kernel.name!r} has no test-arguments module: add "
-            f"{kernel.name}_test_args.py with make_args(backend, seed) to its folder"
+            f"{kernel.name}_test_args.py with make_args(backend, seed) to its folder",
         )
     make_args = getattr(module, "make_args", None)
     if not callable(make_args):
@@ -477,11 +479,11 @@ def _parse_prototype(
         except ValueError:
             raise ValueError(
                 f"unsupported return type {result_text!r} of {name!r}: a scalar "
-                "type (or void) is required"
+                "type (or void) is required",
             ) from None
         if result.pointer:
             raise ValueError(
-                f"{name!r} returns a pointer; only scalar results can be collected"
+                f"{name!r} returns a pointer; only scalar results can be collected",
             )
     params_text = match.group("params").strip()
     params = []
@@ -493,7 +495,7 @@ def _parse_prototype(
             if by_reference and param.struct is None:
                 raise ValueError(
                     f"unsupported parameter {text!r} of {name!r}: only structs can "
-                    "be passed by reference"
+                    "be passed by reference",
                 )
             params.append((text, param))
     return result, name, params
@@ -591,7 +593,7 @@ def device_function_kernel(
             raise ValueError(
                 f"the parameter {param.name!r} of {function!r} clashes with the "
                 f"generated parameter of that name; pass another out_param or "
-                "n_threads_param"
+                "n_threads_param",
             )
 
     wrapper_params, call_args = [], []

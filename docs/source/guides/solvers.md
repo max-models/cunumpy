@@ -95,16 +95,16 @@ rho = xp.zeros(n_local)
 phi = xp.zeros(n_local)
 rho_vec, phi_vec = xp.petsc.petsc_vec(rho), xp.petsc.petsc_vec(phi)
 
-A = assemble_laplacian()      # a PETSc Mat
-A.setType("aijcusparse")      # keep the matrix on the GPU too
+A = assemble_laplacian()  # a PETSc Mat
+A.setType("aijcusparse")  # keep the matrix on the GPU too
 ksp = PETSc.KSP().create()
 ksp.setOperators(A)
 
 for step in range(n_steps):
     deposit(rho)
-    xp.synchronize()          # CuPy finished writing rho
+    xp.synchronize()  # CuPy finished writing rho
     ksp.solve(rho_vec, phi_vec)
-    xp.synchronize()          # PETSc finished writing phi
+    xp.synchronize()  # PETSc finished writing phi
     gather(phi)
 ```
 

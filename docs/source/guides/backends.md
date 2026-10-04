@@ -84,8 +84,8 @@ xp.set_backend("cupy")
 on_gpu = xp.arange(4)
 
 xp.set_backend("numpy")
-print(xp.get_backend())                # 'numpy': what xp.* creates now
-print(xp.get_array_backend(on_gpu))    # 'cupy': where this array lives
+print(xp.get_backend())  # 'numpy': what xp.* creates now
+print(xp.get_array_backend(on_gpu))  # 'cupy': where this array lives
 ```
 
 Two families of functions answer the two questions:
