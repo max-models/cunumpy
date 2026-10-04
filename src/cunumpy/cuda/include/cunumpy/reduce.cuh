@@ -136,6 +136,9 @@ __device__ T cunumpy_block_reduce(T v, Op op)
     __syncthreads();
     if (warp == 0) {
         v = lane < n_warps ? partial[lane] : Op::fill(partial);
+        // Min/max padding lanes read partial[0], which lane 0 overwrites below.
+        // Shuffles do not order shared memory: finish every warp read first.
+        __syncwarp(mask);
         v = cunumpy_warp_reduce(v, op, mask);
         if (lane == 0) partial[0] = v;
     }

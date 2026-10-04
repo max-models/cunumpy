@@ -83,7 +83,9 @@ def test_partial_warps_multidimensional_blocks_and_repeated_collectives(block):
     data = cp.asarray(host)
     inc, exc, again = (cp.empty_like(data) for _ in range(3))
     sums, lo, hi = (cp.empty(3) for _ in range(3))
-    kernel = CudaKernel(BLOCK_SOURCE, "collectives", block_size=block)
+    kernel = CudaKernel(
+        BLOCK_SOURCE, "collectives", block_size=block, options=("-lineinfo",)
+    )
     kernel(data, inc, exc, again, sums, lo, hi, grid=3)
     rows = host.reshape(3, count)
     expected_inc = np.cumsum(rows, axis=1)
@@ -93,6 +95,54 @@ def test_partial_warps_multidimensional_blocks_and_repeated_collectives(block):
     np.testing.assert_array_equal(cp.asnumpy(again).reshape(3, count), expected_inc * 2)
     for got, expected in ((sums, rows.sum(1)), (lo, rows.min(1)), (hi, rows.max(1))):
         np.testing.assert_array_equal(cp.asnumpy(got), expected)
+
+
+REPEATED_EXTREMA_SOURCE = r"""
+#include <cunumpy/reduce.cuh>
+template <typename T>
+__global__ void repeated_extrema(const T* x, T* minima, T* maxima, int rounds) {
+    int t = cunumpy_block_thread();
+    int count = cunumpy_block_threads();
+    int i = blockIdx.x * count + t;
+    int stride = gridDim.x * count;
+    for (int r = 0; r < rounds; ++r) {
+        T v = ((r & 1) ? -x[i] : x[i]) + T(r);
+        T lo = cunumpy_block_min(v);
+        T hi = cunumpy_block_max(v);
+        minima[r * stride + i] = lo;
+        maxima[r * stride + i] = hi;
+    }
+}
+"""
+
+
+@requires_cuda
+@pytest.mark.parametrize("dtype", [np.int32, np.float64])
+@pytest.mark.parametrize("block", [17, 32, 33, 128, 1024, (7, 5)])
+def test_repeated_extrema_are_returned_to_every_thread(dtype, block):
+    import cupy as cp
+
+    count, blocks, rounds = int(np.prod(block)), 3, 8
+    host = np.random.default_rng(123).integers(-100, 100, blocks * count).astype(dtype)
+    data = cp.asarray(host)
+    minima, maxima = (cp.empty((rounds, data.size), dtype=dtype) for _ in range(2))
+    kernel = CudaKernel(
+        REPEATED_EXTREMA_SOURCE,
+        "repeated_extrema",
+        block_size=block,
+        template_args=(dtype,),
+        options=("-lineinfo",),
+    )
+    kernel(data, minima, maxima, rounds, grid=blocks)
+    rows = host.reshape(blocks, count)
+    values = np.stack([(rows if r % 2 == 0 else -rows) + r for r in range(rounds)])
+    for actual, expected in (
+        (minima, values.min(axis=2)),
+        (maxima, values.max(axis=2)),
+    ):
+        np.testing.assert_array_equal(
+            cp.asnumpy(actual), np.repeat(expected, count, axis=1)
+        )
 
 
 MASKED_SOURCE = r"""
@@ -223,7 +273,7 @@ def test_scan_header_is_resolved_and_emulation_refuses_warp_intrinsics():
     ]
     if emulation_compiler() is None:
         pytest.skip("requires a C++ compiler")
-    with pytest.raises(NotImplementedError, match="warp shuffles"):
+    with pytest.raises(NotImplementedError, match="warp (shuffles|synchronization)"):
         emulate_cuda_kernel(kernel, *(np.zeros(32) for _ in range(7)), n_threads=32)
 
 
@@ -240,6 +290,7 @@ def test_collective_headers_compile_with_all_supported_arithmetic_types():
 inline int __ffs(unsigned v) { return v ? __builtin_ctz(v) + 1 : 0; }
 inline int __clz(unsigned v) { return __builtin_clz(v); }
 inline void __syncthreads() {}
+inline void __syncwarp(unsigned) {}
 template<class T> T __shfl_sync(unsigned, T v, int) { return v; }
 template<class T> T __shfl_up_sync(unsigned, T v, int) { return v; }
 template<class T> T __shfl_xor_sync(unsigned, T v, int) { return v; }
@@ -270,6 +321,7 @@ void check_all() {
         input=_STUBS
         + stubs
         + BLOCK_SOURCE
+        + REPEATED_EXTREMA_SOURCE
         + MASKED_SOURCE
         + ATOMICS_SOURCE
         + instantiate,
