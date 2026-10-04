@@ -34,16 +34,16 @@ from typing import Any
 
 import array_api_compat
 
-from ._cuda_kernel import CudaKernel, _compile_in_threads
-from ._kernel import (
+from cunumpy._cuda_kernel import CudaKernel, _compile_in_threads
+from cunumpy._kernel import (
     CompiledHostKernel,
     HostImplementations,
     PyccelKernel,
     resolve_host_args,
 )
-from ._transfers import _ACTIVE as _COUNTERS
-from ._transfers import _record
-from .xp import get_backend
+from cunumpy._transfers import _ACTIVE as _COUNTERS
+from cunumpy._transfers import _record
+from cunumpy.xp import get_backend
 
 __all__ = ["Kernel", "KernelCatalog"]
 

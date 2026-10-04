@@ -8,16 +8,16 @@ from typing import Any
 import numpy as np
 from numpy import *
 
-from . import algorithms as algorithms
-from . import cuda as cuda
-from . import kernels as kernels
-from . import memory as memory
-from . import mpi as mpi
-from . import petsc as petsc
-from . import profiling as profiling
-from . import rng as rng
-from . import xp as xp
-from ._scipy_backend import scipy as scipy
+from cunumpy import algorithms as algorithms
+from cunumpy import cuda as cuda
+from cunumpy import kernels as kernels
+from cunumpy import memory as memory
+from cunumpy import mpi as mpi
+from cunumpy import petsc as petsc
+from cunumpy import profiling as profiling
+from cunumpy import rng as rng
+from cunumpy import xp as xp
+from cunumpy._scipy_backend import scipy as scipy
 
 def to_numpy(array: Any) -> np.ndarray: ...
 def to_cupy(array: Any) -> Any: ...

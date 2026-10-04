@@ -1362,7 +1362,7 @@ class CudaStruct:
         RuntimeError
             If CuPy is not available.
         """
-        from .xp import cupy_available
+        from cunumpy.xp import cupy_available
 
         if not cupy_available():
             raise RuntimeError("verify_layout() compiles a CUDA kernel and needs CuPy")
@@ -1768,7 +1768,7 @@ class PyccelStructArguments(CudaStructArguments):
                         "or set host_copies = True for a read-only host evaluation "
                         "from host copies",
                     )
-                from .xp import to_numpy
+                from cunumpy.xp import to_numpy
 
                 value = to_numpy(value)
             host_values.append(value)
@@ -2093,7 +2093,7 @@ class CudaKernel:
         """
         if self._debug is not None:
             return self._debug
-        from ._device import get_cuda_debug
+        from cunumpy._device import get_cuda_debug
 
         return get_cuda_debug()
 
@@ -2234,7 +2234,7 @@ class CudaKernel:
             If CuPy or a GPU is not available.
         """
         if self._raw_kernel is None:
-            from .xp import cupy_available
+            from cunumpy.xp import cupy_available
 
             if not cupy_available():
                 raise RuntimeError(
@@ -2403,7 +2403,7 @@ class CudaKernel:
         attribute ``max_dynamic_shared_size_bytes``; it is set once (and again
         for a larger request) up to the device's opt-in limit.
         """
-        from ._device import (
+        from cunumpy._device import (
             DEFAULT_SHARED_MEMORY_PER_BLOCK,
             max_shared_memory_per_block,
         )

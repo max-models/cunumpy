@@ -56,5 +56,8 @@ cunumpy = [ "py.typed", "*.pyi", "LLM_GUIDE.md", "cuda/include/cunumpy/*.cuh" ]
 # agent worktrees and scratch scripts are local copies, not part of the project
 extend-exclude = [ ".claude" ]
 # formatting: `ruff format`; import sorting: the isort rules of `ruff check`
-lint.extend-select = [ "I" ]
+lint.extend-select = [ "I", "TID252" ]
 lint.isort.known-first-party = [ "cunumpy" ]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"

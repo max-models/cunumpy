@@ -11,12 +11,12 @@ from typing import Any
 import array_api_compat
 import array_api_compat.numpy as np
 
-from ._mpi_serial import (
+from cunumpy._mpi_serial import (
     _LOCAL_RANK_VARIABLES,  # noqa: F401 - re-exported
 )
-from ._transfers import _ACTIVE as _COUNTERS
-from ._transfers import _describe, _record
-from .xp import array_backend, cupy_available, to_numpy
+from cunumpy._transfers import _ACTIVE as _COUNTERS
+from cunumpy._transfers import _describe, _record
+from cunumpy.xp import array_backend, cupy_available, to_numpy
 
 _logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ def synchronize_for_mpi(*arrays: Any, stream: Any = None, event: Any = None) -> 
     devices = {a.device.id for a in arrays if array_api_compat.is_cupy_array(a)}
     if not devices:
         return
-    from ._streams import HostEvent, HostStream
+    from cunumpy._streams import HostEvent, HostStream
 
     if isinstance(event, HostEvent) or isinstance(stream, HostStream):
         raise TypeError("device buffers require a CUDA producer stream or event")

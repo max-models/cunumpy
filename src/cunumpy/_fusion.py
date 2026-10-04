@@ -32,7 +32,7 @@ from typing import Any, TypeVar
 import array_api_compat
 import numpy
 
-from .xp import use_backend
+from cunumpy.xp import use_backend
 
 __all__ = ["fuse"]
 

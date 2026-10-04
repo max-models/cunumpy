@@ -3,9 +3,9 @@ import re as _re
 import warnings as _warnings
 from importlib.metadata import PackageNotFoundError, version
 
-from . import algorithms, cuda, kernels, memory, mpi, petsc, profiling, rng, xp
-from ._scipy_backend import scipy
-from .xp import (
+from cunumpy import algorithms, cuda, kernels, memory, mpi, petsc, profiling, rng, xp
+from cunumpy._scipy_backend import scipy
+from cunumpy.xp import (
     as_device_array,
     assert_same_backend,
     backend_info,

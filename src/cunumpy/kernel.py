@@ -3,6 +3,6 @@
 The public names are in :mod:`cunumpy.kernels`.
 """
 
-from ._deprecated import alias_module
+from cunumpy._deprecated import alias_module
 
 alias_module(__name__, "cunumpy._kernel", "cunumpy.kernels")

@@ -34,7 +34,7 @@ from typing import Any
 
 import numpy as np
 
-from .xp import get_backend
+from cunumpy.xp import get_backend
 
 __all__ = ["BIT_GENERATORS", "RandomStreams", "random_streams"]
 

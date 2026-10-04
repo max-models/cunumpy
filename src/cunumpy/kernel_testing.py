@@ -56,8 +56,8 @@ from typing import Any
 import array_api_compat
 import numpy as np
 
-from . import _fake_cupy
-from ._cuda_kernel import (
+from cunumpy import _fake_cupy
+from cunumpy._cuda_kernel import (
     CudaKernel,
     CudaParameter,
     CudaStructArguments,
@@ -66,9 +66,9 @@ from ._cuda_kernel import (
     _split_top_level,
     _strip_comments,
 )
-from ._dispatch import Kernel
-from ._emulation import emulate_cuda_kernel, emulation_compiler
-from .xp import cupy_available, get_backend, to_numpy, use_backend
+from cunumpy._dispatch import Kernel
+from cunumpy._emulation import emulate_cuda_kernel, emulation_compiler
+from cunumpy.xp import cupy_available, get_backend, to_numpy, use_backend
 
 # the pytest objects are created on first access, see __getattr__
 __all__ = [

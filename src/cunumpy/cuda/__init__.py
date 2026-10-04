@@ -24,7 +24,7 @@ Importing this module makes ``xp.cuda`` refer to it instead of ``cupy.cuda``;
 use ``import cupy; cupy.cuda`` for CuPy's module.
 """
 
-from .._cuda_kernel import (
+from cunumpy._cuda_kernel import (
     DEBUG_OPTIONS,
     CudaArguments,
     CudaKernel,
@@ -41,7 +41,7 @@ from .._cuda_kernel import (
     resolve_includes,
     write_cuda_header,
 )
-from .._device import (
+from cunumpy._device import (
     DEFAULT_SHARED_MEMORY_PER_BLOCK,
     bind_local_device,
     cuda_debug,
@@ -56,7 +56,7 @@ from .._device import (
     set_device_for_rank,
     stream,
 )
-from .._streams import (
+from cunumpy._streams import (
     HostEvent,
     HostStream,
     create_event,

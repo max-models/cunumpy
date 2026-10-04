@@ -9,8 +9,8 @@ from typing import Any
 
 import array_api_compat.numpy as np
 
-from ._mpi_serial import local_rank
-from .xp import array_backend, cupy_available
+from cunumpy._mpi_serial import local_rank
+from cunumpy.xp import array_backend, cupy_available
 
 
 def set_device(device_id: int) -> None:

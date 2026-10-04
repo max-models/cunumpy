@@ -34,9 +34,9 @@ from typing import Any
 import array_api_compat
 import numpy as np
 
-from ._transfers import _ACTIVE as _COUNTERS
-from ._transfers import _record
-from .xp import _cupy_backend, _to_cupy, _to_numpy, is_gpu, to_cupy, to_numpy
+from cunumpy._transfers import _ACTIVE as _COUNTERS
+from cunumpy._transfers import _record
+from cunumpy.xp import _cupy_backend, _to_cupy, _to_numpy, is_gpu, to_cupy, to_numpy
 
 __all__ = ["CompiledHostKernel", "KernelArguments", "PyccelKernel", "resolve_host_args"]
 
