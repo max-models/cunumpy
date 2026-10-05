@@ -11,9 +11,7 @@ from typing import Any
 import array_api_compat
 import array_api_compat.numpy as np
 
-from cunumpy._mpi_serial import (
-    _LOCAL_RANK_VARIABLES,  # noqa: F401 - re-exported
-)
+from cunumpy._mpi_serial import _LOCAL_RANK_VARIABLES  # noqa: F401 - re-exported
 from cunumpy._transfers import _ACTIVE as _COUNTERS
 from cunumpy._transfers import _describe, _nbytes, _record
 from cunumpy.xp import array_backend, cupy_available, to_numpy
