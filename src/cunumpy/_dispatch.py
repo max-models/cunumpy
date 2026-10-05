@@ -598,7 +598,8 @@ class Kernel:
         n_threads, grid, block, shared_mem, stream
             Launch configuration of the CUDA kernel, see
             :meth:`CudaKernel.__call__ <cunumpy.cuda.CudaKernel.__call__>`;
-            `n_threads` (or `grid`) is required when the CUDA kernel is called.
+            Thread counts are inferred from array shapes by default;
+            `n_threads` or `grid` overrides that choice.
             Ignored by the host kernel.
         """
         if self._dispatch == "arrays":

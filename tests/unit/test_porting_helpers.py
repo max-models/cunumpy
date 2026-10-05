@@ -625,7 +625,7 @@ print("fake cupy OK")
 
 def test_fake_cupy_in_subprocess():
     root = Path(__file__).resolve().parents[2]
-    env = dict(os.environ, CUNUMPY_FAKE_CUPY="1", ARRAY_BACKEND="cupy")
+    env = dict(os.environ, CUNUMPY_FAKE_CUPY="1", CUNUMPY_BACKEND="cupy")
     env["PYTHONPATH"] = os.pathsep.join(
         p for p in (str(root / "src"), env.get("PYTHONPATH", "")) if p
     )

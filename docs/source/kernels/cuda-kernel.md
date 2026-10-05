@@ -85,6 +85,24 @@ correct; the kernel then behaves like a raw `RawKernel`.
 kernel(*args, n_threads=None, grid=None, block=None, shared_mem=0, stream=None)
 ```
 
+Omit both `n_threads` and `grid` to infer the launch from the first array's shape.
+The default `n_threads_from="auto"` uses `shape[0]` for a 1D block (one thread per
+row/particle), `shape[:2]` for a 2D block, and `shape[:3]` for a 3D block. Axes map
+to CUDA x, y, z. Scalar arguments and zero-dimensional arrays are skipped;
+arrays inside supported argument objects are searched in field/argument order.
+Per-call block overrides determine the inference dimensions too.
+
+```python
+axpy(2.0, x, y, x.size)  # infer n_threads = x.shape[0]
+```
+
+Explicit sizes override inference. Set `n_threads_from=lambda args: args[0].size`
+for a flattened element kernel, or another callback for a different axis order
+or logical work count. `n_threads_from=None` requires explicit sizes;
+`"first_array"` always selects only the first axis. `launch_shape(args=(...))`
+inspects the inferred grid/block without compilation or a launch. CPU emulation
+and host/CUDA parity tests use the same defaults.
+
 * **1D**: `n_threads=n` with the default `block_size=128` (set per kernel with
   `CudaKernel(..., block_size=256)`).
 * **2D/3D**: `n_threads=(nx, ny)` and a tuple block, e.g.

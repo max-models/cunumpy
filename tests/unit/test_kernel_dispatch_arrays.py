@@ -86,6 +86,9 @@ def test_arrays_dispatch_runs_device_arrays_on_the_gpu(fake_gpu):
     kernel(x, 3.0, 4, n_threads=4)
     ((name, args, options),) = fake_gpu
     assert name == "scale" and args[0] is x and options["n_threads"] == 4
+    kernel(x, 3.0, 4)
+    assert fake_gpu[-1][2]["n_threads"] is None
+    kernel.cuda_kernel.n_threads_from = None
     with pytest.raises(ValueError, match="n_threads is required"):
         kernel(x, 3.0, 4)
 

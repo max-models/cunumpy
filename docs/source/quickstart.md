@@ -23,7 +23,7 @@ results are ordinary NumPy (or CuPy) arrays.
 Select CuPy before the arrays are created, either from the shell:
 
 ```bash
-ARRAY_BACKEND=cupy python my_script.py
+CUNUMPY_BACKEND=cupy python my_script.py
 ```
 
 or in the program:

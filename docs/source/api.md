@@ -93,7 +93,7 @@ availability and failure reason, dependency versions, and current device/runtime
 information when available. Inspection errors are included in the result. It
 does not change the backend or initialize MPI.
 
-The initial backend is NumPy unless `ARRAY_BACKEND=cupy` is set before CuNumpy
+The initial backend is NumPy unless `CUNUMPY_BACKEND=cupy` is set before CuNumpy
 is imported. Other values of this environment variable result in the NumPy
 default.
 
@@ -870,6 +870,8 @@ xp.cuda.CudaKernel(
     template_args=None,
     check_signature=True,
     debug=None,
+    n_threads_from="auto",
+    check_finite=False,
 )
 xp.cuda.CudaKernel.from_file(path, name=None, *, suffix="_cuda.cu", **kwargs)
 xp.cuda.CudaKernel.all_from_file(path, **kwargs)
@@ -991,19 +993,35 @@ shape is given either by `n_threads` or by `grid`:
   subtracting static storage opts in through `max_dynamic_shared_size_bytes`.
   Block/grid dimensions and device/kernel thread limits are also checked.
 
-Without `n_threads` and `grid`, a launch uses `n_threads_from(args)` if the
-kernel has one (constructor argument and settable property): a function of the
-argument tuple, or `"first_array"` for the length of the first array argument
-(its first axis), i.e. one thread per marker:
+Without `n_threads` and `grid`, the default `n_threads_from="auto"` infers the
+launch from the first array argument, skipping scalars and zero-dimensional
+arrays. Arrays inside `CudaArguments`, `CudaStructArguments`, and struct values
+are searched in argument/field order. The effective block shape determines
+how many leading array axes are used: a 1D block uses `shape[0]` (one thread per
+row/particle), a 2D block uses `shape[:2]`, and a 3D block uses `shape[:3]`. These
+axes map to CUDA x, y, z. A `block=` override changes the inference dimensions.
+Missing arrays or insufficient array dimensions raise with instructions to
+give an explicit size.
 
 ```python
-push = xp.cuda.CudaKernel.from_file("push_cuda.cu", n_threads_from="first_array")
+push = xp.cuda.CudaKernel.from_file("push_cuda.cu")
 push(positions, velocities, e_field, dt)  # n_threads = positions.shape[0]
 ```
 
+Explicit `n_threads` or `grid` always takes precedence. Set `n_threads_from`
+(constructor argument or settable property) to a callable such as
+`lambda args: args[0].size` for flattened element kernels, or
+`lambda args: args[0].shape[::-1]` for kernels whose x index follows columns.
+`"first_array"` always uses the first axis; None disables inference and requires
+explicit launch sizes. The same defaults apply through `kernels.Kernel` and
+`kernel_testing.assert_kernels_agree`, and in CPU emulation.
+
 Nothing is launched if the grid has a zero dimension (e.g. `n_threads=0`).
-`kernel.launch_shape(n_threads=None, *, grid=None, block=None)` returns the
+`kernel.launch_shape(n_threads=None, *, grid=None, block=None, args=None)` returns the
 `(grid, block)` a call would use, e.g. to size a per-block output:
+
+Supply `args=(...)` to inspect an automatically inferred launch without running
+the kernel, e.g. `kernel.launch_shape(args=(positions, velocities, e_field, dt))`.
 
 ```python
 BLOCK_SUM = r"""
@@ -1521,8 +1539,9 @@ kernel(*args, n_threads=None, grid=None, block=None, shared_mem=0, stream=None)
 ```
 
 calls the kernel of the active backend. The launch arguments are passed to the
-CUDA kernel (`n_threads` or `grid` is required there) and ignored by the host
-kernel. Arguments implementing `KernelArguments` are replaced by their
+CUDA kernel and ignored by the host kernel. Omitted sizes use the CUDA kernel's
+shape-based default or its configured callback. Arguments implementing
+`KernelArguments` are replaced by their
 `__host_args__()` on the host path and flattened via `__cuda_args__()` on the
 CUDA path. `kernel.compile()` compiles the CUDA kernel now and returns whether
 there is one.
@@ -1571,8 +1590,8 @@ Properties: `name`, `host_kernel`, `cuda_kernel`, `has_cuda`, `missing_cuda`,
 * `Kernel.host_parameters()` falls back to the `__pyccel__/<module>.pyi` stub
   for a pyccel-compiled host function, so `check_signature()` works for
   compiled kernels.
-* `Kernel.__call__` needs no `n_threads` when the CUDA kernel has
-  `n_threads_from`.
+* `Kernel.__call__` infers thread counts by default; custom `n_threads_from`
+  callbacks are supported, and None requires explicit sizes.
 
 ## `kernels.KernelCatalog`
 

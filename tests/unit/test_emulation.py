@@ -24,7 +24,7 @@ def test_axpy():
     rng = np.random.default_rng(0)
     x, y = rng.random(1000), rng.random(1000)
     expected = y + 2.5 * x
-    emulate_cuda_kernel(CudaKernel(AXPY, "axpy"), 2.5, x, y, 1000, n_threads=1000)
+    emulate_cuda_kernel(CudaKernel(AXPY, "axpy"), 2.5, x, y, 1000)
     # the compiler may fuse y + a * x into one FMA, as NVRTC does by default
     np.testing.assert_allclose(y, expected, rtol=1e-15, atol=0)
     exact = rng.random(1000)
@@ -100,6 +100,20 @@ def test_2d_launch():
     kernel = CudaKernel(GRID_2D, "fill", block_size=(4, 2))
     emulate_cuda_kernel(kernel, a, n_threads=(7, 5))
     np.testing.assert_array_equal(a, 10 * np.arange(5)[:, None] + np.arange(7))
+
+
+def test_inferred_2d_launch_updates_every_element():
+    source = r"""
+    #include <cunumpy/array_view.cuh>
+    extern "C" __global__ void fill(Array2D<long long> a) {
+        long long i = blockIdx.x * (long long)blockDim.x + threadIdx.x;
+        long long j = blockIdx.y * (long long)blockDim.y + threadIdx.y;
+        if (i < a.shape[0] && j < a.shape[1]) a(i, j) = 10 * i + j;
+    }
+    """
+    array = np.zeros((5, 7), dtype=np.int64)
+    emulate_cuda_kernel(CudaKernel(source, "fill", block_size=(2, 4)), array)
+    np.testing.assert_array_equal(array, 10 * np.arange(5)[:, None] + np.arange(7))
 
 
 HISTOGRAM = r"""

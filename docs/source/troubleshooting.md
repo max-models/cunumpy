@@ -9,8 +9,8 @@ the real error. Typical causes: no CuPy installed, a CuPy wheel for a different
 CUDA major version, no GPU visible (`CUDA_VISIBLE_DEVICES` empty, a login node
 without GPUs), or a driver too old for the CUDA runtime.
 
-**`ARRAY_BACKEND=cupy` has no effect.** The variable is read once, when
-CuNumpy is first imported. Setting `os.environ["ARRAY_BACKEND"]` after the
+**`CUNUMPY_BACKEND=cupy` has no effect.** The variable is read once, when
+CuNumpy is first imported. Setting `os.environ["CUNUMPY_BACKEND"]` after the
 import does nothing; use `xp.set_backend()`.
 
 **Code still runs on the CPU after `set_backend("cupy")`.** Look for

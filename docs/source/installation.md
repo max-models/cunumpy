@@ -67,8 +67,16 @@ Tests that need a GPU are skipped automatically where CuPy is not functional.
 
 | Variable | Effect |
 | --- | --- |
-| `ARRAY_BACKEND=cupy` | start with the CuPy backend instead of NumPy (read once, at import) |
+| `CUNUMPY_BACKEND=cupy` | start with the CuPy backend instead of NumPy (read once, at import) |
 | `CUNUMPY_CUDA_DEBUG=1` | enable [CUDA debug mode](kernels/debugging.md) for all kernels |
+| `CUNUMPY_KERNEL_IMPLEMENTATION=numpy` | choose the host kernel implementation (read at import) |
+| `CUNUMPY_MPI=1` / `0` | require MPI / use serial MPI regardless of launcher detection |
+| `CUNUMPY_FAKE_CUPY=1` | install the strict CPU stand-in for CuPy for tests |
+| `CUNUMPY_REQUIRE_CUDA=1` | require a real usable GPU when starting the test suite (CI guard) |
+
+Use `CUNUMPY_BACKEND` in job scripts; the former `ARRAY_BACKEND` setting is no
+longer read. Standard toolchain/device variables such as `CXX` and
+`CUDA_VISIBLE_DEVICES` keep their standard meanings.
 
 MPI launchers also export node-local rank variables (`OMPI_COMM_WORLD_LOCAL_RANK`,
 `SLURM_LOCALID`, ...), which `xp.mpi.local_rank()` reads to pick a GPU per process.

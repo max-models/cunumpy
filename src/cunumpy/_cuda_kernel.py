@@ -1843,15 +1843,43 @@ class PyccelStructArguments(CudaStructArguments):
             self.pack()
 
 
-def _first_array_length(args: tuple[Any, ...]) -> int:
-    """``n_threads_from="first_array"``: the first axis of the first array argument."""
+def _array_shapes_in(args: Sequence[Any]) -> Iterator[tuple[int, ...]]:
+    """Array shapes in argument order, including supported argument objects."""
     for arg in args:
         shape = getattr(arg, "shape", None)
-        if shape is not None and len(shape) > 0 and hasattr(arg, "dtype"):
-            return int(shape[0])
-    raise TypeError(
-        "n_threads_from='first_array' needs an array argument; pass n_threads",
-    )
+        if shape is not None and hasattr(arg, "dtype"):
+            if len(shape) > 0:
+                yield tuple(shape)
+        elif isinstance(arg, CudaStructArguments) and hasattr(type(arg), "struct"):
+            yield from _array_shapes_in(
+                [getattr(arg, field.name, None) for field in arg.struct.fields]
+            )
+        elif isinstance(arg, CudaStructValue):
+            yield from _array_shapes_in(
+                [arg[field.name] for field in arg.struct.fields]
+            )
+        elif hasattr(arg, "__cuda_args__"):
+            yield from _array_shapes_in(arg.__cuda_args__())
+
+
+def _first_array_shape(args: Sequence[Any], dimensions: int) -> int | tuple[int, ...]:
+    shape = next(_array_shapes_in(args), None)
+    if shape is None:
+        raise TypeError(
+            "inferring n_threads needs an array argument; pass n_threads or grid, "
+            "or set n_threads_from to a callable",
+        )
+    if len(shape) < dimensions:
+        raise ValueError(
+            f"cannot infer {dimensions}D n_threads from the first array's shape "
+            f"{shape}; pass n_threads or grid, or set n_threads_from to a callable",
+        )
+    return int(shape[0]) if dimensions == 1 else shape[:dimensions]
+
+
+def _first_array_length(args: tuple[Any, ...]) -> int:
+    """``n_threads_from="first_array"``: the first axis of the first array argument."""
+    return typing.cast(int, _first_array_shape(args, 1))
 
 
 def _as_shape(value: int | Sequence[int], what: str) -> tuple[int, ...]:
@@ -1933,6 +1961,13 @@ class CudaKernel:
         (:func:`cunumpy.cuda.set_cuda_debug`, ``CUNUMPY_CUDA_DEBUG``) at every
         launch; True or False fix it for this kernel. The compile options are
         fixed when the kernel is compiled.
+    n_threads_from : {"auto", "first_array"} | callable | None
+        Default "auto" infers thread counts from the first array's leading
+        shape axes, matching the block dimensionality (1D: one thread per row).
+        Arrays in supported argument objects are included. "first_array"
+        always uses the first axis. A callable receives the positional argument
+        tuple; None requires an explicit launch size. Explicit `n_threads` or
+        `grid` overrides inference.
 
     Notes
     -----
@@ -1968,7 +2003,7 @@ class CudaKernel:
         template_args: Sequence[Any] | None = None,
         check_signature: bool = True,
         debug: bool | None = None,
-        n_threads_from: Callable[[tuple[Any, ...]], Any] | str | None = None,
+        n_threads_from: Callable[[tuple[Any, ...]], Any] | str | None = "auto",
         check_finite: bool = False,
     ) -> None:
         self._block = self._check_block(_as_shape(block_size, "block_size"))
@@ -2207,8 +2242,10 @@ class CudaKernel:
         `n_threads` nor `grid`, and returns `n_threads` (an integer or a
         tuple), e.g. ``lambda args: args[2].n_markers`` for a kernel whose
         third argument is a struct argument object with the marker count.
-        Set it to ``"first_array"`` for the most common case, one thread per
-        row: the length of the first array argument (its first axis).
+        Default ``"auto"`` uses the first array's leading axes, matching the
+        launch block dimensions; 1D launches use its first axis, one thread per
+        row. Supported argument objects are searched in field/argument order.
+        ``"first_array"`` always uses its first axis. None disables inference.
         Settable, also on the ``cuda_kernel`` of a :class:`~cunumpy.kernels.Kernel`.
         """
         return self._n_threads_from
@@ -2218,11 +2255,20 @@ class CudaKernel:
         self,
         value: Callable[[tuple[Any, ...]], Any] | str | None,
     ) -> None:
-        if value == "first_array":
+        automatic = isinstance(value, str) and value == "auto"
+        if automatic:
+            value = self._default_n_threads
+        elif isinstance(value, str) and value == "first_array":
             value = _first_array_length
         if value is not None and not callable(value):
-            raise TypeError("n_threads_from must be callable, 'first_array' or None")
+            raise TypeError(
+                "n_threads_from must be callable, 'auto', 'first_array' or None"
+            )
+        self._automatic_threads = automatic
         self._n_threads_from = value
+
+    def _default_n_threads(self, args: tuple[Any, ...]) -> int | tuple[int, ...]:
+        return _first_array_shape(args, len(self._block))
 
     @property
     def check_finite(self) -> bool:
@@ -2371,16 +2417,24 @@ class CudaKernel:
         *,
         grid: int | Sequence[int] | None = None,
         block: int | Sequence[int] | None = None,
+        args: Sequence[Any] | None = None,
     ) -> tuple[tuple[int, ...], tuple[int, ...]]:
         """The ``(grid, block)`` a call with these launch arguments uses.
 
-        See :meth:`__call__`. A grid with a zero dimension launches nothing.
+        Pass `args` to use default thread-count inference when neither
+        `n_threads` nor `grid` is given. See :meth:`__call__`. A grid with a
+        zero dimension launches nothing.
         """
         block_shape = (
             self._block
             if block is None
             else self._check_block(_as_shape(block, "block"))
         )
+        if n_threads is None and grid is None and args is not None:
+            if self._automatic_threads:
+                n_threads = _first_array_shape(args, len(block_shape))
+            elif self._n_threads_from is not None:
+                n_threads = self._n_threads_from(tuple(args))
         if (n_threads is None) == (grid is None):
             raise TypeError("pass exactly one of n_threads and grid")
 
@@ -2416,7 +2470,8 @@ class CudaKernel:
 
         The launch shape is given either by `n_threads` (the grid is the number
         of threads divided by the block size, rounded up, per dimension) or by
-        an explicit `grid`.
+        an explicit `grid`. With neither, it is inferred from the first array's
+        leading axes (or the configured `n_threads_from` callback).
 
         Parameters
         ----------
@@ -2447,9 +2502,9 @@ class CudaKernel:
             Dimensions, threads or static plus dynamic shared memory exceed
             this device/kernel's limits, or arrays/stream belong to another device.
         """
-        if n_threads is None and grid is None and self._n_threads_from is not None:
-            n_threads = self._n_threads_from(args)
-        grid_shape, block_shape = self.launch_shape(n_threads, grid=grid, block=block)
+        grid_shape, block_shape = self.launch_shape(
+            n_threads, grid=grid, block=block, args=args
+        )
         shared_mem = operator.index(shared_mem)
         if shared_mem < 0:
             raise ValueError(f"shared_mem must be non-negative, got {shared_mem}")

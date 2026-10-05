@@ -1,7 +1,7 @@
 variables:
   CUDA_IMAGE: "gitlab-registry.mpcdf.mpg.de/mpcdf/ci-module-image/nvhpcsdk_26:2026"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
-  ARRAY_BACKEND: "cupy"
+  CUNUMPY_BACKEND: "cupy"
   CUNUMPY_REQUIRE_CUDA: "1"
 
 stages:
@@ -42,6 +42,7 @@ gpu_sanitizers:
       compute-sanitizer --tool "$SANITIZER" --error-exitcode 1
       --target-processes all python3 -m pytest -q
       tests/unit/test_cuda_collectives.py
+      tests/unit/test_automatic_launch.py
       tests/unit/test_cuda_launch_limits.py
       tests/unit/test_reusable_streams.py
       tests/unit/test_staging.py

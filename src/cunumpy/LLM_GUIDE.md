@@ -30,7 +30,7 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
 2. **Do not use `np.<array function>` for data that should follow the backend.**
    `np.zeros` always allocates on the host. Using `numpy` for dtypes
    (`np.float64`), host-only I/O, and host-side random test data is fine.
-3. **Select the backend once, at the program entry point** (`ARRAY_BACKEND=cupy`
+3. **Select the backend once, at the program entry point** (`CUNUMPY_BACKEND=cupy`
    env var before import, or `xp.set_backend("cupy")` early). Library code must
    not call `set_backend()`. Use `with xp.use_backend(...)` for scoped switches
    (tests, CPU references). Backend state is process-global and not thread-safe.
@@ -84,7 +84,7 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
 | shared-memory budget of a block | `xp.cuda.max_shared_memory_per_block()` (48 KiB without a GPU) |
 | random numbers inside a kernel, equal on the host | `#include <cunumpy/random.cuh>`: `cunumpy_uniform(seed, particle_id, step)`; host: `xp.rng.philox_uniform(seed, ids, step)` |
 | sort points along a Z-curve / quadtree or octree nodes as contiguous ranges | `keys = xp.algorithms.morton_keys(pos, lower, upper, levels)`, `keys, order, pos = xp.algorithms.sort_by_key(keys, pos)`; in a kernel `#include <cunumpy/morton.cuh>`: `cunumpy_morton_key2(x, y, x0, y0, sx, sy, levels)` with `xp.algorithms.morton_scales(...)` |
-| one thread per marker without passing n_threads | `CudaKernel(..., n_threads_from="first_array")` |
+| one thread per marker without passing n_threads | default: `CudaKernel(...)` uses the first array's row count for 1D launches |
 | copy device arrays to the host for output without stalling | `xp.memory.HostStaging(shape, dtype)`: `c = staging.copy(a)` ... `c.result()` |
 | PIC recipes (compaction, sort by cell, MPI exchange, graphs) | docs guide "Particle codes" |
 | reproducible random numbers per MPI rank | `xp.rng.random_streams.seed(seed, rank=rank)`, then `xp.rng.random_streams.normal(...)` / `.generator()` |
@@ -270,7 +270,7 @@ ks = xp.cuda.CudaKernel.all_from_file("ops.cu")                 # dict name -> k
 k(*args, n_threads=None, grid=None, block=None, shared_mem=0, stream=None)
 k.compile(log_stream=None); k.recompile(log_stream=None)
 k.is_compiled  # successful compilation on the current CUDA device
-k.launch_shape(n_threads) -> (grid, block)
+k.launch_shape(n_threads=None, *, grid=None, block=None, args=None) -> (grid, block)
 k.included_headers; k.compile_options(); k.debug_active()
 xp.cuda.CudaKernelVariants(factory).get(*key); .compile_all(keys, jobs=1)
 xp.cuda.ctype_of(np.float64) == "double"
@@ -295,6 +295,11 @@ xp.cuda.cuda_include_dir()
   validates actual device/kernel dimensions, threads and static+dynamic shared
   memory. Use the returned CuPy raw kernel's attributes for resource inspection.
 * Creating a `CudaKernel` does not import CuPy; compiling needs a GPU.
+* Default `n_threads_from="auto"` infers from the first array, including arrays
+  in supported argument objects: 1D block -> shape[0], 2D -> shape[:2], 3D ->
+  shape[:3] (x, y, z). Per-call block overrides apply. Explicit n_threads/grid
+  wins; use a callback for flattened `.size`, reversed axes or another work
+  count, or None to require explicit sizes. Missing arrays/axes raise.
 
 Shipped CUDA headers (always on the include path):
 
@@ -434,7 +439,7 @@ from cunumpy.kernel_testing import parity_cases, check_parity
 @pytest.mark.parametrize("kernel", parity_cases(catalog))   # skip-marked if no test args
 def test_parity(kernel): check_parity(kernel)
 
-# without a GPU: CUNUMPY_FAKE_CUPY=1 ARRAY_BACKEND=cupy pytest   (fake CuPy: strict host
+# without a GPU: CUNUMPY_FAKE_CUPY=1 CUNUMPY_BACKEND=cupy pytest   (fake CuPy: strict host
 # stand-in, no kernel launches; fake_cupy_active(); requires_cupy skips)
 
 # argument classes with a pyccel host class: one object on both backends

@@ -154,7 +154,7 @@ class ArrayBackend:
 
 array_backend = ArrayBackend(
     backend=(
-        "cupy" if os.getenv("ARRAY_BACKEND", "numpy").lower() == "cupy" else "numpy"
+        "cupy" if os.getenv("CUNUMPY_BACKEND", "numpy").lower() == "cupy" else "numpy"
     ),
     verbose=False,
 )

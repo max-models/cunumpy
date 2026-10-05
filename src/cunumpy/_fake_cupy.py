@@ -22,7 +22,7 @@ matters for finding host/device bugs:
 Activate it before CuPy or cunumpy's backend is first used, either with the
 environment variable ``CUNUMPY_FAKE_CUPY=1`` (read when cunumpy is imported)
 or by calling :func:`install` first thing in a test session (e.g. in
-``conftest.py``). Then ``ARRAY_BACKEND=cupy`` or ``xp.set_backend("cupy")``
+``conftest.py``). Then ``CUNUMPY_BACKEND=cupy`` or ``xp.set_backend("cupy")``
 selects the fake like the real thing.
 
 Never installed with a real CuPy present (``install`` raises), never shipped
