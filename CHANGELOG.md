@@ -11,7 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rename `CUNUMPY_KERNEL_IMPLEMENTATION` to
   `CUNUMPY_HOST_KERNEL_IMPLEMENTATION` to make its host-only scope explicit.
   The former environment variable is no longer read; update job scripts.
-  The Python selection functions retain their names and CUDA dispatch is unchanged.
+  CUDA dispatch is unchanged.
+- Rename the `kernels` selection functions to `set_host_kernel_implementation`,
+  `get_host_kernel_implementation`, and `use_host_kernel_implementation`.
+  The former function names are removed without compatibility aliases.
 
 ### Added
 - CUDA launches infer thread counts from the first array by default, including

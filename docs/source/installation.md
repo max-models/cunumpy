@@ -81,8 +81,8 @@ longer read. Standard toolchain/device variables such as `CXX` and
 Use `CUNUMPY_HOST_KERNEL_IMPLEMENTATION` instead of the former
 `CUNUMPY_KERNEL_IMPLEMENTATION`, which is no longer read. This selects host
 implementations only; CUDA dispatch is unaffected. The Python functions
-`set_kernel_implementation`, `get_kernel_implementation`, and
-`use_kernel_implementation` retain their names.
+`set_host_kernel_implementation`, `get_host_kernel_implementation`, and
+`use_host_kernel_implementation` provide runtime selection under `xp.kernels`.
 
 MPI launchers also export node-local rank variables (`OMPI_COMM_WORLD_LOCAL_RANK`,
 `SLURM_LOCALID`, ...), which `xp.mpi.local_rank()` reads to pick a GPU per process.

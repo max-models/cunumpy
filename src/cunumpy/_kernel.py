@@ -550,7 +550,7 @@ _KERNEL_IMPLEMENTATION: str | None = _check_implementation(
 )
 
 
-def set_kernel_implementation(name: str | None) -> None:
+def set_host_kernel_implementation(name: str | None) -> None:
     """Choose the host implementation every kernel runs, like :func:`set_backend`.
 
     ``"pyccel"``, ``"numba"``, ``"numpy"`` or ``"python"`` (the uncompiled
@@ -566,22 +566,22 @@ def set_kernel_implementation(name: str | None) -> None:
     _KERNEL_IMPLEMENTATION = _check_implementation(name)
 
 
-def get_kernel_implementation() -> str | None:
-    """The host implementation set with :func:`set_kernel_implementation`, or None."""
+def get_host_kernel_implementation() -> str | None:
+    """The host implementation set with :func:`set_host_kernel_implementation`, or None."""
     return _KERNEL_IMPLEMENTATION
 
 
 @contextmanager
-def use_kernel_implementation(name: str | None) -> Iterator[None]:
+def use_host_kernel_implementation(name: str | None) -> Iterator[None]:
     """Temporarily choose the host implementation, like :func:`use_backend`.
 
-    For tests and benchmarks, e.g. ``with xp.kernels.use_kernel_implementation("numpy"):``
+    For tests and benchmarks, e.g. ``with xp.kernels.use_host_kernel_implementation("numpy"):``
     to run the code path of a machine without pyccel. The setting is global,
     not per thread.
     """
     global _KERNEL_IMPLEMENTATION
     previous = _KERNEL_IMPLEMENTATION
-    set_kernel_implementation(name)
+    set_host_kernel_implementation(name)
     try:
         yield
     finally:
@@ -594,7 +594,7 @@ class HostImplementations:
     Each implementation is loaded on first use (a pyccel build, an import) and
     may be unavailable (no compiler, numba not installed); a failed load is
     remembered with its exception. A call runs the implementation chosen with
-    :func:`set_kernel_implementation`, which must exist and load, or else the
+    :func:`set_host_kernel_implementation`, which must exist and load, or else the
     default: the first available of ``"pyccel"``, ``"numba"`` and ``"numpy"``,
     and as a last resort ``"python"``, with a warning (correct, but slow).
     Built by :meth:`Kernel.from_folder` from the files of a kernel folder.

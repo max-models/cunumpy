@@ -173,10 +173,10 @@ none is. Device arrays run the CUDA kernel. To choose, use the same pattern as
 for the array backend:
 
 ```python
-xp.kernels.set_kernel_implementation("numpy")  # like xp.set_backend
-with xp.kernels.use_kernel_implementation("numba"):  # like xp.use_backend
+xp.kernels.set_host_kernel_implementation("numpy")  # like xp.set_backend
+with xp.kernels.use_host_kernel_implementation("numba"):  # like xp.use_backend
     push(positions, velocities, dt)
-xp.kernels.set_kernel_implementation(None)  # back to the default
+xp.kernels.set_host_kernel_implementation(None)  # back to the default
 ```
 
 or `CUNUMPY_HOST_KERNEL_IMPLEMENTATION=numpy` for a whole run (read at import, like
@@ -218,7 +218,7 @@ catalog = xp.kernels.KernelCatalog.from_package(
 host implementations" above); `catalog["push"].host_kernel.kernel.available("pyccel")`
 reports whether the compiled version builds, and `catalog["push"].selected()`
 which version runs. To test the path of a machine without Pyccel, run the code
-inside `with xp.kernels.use_kernel_implementation("numpy"):` (or set
+inside `with xp.kernels.use_host_kernel_implementation("numpy"):` (or set
 `CUNUMPY_HOST_KERNEL_IMPLEMENTATION=numpy` for a whole run). Note that `epyccel` compiles again on every call; a
 code that compiles at run time usually keeps the builds in an on-disk cache
 keyed on the module source, so that only the first run after an edit compiles.

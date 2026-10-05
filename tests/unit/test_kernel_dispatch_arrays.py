@@ -381,27 +381,27 @@ def test_from_folder_needs_a_kernel_folder(self_declaring_package):
 def test_kernel_implementation_setting(self_declaring_package):
     kernel = self_declaring_package.kernel
     calls = importlib.import_module("demo_folder_pkg.scale.scale_numpy").CALLS
-    assert xp.kernels.get_kernel_implementation() is None
-    with xp.kernels.use_kernel_implementation("numpy"):
-        assert xp.kernels.get_kernel_implementation() == "numpy"
+    assert xp.kernels.get_host_kernel_implementation() is None
+    with xp.kernels.use_host_kernel_implementation("numpy"):
+        assert xp.kernels.get_host_kernel_implementation() == "numpy"
         assert kernel.selected() == "numpy"
         x = np.ones(2)
         kernel(x, 3.0, 2)
         assert x.tolist() == [3.0, 3.0] and calls == [2]
-        with xp.kernels.use_kernel_implementation("python"):
+        with xp.kernels.use_host_kernel_implementation("python"):
             kernel(x, 2.0, 2)  # the uncompiled pyccel source
         assert calls == [2] and x.tolist() == [6.0, 6.0]
-    assert xp.kernels.get_kernel_implementation() is None
+    assert xp.kernels.get_host_kernel_implementation() is None
     assert self_declaring_package.COMPILED == []  # pyccel never needed
     # a chosen implementation that cannot run raises instead of running another
-    xp.kernels.set_kernel_implementation("numba")
+    xp.kernels.set_host_kernel_implementation("numba")
     try:
         with pytest.raises(LookupError, match="'numba' implementation .* unavailable"):
             kernel(np.ones(1), 2.0, 1)
     finally:
-        xp.kernels.set_kernel_implementation(None)
+        xp.kernels.set_host_kernel_implementation(None)
     with pytest.raises(ValueError, match="kernel implementation must be one of"):
-        xp.kernels.set_kernel_implementation("fortran")
+        xp.kernels.set_host_kernel_implementation("fortran")
 
 
 def test_default_skips_unavailable_implementations():
@@ -467,14 +467,14 @@ def test_host_kernel_implementation_environment_variable(
         env["CUNUMPY_KERNEL_IMPLEMENTATION"] = legacy
     code = (
         "import os, cunumpy as xp\n"
-        f"assert xp.kernels.get_kernel_implementation() == {expected!r}\n"
+        f"assert xp.kernels.get_host_kernel_implementation() == {expected!r}\n"
         "os.environ['CUNUMPY_HOST_KERNEL_IMPLEMENTATION'] = 'python'\n"
-        f"assert xp.kernels.get_kernel_implementation() == {expected!r}\n"
-        "with xp.kernels.use_kernel_implementation('numpy'):\n"
-        "    assert xp.kernels.get_kernel_implementation() == 'numpy'\n"
-        f"assert xp.kernels.get_kernel_implementation() == {expected!r}\n"
-        "xp.kernels.set_kernel_implementation(None)\n"
-        "assert xp.kernels.get_kernel_implementation() is None\n"
+        f"assert xp.kernels.get_host_kernel_implementation() == {expected!r}\n"
+        "with xp.kernels.use_host_kernel_implementation('numpy'):\n"
+        "    assert xp.kernels.get_host_kernel_implementation() == 'numpy'\n"
+        f"assert xp.kernels.get_host_kernel_implementation() == {expected!r}\n"
+        "xp.kernels.set_host_kernel_implementation(None)\n"
+        "assert xp.kernels.get_host_kernel_implementation() is None\n"
     )
     subprocess.run([sys.executable, "-c", code], env=env, check=True)
 
@@ -483,7 +483,7 @@ def test_invalid_host_kernel_implementation_environment_variable():
     import os
     import subprocess
 
-    code = "import cunumpy as xp; print(xp.kernels.get_kernel_implementation())"
+    code = "import cunumpy as xp; print(xp.kernels.get_host_kernel_implementation())"
     env = {**os.environ, "CUNUMPY_HOST_KERNEL_IMPLEMENTATION": "fortran"}
     env["PYTHONPATH"] = str(Path(xp.__file__).parents[1])
     failed = subprocess.run(

@@ -268,7 +268,7 @@ class Kernel:
         * ``<name><cuda_suffix>``: the CUDA kernel.
 
         The host implementations form a :class:`~cunumpy.kernels.HostImplementations`:
-        a call runs the one set with :func:`~cunumpy.kernels.set_kernel_implementation`,
+        a call runs the one set with :func:`~cunumpy.kernels.set_host_kernel_implementation`,
         or by default the first available of pyccel, numba and NumPy. The
         folder's own ``__init__.py`` can declare its kernel with this method, so
         that the kernel is imported from where it is written::
@@ -516,7 +516,7 @@ class Kernel:
         """The implementation a call with host (or `device`) arguments runs now.
 
         For host arguments: the setting of
-        :func:`~cunumpy.kernels.set_kernel_implementation` or the default (loads it), or
+        :func:`~cunumpy.kernels.set_host_kernel_implementation` or the default (loads it), or
         ``"host"`` for a host kernel that is not a
         :class:`~cunumpy.kernels.HostImplementations`. For device arguments ``"cuda"``,
         or ``"host"`` if there is no CUDA kernel and ``missing_cuda="fallback"``.
