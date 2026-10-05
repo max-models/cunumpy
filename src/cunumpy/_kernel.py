@@ -546,7 +546,7 @@ def _check_implementation(name: str | None) -> str | None:
 
 
 _KERNEL_IMPLEMENTATION: str | None = _check_implementation(
-    os.environ.get("CUNUMPY_KERNEL_IMPLEMENTATION", "").strip().lower() or None,
+    os.environ.get("CUNUMPY_HOST_KERNEL_IMPLEMENTATION", "").strip().lower() or None,
 )
 
 
@@ -559,7 +559,7 @@ def set_kernel_implementation(name: str | None) -> None:
     or whose chosen implementation is unavailable (e.g. pyccel failed to
     compile), raises instead of running another one. CUDA kernels are not
     affected: device arrays always run the CUDA version. The environment
-    variable ``CUNUMPY_KERNEL_IMPLEMENTATION`` (read when cunumpy is imported)
+    variable ``CUNUMPY_HOST_KERNEL_IMPLEMENTATION`` (read when cunumpy is imported)
     sets it for a whole run.
     """
     global _KERNEL_IMPLEMENTATION

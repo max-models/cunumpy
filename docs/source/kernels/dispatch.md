@@ -179,7 +179,7 @@ with xp.kernels.use_kernel_implementation("numba"):  # like xp.use_backend
 xp.kernels.set_kernel_implementation(None)  # back to the default
 ```
 
-or `CUNUMPY_KERNEL_IMPLEMENTATION=numpy` for a whole run (read at import, like
+or `CUNUMPY_HOST_KERNEL_IMPLEMENTATION=numpy` for a whole run (read at import, like
 `CUNUMPY_BACKEND`). A chosen implementation that a kernel does not have, or
 cannot load, raises `LookupError` instead of running another one: a benchmark
 of numba never silently measures NumPy. `kernel.implementations` lists the
@@ -219,7 +219,7 @@ host implementations" above); `catalog["push"].host_kernel.kernel.available("pyc
 reports whether the compiled version builds, and `catalog["push"].selected()`
 which version runs. To test the path of a machine without Pyccel, run the code
 inside `with xp.kernels.use_kernel_implementation("numpy"):` (or set
-`CUNUMPY_KERNEL_IMPLEMENTATION=numpy` for a whole run). Note that `epyccel` compiles again on every call; a
+`CUNUMPY_HOST_KERNEL_IMPLEMENTATION=numpy` for a whole run). Note that `epyccel` compiles again on every call; a
 code that compiles at run time usually keeps the builds in an on-disk cache
 keyed on the module source, so that only the first run after an edit compiles.
 

@@ -4,6 +4,7 @@ import importlib
 import sys
 import textwrap
 import warnings
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -437,21 +438,54 @@ def test_default_skips_unavailable_implementations():
         HostImplementations("scale", {"python": lambda: scale, "julia": lambda: scale})
 
 
-def test_kernel_implementation_environment_variable():
+@pytest.mark.parametrize(
+    "implementation,legacy,expected",
+    [
+        (None, None, None),
+        ("", None, None),
+        ("pyccel", None, "pyccel"),
+        ("numba", None, "numba"),
+        (" NuMpY ", None, "numpy"),
+        ("python", None, "python"),
+        (None, "numpy", None),
+        ("numpy", "fortran", "numpy"),
+    ],
+)
+def test_host_kernel_implementation_environment_variable(
+    implementation, legacy, expected
+):
+    import os
+    import subprocess
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(Path(xp.__file__).parents[1])
+    env.pop("CUNUMPY_HOST_KERNEL_IMPLEMENTATION", None)
+    env.pop("CUNUMPY_KERNEL_IMPLEMENTATION", None)
+    if implementation is not None:
+        env["CUNUMPY_HOST_KERNEL_IMPLEMENTATION"] = implementation
+    if legacy is not None:
+        env["CUNUMPY_KERNEL_IMPLEMENTATION"] = legacy
+    code = (
+        "import os, cunumpy as xp\n"
+        f"assert xp.kernels.get_kernel_implementation() == {expected!r}\n"
+        "os.environ['CUNUMPY_HOST_KERNEL_IMPLEMENTATION'] = 'python'\n"
+        f"assert xp.kernels.get_kernel_implementation() == {expected!r}\n"
+        "with xp.kernels.use_kernel_implementation('numpy'):\n"
+        "    assert xp.kernels.get_kernel_implementation() == 'numpy'\n"
+        f"assert xp.kernels.get_kernel_implementation() == {expected!r}\n"
+        "xp.kernels.set_kernel_implementation(None)\n"
+        "assert xp.kernels.get_kernel_implementation() is None\n"
+    )
+    subprocess.run([sys.executable, "-c", code], env=env, check=True)
+
+
+def test_invalid_host_kernel_implementation_environment_variable():
     import os
     import subprocess
 
     code = "import cunumpy as xp; print(xp.kernels.get_kernel_implementation())"
-    env = {**os.environ, "CUNUMPY_KERNEL_IMPLEMENTATION": "numpy"}
-    printed = subprocess.run(
-        [sys.executable, "-c", code],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    assert printed.strip() == "numpy"
-    env["CUNUMPY_KERNEL_IMPLEMENTATION"] = "fortran"
+    env = {**os.environ, "CUNUMPY_HOST_KERNEL_IMPLEMENTATION": "fortran"}
+    env["PYTHONPATH"] = str(Path(xp.__file__).parents[1])
     failed = subprocess.run(
         [sys.executable, "-c", code],
         env=env,

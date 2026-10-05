@@ -78,7 +78,7 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
 | host arrays reach kernels while CuPy is active | `Kernel(..., dispatch="arrays")` / `from_package(..., dispatch="arrays")`: CUDA only for device arguments |
 | one kernel folder declares its kernel in its own `__init__.py` | `kernel = xp.kernels.Kernel.from_folder(__name__, host_suffix="_pyccel", compile_host=..., dispatch="arrays")`; `<name>_numba.py`, `<name>_numpy.py` in the folder are further host implementations |
 | bring a `dispatch="arrays"` kernel's arguments to the side of the main array | `xp.kernels.as_kernel_array(a, like=grid, dtype=float)`; outputs: `with xp.kernels.kernel_output(out, like=grid, dtype=float) as buf:` |
-| choose the host implementation (pyccel/numba/numpy/python) | `xp.kernels.set_kernel_implementation("numpy")`, `with xp.kernels.use_kernel_implementation(...)`, `CUNUMPY_KERNEL_IMPLEMENTATION=numpy`; default: first available of pyccel, numba, numpy; `kernel.selected()` |
+| choose the host implementation (pyccel/numba/numpy/python) | `xp.kernels.set_kernel_implementation("numpy")`, `with xp.kernels.use_kernel_implementation(...)`, `CUNUMPY_HOST_KERNEL_IMPLEMENTATION=numpy`; default: first available of pyccel, numba, numpy; `kernel.selected()` |
 | check host and CUDA kernels take the same parameters | `catalog.check_signatures()` (in a unit test) |
 | test a CUDA kernel's arithmetic without a GPU | `cunumpy.kernel_testing.emulate_cuda_kernel(kernel, *numpy_args, n_threads=n)` (C++ compiler; shared memory and __syncthreads ok, no warp ops; `shared_mem=` for extern shared) |
 | shared-memory budget of a block | `xp.cuda.max_shared_memory_per_block()` (48 KiB without a GPU) |

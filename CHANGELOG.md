@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Rename `CUNUMPY_KERNEL_IMPLEMENTATION` to
+  `CUNUMPY_HOST_KERNEL_IMPLEMENTATION` to make its host-only scope explicit.
+  The former environment variable is no longer read; update job scripts.
+  The Python selection functions retain their names and CUDA dispatch is unchanged.
+
 ### Added
 - CUDA launches infer thread counts from the first array by default, including
   arrays in argument objects. 1D blocks use rows; multidimensional blocks use

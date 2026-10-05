@@ -1735,7 +1735,7 @@ or raises `LookupError` (missing, or failed to load with the error as cause),
 uncompiled function, `build()` loads the default now. A call runs
 `selected()`: the implementation set with `set_kernel_implementation(name)` (or
 `use_kernel_implementation`, or the environment variable
-`CUNUMPY_KERNEL_IMPLEMENTATION` read at import), which raises if the kernel
+`CUNUMPY_HOST_KERNEL_IMPLEMENTATION` read at import), which raises if the kernel
 lacks it or cannot load it, else the default: the first available of pyccel,
 numba and NumPy, and else `"python"` with a `RuntimeWarning` (once).
 `get_kernel_implementation()` reads the setting; `None` is the default. The
