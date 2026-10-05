@@ -81,6 +81,40 @@ def test_backend_dispatch_sends_everything_to_cuda_on_cupy(fake_gpu):
     assert x.tolist() == [1.0] * 4
 
 
+@pytest.mark.parametrize("dispatch", ["backend", "arrays"])
+def test_explicit_device_implementation_dispatch(fake_gpu, dispatch):
+    kernel = Kernel(scale, CudaKernel(SCALE_CUDA, "scale"), dispatch=dispatch)
+    missing = Kernel(scale, dispatch=dispatch, missing_cuda="fallback")
+    x = FakeDeviceArray(4)
+    with xp.kernels.use_device_kernel_implementation("cuda"):
+        assert kernel.selected(device=True) == "cuda"
+        kernel(x, 3.0, 4)
+        assert [name for name, *_ in fake_gpu] == ["scale"]
+        with pytest.raises(LookupError, match="has no 'cuda' implementation"):
+            missing(x, 3.0, 4)
+        with pytest.raises(LookupError, match="has no 'cuda' implementation"):
+            missing.selected(device=True)
+    with (
+        xp.kernels.use_device_kernel_implementation(None),
+        pytest.warns(RuntimeWarning, match="No CUDA version"),
+    ):
+        assert missing.selected(device=True) == "host"
+
+
+def test_device_implementation_does_not_change_host_selection(fake_gpu):
+    with (
+        xp.use_backend("numpy"),
+        xp.kernels.use_host_kernel_implementation("python"),
+        xp.kernels.use_device_kernel_implementation("cuda"),
+    ):
+        kernel = Kernel(scale, dispatch="arrays")
+        x = np.ones(4)
+        kernel(x, 3.0, 4)
+        assert x.tolist() == [3.0] * 4 and fake_gpu == []
+        assert xp.get_backend() == "numpy"
+        assert xp.kernels.get_host_kernel_implementation() == "python"
+
+
 def test_arrays_dispatch_runs_device_arrays_on_the_gpu(fake_gpu):
     kernel = Kernel(scale, CudaKernel(SCALE_CUDA, "scale"), dispatch="arrays")
     x = FakeDeviceArray(4)

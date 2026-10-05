@@ -187,6 +187,25 @@ implementations, `kernel.selected()` names the one a call with host arrays runs
 now (`kernel.selected(device=True)` for device arrays), and
 `kernel.host_kernel.kernel.errors` holds why an implementation failed to load.
 
+### Device implementation selection
+
+Currently CUDA is the only device implementation. To require it explicitly:
+
+```python
+xp.kernels.set_device_kernel_implementation("cuda")
+assert xp.kernels.get_device_kernel_implementation() == "cuda"
+with xp.kernels.use_device_kernel_implementation(None):
+    push(positions, velocities, dt)  # automatic selection, normal fallback policy
+xp.kernels.set_device_kernel_implementation(None)  # restore automatic selection
+```
+
+`CUNUMPY_DEVICE_KERNEL_IMPLEMENTATION=cuda` sets the same choice at import.
+Unsupported values raise `ValueError`. An explicit CUDA choice raises
+`LookupError` for a missing device implementation, including kernels configured
+with `missing_cuda="fallback"`. The default (`None`, or an unset/empty environment
+variable) preserves that fallback policy. This setting controls device dispatch;
+the array backend and host implementation are selected independently.
+
 ## Compiled Pyccel host kernels
 
 By default the host kernel is the Python function itself, which is fine for

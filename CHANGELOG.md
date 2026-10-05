@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The former function names are removed without compatibility aliases.
 
 ### Added
+- Device implementation selection via `kernels.set_device_kernel_implementation`,
+  `get_device_kernel_implementation`, `use_device_kernel_implementation`, and
+  `CUNUMPY_DEVICE_KERNEL_IMPLEMENTATION`. Accept `"cuda"` or automatic selection
+  (`None`); explicit CUDA selection rejects missing CUDA kernels instead of
+  falling back to the host. Unsupported implementation names raise.
 - CUDA launches infer thread counts from the first array by default, including
   arrays in argument objects. 1D blocks use rows; multidimensional blocks use
   matching leading shape axes. Explicit sizes and callbacks override inference.

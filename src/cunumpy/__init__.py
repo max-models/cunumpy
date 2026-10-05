@@ -33,7 +33,10 @@ _MOVED = {
         (
             name
             for name in kernels.__all__
-            if not name.endswith("_host_kernel_implementation")
+            if not name.endswith(
+                ("_host_kernel_implementation", "_device_kernel_implementation")
+            )
+            and name != "DEVICE_IMPLEMENTATIONS"
         ),
         "kernels",
     ),

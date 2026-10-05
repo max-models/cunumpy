@@ -588,6 +588,53 @@ def use_host_kernel_implementation(name: str | None) -> Iterator[None]:
         _KERNEL_IMPLEMENTATION = previous
 
 
+DEVICE_IMPLEMENTATIONS = ("cuda",)
+
+
+def _check_device_implementation(name: str | None) -> str | None:
+    if name is not None and name not in DEVICE_IMPLEMENTATIONS:
+        raise ValueError(
+            f"device kernel implementation must be one of {DEVICE_IMPLEMENTATIONS} "
+            f"or None, got {name!r}",
+        )
+    return name
+
+
+_DEVICE_KERNEL_IMPLEMENTATION = _check_device_implementation(
+    os.environ.get("CUNUMPY_DEVICE_KERNEL_IMPLEMENTATION", "").strip().lower() or None,
+)
+
+
+def set_device_kernel_implementation(name: str | None) -> None:
+    """Choose the device implementation for dispatched kernels.
+
+    Currently only ``"cuda"`` is supported; ``None`` restores automatic selection.
+    Explicit CUDA selection raises if a kernel has no CUDA implementation, even
+    with ``missing_cuda="fallback"``. This does not switch the array backend or
+    affect host calls or direct CudaKernel calls. The import-time environment
+    variable ``CUNUMPY_DEVICE_KERNEL_IMPLEMENTATION`` initializes this setting.
+    """
+    global _DEVICE_KERNEL_IMPLEMENTATION
+    _DEVICE_KERNEL_IMPLEMENTATION = _check_device_implementation(name)
+
+
+def get_device_kernel_implementation() -> str | None:
+    """Return the requested device implementation, or None for automatic selection."""
+    return _DEVICE_KERNEL_IMPLEMENTATION
+
+
+@contextmanager
+def use_device_kernel_implementation(name: str | None) -> Iterator[None]:
+    """Temporarily choose the device implementation; global, not per thread."""
+    global _DEVICE_KERNEL_IMPLEMENTATION
+    previous = _DEVICE_KERNEL_IMPLEMENTATION
+    set_device_kernel_implementation(name)
+    try:
+        yield
+    finally:
+        _DEVICE_KERNEL_IMPLEMENTATION = previous
+
+
 class HostImplementations:
     """The host implementations of one kernel, run by name or by the default rule.
 
