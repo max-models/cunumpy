@@ -69,7 +69,8 @@ Tests that need a GPU are skipped automatically where CuPy is not functional.
 | --- | --- |
 | `CUNUMPY_BACKEND=cupy` | start with the CuPy backend instead of NumPy (read once, at import) |
 | `CUNUMPY_CUDA_DEBUG=1` | enable [CUDA debug mode](kernels/debugging.md) for all kernels |
-| `CUNUMPY_KERNEL_IMPLEMENTATION=numpy` | choose the host kernel implementation (read at import) |
+| `CUNUMPY_HOST_KERNEL_IMPLEMENTATION=numpy` | choose the host kernel implementation (read at import) |
+| `CUNUMPY_DEVICE_KERNEL_IMPLEMENTATION=cuda` | require CUDA for device kernel dispatch (read at import); unset allows the kernel's configured fallback |
 | `CUNUMPY_MPI=1` / `0` | require MPI / use serial MPI regardless of launcher detection |
 | `CUNUMPY_FAKE_CUPY=1` | install the strict CPU stand-in for CuPy for tests |
 | `CUNUMPY_REQUIRE_CUDA=1` | require a real usable GPU when starting the test suite (CI guard) |
@@ -77,6 +78,12 @@ Tests that need a GPU are skipped automatically where CuPy is not functional.
 Use `CUNUMPY_BACKEND` in job scripts; the former `ARRAY_BACKEND` setting is no
 longer read. Standard toolchain/device variables such as `CXX` and
 `CUDA_VISIBLE_DEVICES` keep their standard meanings.
+
+Use `CUNUMPY_HOST_KERNEL_IMPLEMENTATION` instead of the former
+`CUNUMPY_KERNEL_IMPLEMENTATION`, which is no longer read. This selects host
+implementations only; CUDA dispatch is unaffected. The Python functions
+`set_host_kernel_implementation`, `get_host_kernel_implementation`, and
+`use_host_kernel_implementation` provide runtime selection under `xp.kernels`.
 
 MPI launchers also export node-local rank variables (`OMPI_COMM_WORLD_LOCAL_RANK`,
 `SLURM_LOCALID`, ...), which `xp.mpi.local_rank()` reads to pick a GPU per process.

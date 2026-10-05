@@ -546,11 +546,11 @@ def _check_implementation(name: str | None) -> str | None:
 
 
 _KERNEL_IMPLEMENTATION: str | None = _check_implementation(
-    os.environ.get("CUNUMPY_KERNEL_IMPLEMENTATION", "").strip().lower() or None,
+    os.environ.get("CUNUMPY_HOST_KERNEL_IMPLEMENTATION", "").strip().lower() or None,
 )
 
 
-def set_kernel_implementation(name: str | None) -> None:
+def set_host_kernel_implementation(name: str | None) -> None:
     """Choose the host implementation every kernel runs, like :func:`set_backend`.
 
     ``"pyccel"``, ``"numba"``, ``"numpy"`` or ``"python"`` (the uncompiled
@@ -559,33 +559,80 @@ def set_kernel_implementation(name: str | None) -> None:
     or whose chosen implementation is unavailable (e.g. pyccel failed to
     compile), raises instead of running another one. CUDA kernels are not
     affected: device arrays always run the CUDA version. The environment
-    variable ``CUNUMPY_KERNEL_IMPLEMENTATION`` (read when cunumpy is imported)
+    variable ``CUNUMPY_HOST_KERNEL_IMPLEMENTATION`` (read when cunumpy is imported)
     sets it for a whole run.
     """
     global _KERNEL_IMPLEMENTATION
     _KERNEL_IMPLEMENTATION = _check_implementation(name)
 
 
-def get_kernel_implementation() -> str | None:
-    """The host implementation set with :func:`set_kernel_implementation`, or None."""
+def get_host_kernel_implementation() -> str | None:
+    """The host implementation set with :func:`set_host_kernel_implementation`, or None."""
     return _KERNEL_IMPLEMENTATION
 
 
 @contextmanager
-def use_kernel_implementation(name: str | None) -> Iterator[None]:
+def use_host_kernel_implementation(name: str | None) -> Iterator[None]:
     """Temporarily choose the host implementation, like :func:`use_backend`.
 
-    For tests and benchmarks, e.g. ``with xp.kernels.use_kernel_implementation("numpy"):``
+    For tests and benchmarks, e.g. ``with xp.kernels.use_host_kernel_implementation("numpy"):``
     to run the code path of a machine without pyccel. The setting is global,
     not per thread.
     """
     global _KERNEL_IMPLEMENTATION
     previous = _KERNEL_IMPLEMENTATION
-    set_kernel_implementation(name)
+    set_host_kernel_implementation(name)
     try:
         yield
     finally:
         _KERNEL_IMPLEMENTATION = previous
+
+
+DEVICE_IMPLEMENTATIONS = ("cuda",)
+
+
+def _check_device_implementation(name: str | None) -> str | None:
+    if name is not None and name not in DEVICE_IMPLEMENTATIONS:
+        raise ValueError(
+            f"device kernel implementation must be one of {DEVICE_IMPLEMENTATIONS} "
+            f"or None, got {name!r}",
+        )
+    return name
+
+
+_DEVICE_KERNEL_IMPLEMENTATION = _check_device_implementation(
+    os.environ.get("CUNUMPY_DEVICE_KERNEL_IMPLEMENTATION", "").strip().lower() or None,
+)
+
+
+def set_device_kernel_implementation(name: str | None) -> None:
+    """Choose the device implementation for dispatched kernels.
+
+    Currently only ``"cuda"`` is supported; ``None`` restores automatic selection.
+    Explicit CUDA selection raises if a kernel has no CUDA implementation, even
+    with ``missing_cuda="fallback"``. This does not switch the array backend or
+    affect host calls or direct CudaKernel calls. The import-time environment
+    variable ``CUNUMPY_DEVICE_KERNEL_IMPLEMENTATION`` initializes this setting.
+    """
+    global _DEVICE_KERNEL_IMPLEMENTATION
+    _DEVICE_KERNEL_IMPLEMENTATION = _check_device_implementation(name)
+
+
+def get_device_kernel_implementation() -> str | None:
+    """Return the requested device implementation, or None for automatic selection."""
+    return _DEVICE_KERNEL_IMPLEMENTATION
+
+
+@contextmanager
+def use_device_kernel_implementation(name: str | None) -> Iterator[None]:
+    """Temporarily choose the device implementation; global, not per thread."""
+    global _DEVICE_KERNEL_IMPLEMENTATION
+    previous = _DEVICE_KERNEL_IMPLEMENTATION
+    set_device_kernel_implementation(name)
+    try:
+        yield
+    finally:
+        _DEVICE_KERNEL_IMPLEMENTATION = previous
 
 
 class HostImplementations:
@@ -594,7 +641,7 @@ class HostImplementations:
     Each implementation is loaded on first use (a pyccel build, an import) and
     may be unavailable (no compiler, numba not installed); a failed load is
     remembered with its exception. A call runs the implementation chosen with
-    :func:`set_kernel_implementation`, which must exist and load, or else the
+    :func:`set_host_kernel_implementation`, which must exist and load, or else the
     default: the first available of ``"pyccel"``, ``"numba"`` and ``"numpy"``,
     and as a last resort ``"python"``, with a warning (correct, but slow).
     Built by :meth:`Kernel.from_folder` from the files of a kernel folder.

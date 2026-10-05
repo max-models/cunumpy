@@ -173,19 +173,38 @@ none is. Device arrays run the CUDA kernel. To choose, use the same pattern as
 for the array backend:
 
 ```python
-xp.kernels.set_kernel_implementation("numpy")  # like xp.set_backend
-with xp.kernels.use_kernel_implementation("numba"):  # like xp.use_backend
+xp.kernels.set_host_kernel_implementation("numpy")  # like xp.set_backend
+with xp.kernels.use_host_kernel_implementation("numba"):  # like xp.use_backend
     push(positions, velocities, dt)
-xp.kernels.set_kernel_implementation(None)  # back to the default
+xp.kernels.set_host_kernel_implementation(None)  # back to the default
 ```
 
-or `CUNUMPY_KERNEL_IMPLEMENTATION=numpy` for a whole run (read at import, like
+or `CUNUMPY_HOST_KERNEL_IMPLEMENTATION=numpy` for a whole run (read at import, like
 `CUNUMPY_BACKEND`). A chosen implementation that a kernel does not have, or
 cannot load, raises `LookupError` instead of running another one: a benchmark
 of numba never silently measures NumPy. `kernel.implementations` lists the
 implementations, `kernel.selected()` names the one a call with host arrays runs
 now (`kernel.selected(device=True)` for device arrays), and
 `kernel.host_kernel.kernel.errors` holds why an implementation failed to load.
+
+### Device implementation selection
+
+Currently CUDA is the only device implementation. To require it explicitly:
+
+```python
+xp.kernels.set_device_kernel_implementation("cuda")
+assert xp.kernels.get_device_kernel_implementation() == "cuda"
+with xp.kernels.use_device_kernel_implementation(None):
+    push(positions, velocities, dt)  # automatic selection, normal fallback policy
+xp.kernels.set_device_kernel_implementation(None)  # restore automatic selection
+```
+
+`CUNUMPY_DEVICE_KERNEL_IMPLEMENTATION=cuda` sets the same choice at import.
+Unsupported values raise `ValueError`. An explicit CUDA choice raises
+`LookupError` for a missing device implementation, including kernels configured
+with `missing_cuda="fallback"`. The default (`None`, or an unset/empty environment
+variable) preserves that fallback policy. This setting controls device dispatch;
+the array backend and host implementation are selected independently.
 
 ## Compiled Pyccel host kernels
 
@@ -218,8 +237,8 @@ catalog = xp.kernels.KernelCatalog.from_package(
 host implementations" above); `catalog["push"].host_kernel.kernel.available("pyccel")`
 reports whether the compiled version builds, and `catalog["push"].selected()`
 which version runs. To test the path of a machine without Pyccel, run the code
-inside `with xp.kernels.use_kernel_implementation("numpy"):` (or set
-`CUNUMPY_KERNEL_IMPLEMENTATION=numpy` for a whole run). Note that `epyccel` compiles again on every call; a
+inside `with xp.kernels.use_host_kernel_implementation("numpy"):` (or set
+`CUNUMPY_HOST_KERNEL_IMPLEMENTATION=numpy` for a whole run). Note that `epyccel` compiles again on every call; a
 code that compiles at run time usually keeps the builds in an on-disk cache
 keyed on the module source, so that only the first run after an edit compiles.
 

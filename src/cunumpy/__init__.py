@@ -29,7 +29,17 @@ from cunumpy.xp import (
 # moved to. They still resolve (with a DeprecationWarning) until cunumpy 0.6.
 _MOVED = {
     **dict.fromkeys(cuda.__all__, "cuda"),
-    **dict.fromkeys(kernels.__all__, "kernels"),
+    **dict.fromkeys(
+        (
+            name
+            for name in kernels.__all__
+            if not name.endswith(
+                ("_host_kernel_implementation", "_device_kernel_implementation")
+            )
+            and name != "DEVICE_IMPLEMENTATIONS"
+        ),
+        "kernels",
+    ),
     **dict.fromkeys(rng.__all__, "rng"),
     **dict.fromkeys(algorithms.__all__, "algorithms"),
     # the names of cunumpy.mpi that were at the top level (not the later ones)

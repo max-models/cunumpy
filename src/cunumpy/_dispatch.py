@@ -39,6 +39,7 @@ from cunumpy._kernel import (
     CompiledHostKernel,
     HostImplementations,
     PyccelKernel,
+    get_device_kernel_implementation,
     resolve_host_args,
 )
 from cunumpy._transfers import _ACTIVE as _COUNTERS
@@ -268,7 +269,7 @@ class Kernel:
         * ``<name><cuda_suffix>``: the CUDA kernel.
 
         The host implementations form a :class:`~cunumpy.kernels.HostImplementations`:
-        a call runs the one set with :func:`~cunumpy.kernels.set_kernel_implementation`,
+        a call runs the one set with :func:`~cunumpy.kernels.set_host_kernel_implementation`,
         or by default the first available of pyccel, numba and NumPy. The
         folder's own ``__init__.py`` can declare its kernel with this method, so
         that the kernel is imported from where it is written::
@@ -516,10 +517,12 @@ class Kernel:
         """The implementation a call with host (or `device`) arguments runs now.
 
         For host arguments: the setting of
-        :func:`~cunumpy.kernels.set_kernel_implementation` or the default (loads it), or
+        :func:`~cunumpy.kernels.set_host_kernel_implementation` or the default (loads it), or
         ``"host"`` for a host kernel that is not a
         :class:`~cunumpy.kernels.HostImplementations`. For device arguments ``"cuda"``,
         or ``"host"`` if there is no CUDA kernel and ``missing_cuda="fallback"``.
+        Explicit CUDA selection rejects missing CUDA implementations with
+        ``LookupError``, including when host fallback is configured.
         Useful to check that a run does not use a slow path.
         """
         if device:
@@ -536,6 +539,8 @@ class Kernel:
 
         Raises
         ------
+        LookupError
+            On the CuPy backend, if CUDA is explicitly selected but missing.
         NotImplementedError
             On the CuPy backend, if there is no CUDA kernel and
             ``missing_cuda="raise"``.
@@ -545,9 +550,14 @@ class Kernel:
         return self._device_kernel()
 
     def _device_kernel(self) -> PyccelKernel | CudaKernel:
-        """The CUDA kernel, or what ``missing_cuda`` says without one."""
+        """Resolve the device selection, honoring fallback only in automatic mode."""
         if self._cuda_kernel is not None:
             return self._cuda_kernel
+        if get_device_kernel_implementation() == "cuda":
+            raise LookupError(
+                f"kernel {self._name!r} has no 'cuda' implementation "
+                "(explicitly selected device implementation)",
+            )
         if self._missing_cuda == "raise":
             expected = (
                 "" if self._cuda_path is None else f" (expected {self._cuda_path})"

@@ -1713,7 +1713,7 @@ files, as loaders by name (`{"numpy": lambda: push_numpy}`). Takes the options o
 no host kernel module and `ModuleNotFoundError` if `package` is not a package.
 `kernel.selected(device=True)` names the implementation for device arguments.
 
-## `kernels.HostImplementations`, `kernels.set_kernel_implementation`
+## `kernels.HostImplementations`, `kernels.set_host_kernel_implementation`
 
 ```python
 host = xp.kernels.HostImplementations(
@@ -1721,8 +1721,8 @@ host = xp.kernels.HostImplementations(
     {"pyccel": load_compiled, "numpy": lambda: push_numpy, "python": lambda: push},
 )
 host(*args)  # the default implementation
-xp.kernels.set_kernel_implementation("numpy")  # every kernel: like xp.set_backend
-with xp.kernels.use_kernel_implementation("python"):  # like xp.use_backend
+xp.kernels.set_host_kernel_implementation("numpy")  # every kernel: like xp.set_backend
+with xp.kernels.use_host_kernel_implementation("python"):  # like xp.use_backend
     host(*args)
 ```
 
@@ -1733,13 +1733,39 @@ Loaded on first use; `available(name)` loads and reports, `get(name)` returns it
 or raises `LookupError` (missing, or failed to load with the error as cause),
 `errors` maps names to load errors, `names` lists them, `python` is the
 uncompiled function, `build()` loads the default now. A call runs
-`selected()`: the implementation set with `set_kernel_implementation(name)` (or
-`use_kernel_implementation`, or the environment variable
-`CUNUMPY_KERNEL_IMPLEMENTATION` read at import), which raises if the kernel
+`selected()`: the implementation set with `set_host_kernel_implementation(name)` (or
+`use_host_kernel_implementation`, or the environment variable
+`CUNUMPY_HOST_KERNEL_IMPLEMENTATION` read at import), which raises if the kernel
 lacks it or cannot load it, else the default: the first available of pyccel,
 numba and NumPy, and else `"python"` with a `RuntimeWarning` (once).
-`get_kernel_implementation()` reads the setting; `None` is the default. The
+`get_host_kernel_implementation()` reads the setting; `None` is the default. The
 setting is global, not per thread, and applies to host calls only.
+
+## Device kernel implementation selection
+
+```python
+xp.kernels.set_device_kernel_implementation("cuda")
+xp.kernels.get_device_kernel_implementation()  # "cuda"
+with xp.kernels.use_device_kernel_implementation(None):
+    push(positions, velocities, dt)  # automatic selection
+xp.kernels.set_device_kernel_implementation(None)
+```
+
+`xp.kernels.DEVICE_IMPLEMENTATIONS` is currently `("cuda",)`. The setter accepts
+`"cuda"` or `None` (automatic selection); unsupported values raise `ValueError`
+without changing the setting. The getter reports the requested setting, so
+it returns `None` in automatic mode even when a call would use CUDA.
+`CUNUMPY_DEVICE_KERNEL_IMPLEMENTATION` initializes the setting at import;
+an unset or empty value means automatic selection. Environment values are
+case-insensitive and stripped of whitespace; unsupported values fail at import.
+
+Explicit `"cuda"` requires a CUDA implementation for device dispatch: missing
+implementations raise `LookupError`, even with `missing_cuda="fallback"`.
+Automatic mode preserves that per-kernel fallback policy. This affects
+`Kernel` and `KernelCatalog` device dispatch; it does not switch the array
+backend, alter host calls, or affect direct `CudaKernel`/CuPy RawKernel calls.
+The context manager restores the previous setting even after an exception.
+The setting is global, not per thread.
 
 ## `kernels.CompiledHostKernel`
 
