@@ -21,7 +21,9 @@ arguments as the host kernel it mirrors:
   (from the shipped header ``cunumpy/array_view.cuh``, see
   :func:`cuda_include_dir`) takes a 2D CuPy array, contiguous or not, and
   receives its pointer, shape and strides, so that kernels index ``a(i, j)``
-  like the pyccel kernels they are ported from;
+  like the pyccel kernels they are ported from; ``CArray2D<double>`` is the
+  C-contiguous variant (shape only, ``a(i, j)`` is ``data[i * shape[1] + j]``),
+  which takes C-contiguous arrays only and raises for other views;
 * C++ function templates are instantiated with ``template_args``, and generated
   kernels (one source per variant) are compiled once per variant by
   :class:`CudaKernelVariants`.
@@ -187,7 +189,11 @@ class CudaParameter(NamedTuple):
         The struct type, for a struct passed by value.
     view_ndim : int | None
         The number of dimensions, for an array view (``Array1D<T>`` to
-        ``Array4D<T>``, see :func:`cuda_include_dir`) passed by value.
+        ``Array4D<T>`` or ``CArray1D<T>`` to ``CArray4D<T>``, see
+        :func:`cuda_include_dir`) passed by value.
+    contiguous : bool
+        Whether the array view is C-contiguous (``CArray2D<T>``): packed
+        without strides, and only C-contiguous arrays are accepted.
     """
 
     name: str
@@ -196,6 +202,7 @@ class CudaParameter(NamedTuple):
     pointer: bool
     struct: CudaStruct | None = None
     view_ndim: int | None = None
+    contiguous: bool = False
 
 
 # C types (after removing qualifiers) and their NumPy dtypes. ``long`` is 64 bit,
@@ -259,30 +266,30 @@ _CTYPE_OF = {
 _QUALIFIERS = {"const", "volatile", "__restrict__", "__restrict", "restrict"}
 
 _COMPLEX = re.compile(r"(?:(?:thrust|cuda::std)::)?complex\s*<\s*(float|double)\s*>")
-# Array1D<T> to Array4D<T> (cunumpy/array_view.cuh), T a scalar type of _CTYPES
-_VIEW = re.compile(r"\bArray([1234])D\s*<((?:[^<>]|complex<[^<>]*>)+?)>")
+# Array1D<T> to Array4D<T> and CArray1D<T> to CArray4D<T> (cunumpy/array_view.cuh),
+# T a scalar type of _CTYPES
+_VIEW = re.compile(r"\b(C?)Array([1234])D\s*<((?:[^<>]|complex<[^<>]*>)+?)>")
 _TOKEN = re.compile(
-    r"Array[1234]D<[^<>]*(?:<[^<>]*>[^<>]*)?>|complex<(?:float|double)>"
+    r"C?Array[1234]D<[^<>]*(?:<[^<>]*>[^<>]*)?>|complex<(?:float|double)>"
     r"|[A-Za-z_]\w*|\*|\[\s*\]",
 )
 
 
 def _normalize_view(match: re.Match) -> str:
     """``Array2D< const double >`` -> ``Array2D<double>``."""
-    words = [w for w in match.group(2).split() if w not in _QUALIFIERS]
-    return f"Array{match.group(1)}D<{' '.join(words)}>"
+    words = [w for w in match.group(3).split() if w not in _QUALIFIERS]
+    return f"{match.group(1)}Array{match.group(2)}D<{' '.join(words)}>"
 
 
-def _view_dtype(ndim: int) -> np.dtype:
-    """The structured dtype with the C layout of ``Array<ndim>D<T>``."""
-    return np.dtype(
-        [
-            ("data", np.uint64),
-            ("shape", np.int64, (ndim,)),
-            ("strides", np.int64, (ndim,)),
-        ],
-        align=True,
-    )
+def _view_dtype(ndim: int, contiguous: bool = False) -> np.dtype:
+    """The structured dtype with the C layout of ``Array<ndim>D<T>``.
+
+    ``CArray<ndim>D<T>`` (`contiguous`) has no strides.
+    """
+    fields = [("data", np.uint64), ("shape", np.int64, (ndim,))]
+    if not contiguous:
+        fields.append(("strides", np.int64, (ndim,)))
+    return np.dtype(fields, align=True)
 
 
 def ctype_of(dtype: Any) -> str:
@@ -515,14 +522,15 @@ def _parse_parameter(
         return CudaParameter(name, ctype, struct.dtype, False, struct)
     view = _VIEW.fullmatch(ctype)
     if view is not None:
-        element = view.group(2)
+        element = view.group(3)
         if pointers or element not in _CTYPES:
             raise ValueError(
                 f"cannot check the kernel parameter {text.strip()!r}: array views "
                 f"take a scalar element type and are passed by value",
             )
-        ndim = int(view.group(1))
-        return CudaParameter(name, ctype, np.dtype(_CTYPES[element]), False, None, ndim)
+        ndim = int(view.group(2))
+        dtype = np.dtype(_CTYPES[element])
+        return CudaParameter(name, ctype, dtype, False, None, ndim, bool(view.group(1)))
     if ctype == "void" and pointers == 1:
         return CudaParameter(name, ctype, None, True)
     if pointers > 1 or ctype not in _CTYPES:
@@ -714,10 +722,13 @@ def _view_checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
     """Checker for an array view: packs (pointer, shape, strides) of a device array.
 
     Strides are converted from bytes to elements; the array need not be
-    contiguous.
+    contiguous. A contiguous view (``CArray2D<T>``) packs (pointer, shape) and
+    takes C-contiguous arrays only: it is never copied, since what the kernel
+    writes into a copy would be lost.
     """
     ndim = param.view_ndim
-    dtype = _view_dtype(ndim)
+    contiguous = param.contiguous
+    dtype = _view_dtype(ndim, contiguous)
 
     def check(value: Any) -> Any:
         _check_device_array(param, index, value)
@@ -725,6 +736,19 @@ def _view_checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
             raise TypeError(
                 f"{_describe(param, index)} must be a {ndim}D array, got {value.ndim}D",
             )
+        if contiguous:
+            flags = getattr(value, "flags", None)
+            if flags is not None and not flags.c_contiguous:
+                raise TypeError(
+                    f"{_describe(param, index)} must be C-contiguous: got a view "
+                    f"with strides {tuple(value.strides)}; declare the parameter "
+                    f"as Array{ndim}D to take strided views, or pass "
+                    f"cupy.ascontiguousarray(...) and copy the result back",
+                )
+            packed = np.zeros((), dtype=dtype)
+            packed["data"] = value.data.ptr
+            packed["shape"] = value.shape
+            return packed[()]
         itemsize = value.dtype.itemsize
         strides = [s // itemsize for s in value.strides]
         if any(s * itemsize != stride for s, stride in zip(strides, value.strides)):
@@ -835,7 +859,7 @@ def _field_dtype(field: CudaParameter) -> np.dtype:
     if field.pointer:
         return np.dtype(np.uint64)
     if field.view_ndim is not None:
-        return _view_dtype(field.view_ndim)
+        return _view_dtype(field.view_ndim, field.contiguous)
     return field.dtype
 
 
@@ -889,6 +913,27 @@ def _pyccel_ctype(annotation: Any, scalars: Mapping[str, str], what: str) -> str
     if ndim > 4:
         raise ValueError(f"{what}: arrays have at most 4 dimensions, got {ndim}")
     return f"Array{ndim}D<{ctype}>"
+
+
+def _apply_contiguous(
+    fields: list[tuple[str, str]],
+    contiguous: bool | Iterable[str],
+    what: str,
+) -> list[tuple[str, str]]:
+    """Make array fields ``CArray<n>D<T>``: all of them, or those named."""
+    if contiguous is True:
+        names = {f for f, ctype in fields if ctype.startswith("Array")}
+    elif contiguous is False:
+        return fields
+    else:
+        names = {contiguous} if isinstance(contiguous, str) else set(contiguous)
+        arrays = {f for f, ctype in fields if ctype.startswith("Array")}
+        if names - arrays:
+            raise ValueError(
+                f"{what}: contiguous names {sorted(names - arrays)} that are not "
+                f"array fields (array fields: {sorted(arrays)})",
+            )
+    return [(f, f"C{ctype}" if f in names else ctype) for f, ctype in fields]
 
 
 def _header_guard(name: str) -> str:
@@ -1084,6 +1129,7 @@ class CudaStruct:
         *,
         int_type: str = "long long",
         scalar_names: Mapping[str, str] | None = None,
+        contiguous: bool | Iterable[str] = False,
     ) -> CudaStruct:
         """Build the struct from the annotated parameters of a Python function.
 
@@ -1109,6 +1155,10 @@ class CudaStruct:
         scalar_names : Mapping[str, str] | None
             Additional (or changed) mappings from annotation scalar names to
             C types, e.g. ``{"float": "float"}`` for single precision.
+        contiguous : bool | Iterable[str]
+            Array fields that become C-contiguous views (``CArray2D<double>``
+            instead of ``Array2D<double>``): ``True`` for all of them, or their
+            names. Packing such a field raises for a non-contiguous array.
 
         Raises
         ------
@@ -1141,7 +1191,8 @@ class CudaStruct:
                 continue
             what = f"parameter {param.name!r} of {getattr(func, '__qualname__', func)}"
             fields.append((param.name, _pyccel_ctype(param.annotation, scalars, what)))
-        return cls(name, fields)
+        what = f"{getattr(func, '__qualname__', func)}"
+        return cls(name, _apply_contiguous(fields, contiguous, what))
 
     @classmethod
     def from_pyccel_class(
@@ -1154,6 +1205,7 @@ class CudaStruct:
         scalar_names: Mapping[str, str] | None = None,
         exclude: Sequence[str] = (),
         attribute_names: bool = True,
+        contiguous: bool | Iterable[str] = False,
     ) -> CudaStruct:
         """Build the struct from the ``__init__`` of a class in a Python source file.
 
@@ -1177,8 +1229,9 @@ class CudaStruct:
             Name of the class in the source.
         name : str | None
             Name of the struct type in C; `class_name` by default.
-        int_type, scalar_names
-            As for :meth:`from_signature`.
+        int_type, scalar_names, contiguous
+            As for :meth:`from_signature` (`contiguous` takes field names, i.e.
+            attribute names when `attribute_names` is set).
         exclude : Sequence[str]
             Parameter or attribute names that do not become fields, e.g.
             scratch arrays the host class allocates for itself.
@@ -1217,6 +1270,7 @@ class CudaStruct:
                 raise ValueError(f"{what} has no type annotation")
             annotation = _annotation_text(arg.annotation)
             fields.append((field, _pyccel_ctype(annotation, scalars, what)))
+        fields = _apply_contiguous(fields, contiguous, f"{class_name} in {where}")
         return cls(class_name if name is None else name, fields)
 
     def __repr__(self) -> str:

@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The former function names are removed without compatibility aliases.
 
 ### Added
+- C-contiguous array views `CArray1D<T>` to `CArray4D<T>` in
+  `cunumpy/array_view.cuh`. They hold a pointer and shape only, so `a(i, j)` is
+  `data[i * shape[1] + j]`. As kernel parameters or struct fields, they reject
+  non-contiguous arrays and never copy them. `CudaStruct.from_signature` and
+  `from_pyccel_class` take `contiguous=True` or field names to generate them.
 - Device implementation selection via `kernels.set_device_kernel_implementation`,
   `get_device_kernel_implementation`, `use_device_kernel_implementation`, and
   `CUNUMPY_DEVICE_KERNEL_IMPLEMENTATION`. Accept `"cuda"` or automatic selection
