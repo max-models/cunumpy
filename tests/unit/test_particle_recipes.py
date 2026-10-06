@@ -4,7 +4,8 @@ import importlib.util
 from pathlib import Path
 
 import numpy as np
-import pytest
+
+import cunumpy as xp
 
 _PATH = Path(__file__).resolve().parents[2] / "docs/source/examples/particle_recipes.py"
 _spec = importlib.util.spec_from_file_location("particle_recipes", _PATH)
@@ -50,10 +51,7 @@ def test_pack_for_ranks():
 
 
 def test_exchange_on_one_rank():
-    mpi4py = pytest.importorskip("mpi4py")
-    from mpi4py import MPI
-
-    del mpi4py
+    MPI = xp.mpi.get_mpi()
     markers = np.arange(8.0).reshape(4, 2)
     received = recipes.exchange(MPI.COMM_SELF, markers, np.zeros(4, dtype=np.int64))
     np.testing.assert_array_equal(received, markers)

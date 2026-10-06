@@ -480,7 +480,8 @@ Importing `mpi4py.MPI` starts MPI (`MPI_Init`), which takes time and makes
 every collective cost something even on one process. `launched_under_mpi()`
 tells, from the environment that `mpirun`/`mpiexec`/`srun` set up and without
 importing mpi4py, whether the process belongs to an MPI job
-(`CUNUMPY_MPI=1`/`0` overrides it). `get_mpi()` returns `mpi4py.MPI` then, and
+(`MAYBEMPI=1`/`0` overrides it). These functions and the stand-in come from
+[maybempi](https://max-models.github.io/maybempi/) and are re-exported in `xp.mpi`. `get_mpi()` returns `mpi4py.MPI` then, and
 otherwise the serial stand-in, so that the same code runs with and without
 MPI:
 
@@ -489,7 +490,7 @@ MPI = xp.mpi.get_mpi()  # decided once per process
 comm = MPI.COMM_WORLD
 comm.Allreduce(MPI.IN_PLACE, rho, op=MPI.SUM)  # nothing to do on one process
 n_total = comm.allreduce(n_local)  # n_local itself
-if isinstance(MPI, xp.mpi.SerialMPI):
+if xp.mpi.is_serial(MPI):
     ...  # a serial run
 ```
 

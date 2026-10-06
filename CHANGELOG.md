@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- The launcher detection and the serial MPI stand-in moved to the new package
+  [maybempi](https://github.com/max-models/maybempi), a dependency of cunumpy.
+  `xp.mpi` re-exports them (`get_mpi`, `launched_under_mpi`, `local_rank`,
+  `SerialMPI`, `SerialComm`, ...), plus the new `xp.mpi.is_serial`. The override
+  variable is now `MAYBEMPI=1`/`0`; `CUNUMPY_MPI` is no longer read.
 - `CudaKernel` and `CudaKernelVariants` moved to `cunumpy.kernels`, next to
   `Kernel` and `PyccelKernel`. The argument classes `CudaArguments`,
   `CudaStruct`, `CudaStructArguments`, `CudaStructValue` and
