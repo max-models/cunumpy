@@ -18,7 +18,7 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
   with one rank per GPU, profiling.
 * A kernel layer for porting compiled CPU kernels (Pyccel, Numba, Python loops)
   to CUDA one at a time: `PyccelKernel`, `CudaKernel`, `Kernel`,
-  `KernelCatalog`, `KernelArguments`, `CudaStruct`, `DeviceMirror`, and test
+  `KernelCatalog`, `CudaStruct`, `CudaStructArguments`, `DeviceMirror`, and test
   helpers in `cunumpy.kernel_testing`.
 
 ## Hard rules
@@ -89,7 +89,7 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
 | copy device arrays to the host for output without stalling | `xp.memory.HostStaging(shape, dtype)`: `c = staging.copy(a)` ... `c.result()` |
 | PIC recipes (compaction, sort by cell, MPI exchange, graphs) | docs guide "Particle codes" |
 | reproducible random numbers per MPI rank | `xp.rng.random_streams.seed(seed, rank=rank)`, then `xp.rng.random_streams.normal(...)` / `.generator()` |
-| group arrays/scalars into one kernel argument | `xp.cuda.CudaArguments` (device only), `xp.kernels.KernelArguments` (host object + device tuple), `xp.cuda.CudaStruct` (C struct), `xp.cuda.CudaStructArguments` (C struct as a class) |
+| group arrays/scalars into one kernel argument | `xp.cuda.CudaArguments` (flattened), `xp.cuda.CudaStruct` (C struct), `xp.cuda.CudaStructArguments` (C struct as a class); host kernels take their own argument objects, the caller picks one per backend |
 | CUDA struct from a Pyccel argument class | `xp.cuda.CudaStruct.from_signature(Cls.__init__, "Name")`, `xp.cuda.write_cuda_header(...)` |
 | SciPy (sparse, sparse.linalg, fft, special, ndimage, ...) on either backend | `xp.scipy.<subpackage>.<name>` (SciPy or `cupyx.scipy`); `xp.scipy.special.available(name)` |
 | chain of elementwise operations as one GPU kernel | `@xp.kernels.fuse` (`cupy.fuse` for CuPy arrays, plain call otherwise) |
@@ -344,14 +344,6 @@ class Dev(xp.cuda.CudaArguments):  # flattened into several CUDA params
         super().__init__(x, n)
 
 
-class Args(xp.kernels.KernelArguments):  # one object, host form + device form
-    def __host_args__(self):
-        return host_object  # host kernel gets this
-
-    def __cuda_args__(self):
-        return (arr, n, ...)  # CUDA kernel gets these, flattened
-
-
 S = xp.cuda.CudaStruct(
     "S", [("x", "double*"), ("n", "long long"), ("a", "Array2D<double>")]
 )
@@ -376,11 +368,13 @@ class A(
 
 
 xp.cuda.CudaKernel(S.declaration + src, "k", structs=[S])
-xp.kernels.resolve_host_args(args, kwargs)
+
+# host kernels: a pyccel class and a CudaStructArguments with the same
+# constructor; the owner builds one per backend, cunumpy never converts them
+args = (CudaMarkerArguments if xp.is_gpu(markers) else MarkerArguments)(markers, n)
 ```
 
-Only top-level arguments are resolved. Cache both forms lazily and invalidate
-them when the underlying arrays are replaced. A packed struct holds device
+A packed struct holds device
 addresses: re-pack after replacing an array (a `CudaStructArguments` does this
 itself at the next launch; make its fields properties to follow an owner's arrays).
 
@@ -443,11 +437,7 @@ def test_parity(kernel): check_parity(kernel)
 # without a GPU: CUNUMPY_FAKE_CUPY=1 CUNUMPY_BACKEND=cupy pytest   (fake CuPy: strict host
 # stand-in, no kernel launches; fake_cupy_active(); requires_cupy skips)
 
-# argument classes with a pyccel host class: one object on both backends
-class MarkerArguments(xp.kernels.PyccelStructArguments):
-    struct_name = "MarkerArgs"; fields = (("markers", "Array2D<double>"), ("Np", "long long"))
-    host_class = pusher_args_kernels.MarkerArguments    # pyccel class; cannot inherit
-    host_fields = ("markers", "Np")                      # its constructor args, in order
+# struct fields from a pyccel argument class (contiguous=True or names -> CArray2D<T>)
 MarkerArgs = xp.cuda.CudaStruct.from_pyccel_class("pusher_args_kernels.py", "MarkerArguments", "MarkerArgs")
 kernel.n_threads_from = lambda args: args[0].n_markers   # launch size from an argument
 kernel.check_finite = True                               # NaN/inf after each launch (debug)

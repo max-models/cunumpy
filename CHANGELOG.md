@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Removed** `kernels.KernelArguments`, `kernels.resolve_host_args`,
+  `kernels.PyccelStructArguments` and the `__host_args__()` protocol, with no
+  replacement. Kernels receive argument objects as they are. Write the host
+  argument class (e.g. pyccel) and a `CudaStructArguments` with the same
+  constructor, and let the owner of the arrays build the one for its backend.
+  `Kernel(dispatch="arrays")` now treats every object with `__cuda_args__()` as
+  a device argument.
 - Rename `CUNUMPY_KERNEL_IMPLEMENTATION` to
   `CUNUMPY_HOST_KERNEL_IMPLEMENTATION` to make its host-only scope explicit.
   The former environment variable is no longer read; update job scripts.

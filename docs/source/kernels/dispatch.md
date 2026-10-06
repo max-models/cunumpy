@@ -38,8 +38,9 @@ axpy(2.0, x, y, x.size)  # infer n_threads = x.shape[0]
 * A plain host function is wrapped in a [`PyccelKernel`](pyccel-kernel.md);
   pass `host_options={"outputs": (2,)}` to configure that wrapper, or pass a
   `PyccelKernel` you built yourself.
-* Kernels take positional arguments only. [`KernelArguments`](arguments.md)
-  objects are resolved per backend.
+* Kernels take positional arguments only, passed to the selected kernel as
+  they are: pass the host argument objects on the host and the CUDA ones on
+  the device (see [Kernel arguments and structs](arguments.md)).
 * `kernel.compile()` compiles the CUDA kernel now; `kernel.has_cuda` tells
   whether there is one.
 
@@ -261,9 +262,8 @@ catalog["gather"](host_positions, host_field, host_result)  # host kernel, also 
 ```
 
 The CUDA kernel runs if any top-level argument is on the GPU: a CuPy array, or
-a device-only argument object (`CudaArguments`, a struct value). A
-`KernelArguments` object has both forms and does not decide on its own. Host
-arguments go to the host function directly, without conversion.
+a CUDA argument object (`CudaArguments`, `CudaStructArguments`, a struct
+value). Host arguments go to the host function directly, without conversion.
 
 The arguments of one call must then all be on one side, with the dtype and
 layout the kernels take. `xp.kernels.as_kernel_array(value, like, dtype)` brings an

@@ -17,7 +17,6 @@ from cunumpy.kernels import (
     CompiledHostKernel,
     HostImplementations,
     Kernel,
-    KernelArguments,
     KernelCatalog,
 )
 
@@ -137,12 +136,17 @@ def test_device_only_argument_objects_count_as_device(fake_gpu, monkeypatch):
     kernel(Device(np.ones(1)), 2.0, 1, n_threads=1)
     assert len(fake_gpu) == 1
 
-    class Both(KernelArguments):  # host and device form: does not decide
-        def __host_args__(self):
-            return np.ones(2)
+    class HostArgs:  # e.g. a pyccel argument class: no __cuda_args__
+        def __init__(self):
+            self.x = np.ones(2)
 
-    host = Kernel(lambda x, f, n: x.__setitem__(slice(None), f), dispatch="arrays")
-    host(Both(), 5.0, 2)  # no device argument: the host kernel
+    def fill(args, value, n):
+        args.x[:n] = value
+
+    host_args = HostArgs()
+    host = Kernel(fill, CudaKernel(SCALE_CUDA, "scale"), dispatch="arrays")
+    host(host_args, 5.0, 2)  # no device argument: the host kernel
+    assert len(fake_gpu) == 1 and host_args.x.tolist() == [5.0, 5.0]
 
 
 def test_arrays_dispatch_without_cuda_kernel(fake_gpu):

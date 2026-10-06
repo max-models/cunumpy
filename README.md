@@ -379,29 +379,15 @@ device copies. Call it once when the object is
 built, not per kernel call; on the NumPy backend it raises, so host data is
 never copied to the device implicitly.
 When the host kernel takes such a group as one object too (e.g. a Pyccel class
-holding NumPy arrays), give the group both forms with `KernelArguments`:
-`__host_args__()` returns the object for the host kernel, `__cuda_args__()`
-the flattened device arguments. `Kernel` and `PyccelKernel` resolve
-`__host_args__()` on the host path and `CudaKernel` flattens `__cuda_args__()`
-on the CUDA path, so the call site is the same on both backends and each form
-can be built lazily on first access (a CPU run never builds device arguments):
+holding NumPy arrays), write a CUDA class with the same constructor and
+attributes (a `CudaStructArguments`, see below) and let the owner of the arrays
+build the one for the active backend. CuNumpy passes argument objects through
+as they are and never converts one form into the other:
 
 ```python
-class ParticleArguments(xp.kernels.KernelArguments):
-    def __init__(self, markers):
-        self.markers = markers
-        self._host = None
-
-    def __host_args__(self):
-        if self._host is None:
-            self._host = MarkerArguments(self.markers)  # Pyccel class
-        return self._host
-
-    def __cuda_args__(self):
-        return (self.markers, self.markers.shape[0])
-
-
-kernel(particles.kernel_args, dt, n_threads=n)  # host or CUDA kernel
+args_class = CudaMarkerArguments if xp.is_gpu(markers) else MarkerArguments
+particles.args_markers = args_class(markers, markers.shape[0])
+kernel(particles.args_markers, dt)  # host or CUDA kernel
 ```
 
 Kernels ported from pyccel index arrays like `markers[ip, j]`, which needs

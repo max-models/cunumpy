@@ -10,7 +10,6 @@ CuPy in the test process.
 """
 
 import os
-import pickle
 import subprocess
 import sys
 import textwrap
@@ -27,7 +26,7 @@ import cunumpy.kernel_testing
 from cunumpy._dispatch import FORTRAN_NAME_LIMIT, _pyccel_stub_parameters
 from cunumpy.cuda import CudaKernel, CudaStruct
 from cunumpy.kernel_testing import check_parity, device_function_kernel, parity_cases
-from cunumpy.kernels import Kernel, KernelCatalog, PyccelStructArguments
+from cunumpy.kernels import Kernel, KernelCatalog
 
 
 class FakeDeviceArray:
@@ -185,91 +184,6 @@ def test_from_pyccel_class_errors():
 
 
 # ---------------------------------------------------------------------------
-# PyccelStructArguments
-# ---------------------------------------------------------------------------
-
-
-class HostMarkers:
-    """Stands in for a pyccel-compiled argument class."""
-
-    instances = 0
-
-    def __init__(self, markers, Np):
-        type(self).instances += 1
-        self.markers = markers
-        self.Np = Np
-
-
-class MarkerArguments(PyccelStructArguments):
-    struct_name = "MarkerArgs"
-    fields = (("markers", "Array2D<double>"), ("Np", "long long"), ("n_markers", "int"))
-    host_class = HostMarkers
-    host_fields = ("markers", "Np")
-
-    def __init__(self, markers, Np):
-        self.markers = markers
-        self.Np = Np
-        self.n_markers = markers.shape[0]
-
-
-def test_pyccel_struct_arguments_host_form_is_built_once_and_follows_changes():
-    HostMarkers.instances = 0
-    markers = np.zeros((5, 3))
-    args = MarkerArguments(markers, 5)
-    host = args.__host_args__()
-    assert isinstance(host, HostMarkers) and host.markers is markers and host.Np == 5
-    assert args.__host_args__() is host and HostMarkers.instances == 1
-    args.Np = 6  # a changed scalar: rebuilt
-    assert args.__host_args__().Np == 6 and HostMarkers.instances == 2
-    args.markers = np.zeros((7, 3))  # a replaced array: rebuilt
-    assert args.__host_args__().markers is args.markers and HostMarkers.instances == 3
-    # the host form is the Kernel's host argument
-    seen = {}
-
-    def push(m, dt):
-        seen["host"] = m
-
-    Kernel(push)(args, 0.1)
-    assert seen["host"] is args.__host_args__()
-
-
-def test_pyccel_struct_arguments_device_form_and_pickling():
-    args = MarkerArguments(FakeDeviceArray(np.float64, shape=(5, 3)), 5)
-    (packed,) = args.__cuda_args__()
-    assert packed.dtype == MarkerArguments.struct.dtype
-    assert int(packed["n_markers"]) == 5
-    with pytest.raises(RuntimeError, match="no host form on the CuPy backend"):
-        args.__host_args__()
-    host_copy = MarkerArguments(np.ones((2, 3)), 2)
-    host_copy.__host_args__()
-    restored = pickle.loads(pickle.dumps(host_copy))
-    assert "_host_value" not in restored.__dict__
-    assert restored.__host_args__().markers.shape == (2, 3)
-
-
-def test_pyccel_struct_arguments_host_copies(monkeypatch):
-    class Copying(MarkerArguments):
-        host_copies = True
-
-    device = FakeDeviceArray(np.float64, shape=(2, 3))
-    monkeypatch.setattr("cunumpy.xp.to_numpy", lambda a: np.full((2, 3), 7.0))
-    host = Copying(device, 2).__host_args__()
-    assert isinstance(host.markers, np.ndarray) and host.markers[0, 0] == 7.0
-
-
-def test_pyccel_struct_arguments_requires_host_class():
-    class NoHost(PyccelStructArguments):
-        struct_name = "NoHost"
-        fields = (("n", "int"),)
-
-        def __init__(self):
-            self.n = 1
-
-    with pytest.raises(TypeError, match="host_class is not set"):
-        NoHost().__host_args__()
-
-
-# ---------------------------------------------------------------------------
 # n_threads_from and check_finite
 # ---------------------------------------------------------------------------
 
@@ -332,8 +246,18 @@ def test_check_finite(monkeypatch):
     kernel(Arr([1.0, np.nan]), 2.0, 2, n_threads=2)
 
 
+class CudaMarkerArguments(xp.cuda.CudaStructArguments):
+    struct_name = "MarkerArgs"
+    fields = (("markers", "Array2D<double>"), ("Np", "long long"))
+
+    def __init__(self, markers, Np):
+        self.markers = markers
+        self.Np = Np
+        self.pack()
+
+
 def test_device_arrays_in_struct_arguments():
-    args = MarkerArguments(FakeDeviceArray(np.float64, shape=(5, 3)), 5)
+    args = CudaMarkerArguments(FakeDeviceArray(np.float64, shape=(5, 3)), 5)
     found = dict(
         cuda_kernel_module._device_arrays_in((1.0, args, FakeDeviceArray("f8"))),
     )
@@ -567,7 +491,6 @@ import pytest
 import cunumpy as xp
 import cunumpy.kernel_testing as testing
 from cunumpy.cuda import CudaKernel, CudaStruct
-from cunumpy.kernels import KernelArguments
 
 assert testing.fake_cupy_active()
 assert xp.cupy_available() and xp.get_backend() == "cupy", xp.get_backend()

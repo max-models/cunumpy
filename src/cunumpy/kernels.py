@@ -21,7 +21,6 @@ The CUDA-only classes (:class:`~cunumpy.cuda.CudaKernel`, ...) are in
 :mod:`cunumpy.kernel_testing`.
 """
 
-from cunumpy._cuda_kernel import PyccelStructArguments
 from cunumpy._dispatch import Kernel, KernelCatalog
 from cunumpy._fusion import fuse
 from cunumpy._kernel import (
@@ -29,13 +28,11 @@ from cunumpy._kernel import (
     HOST_IMPLEMENTATIONS,
     CompiledHostKernel,
     HostImplementations,
-    KernelArguments,
     PyccelKernel,
     as_kernel_array,
     get_device_kernel_implementation,
     get_host_kernel_implementation,
     kernel_output,
-    resolve_host_args,
     set_device_kernel_implementation,
     set_host_kernel_implementation,
     use_device_kernel_implementation,
@@ -48,16 +45,13 @@ __all__ = [
     "CompiledHostKernel",
     "HostImplementations",
     "Kernel",
-    "KernelArguments",
     "KernelCatalog",
     "PyccelKernel",
-    "PyccelStructArguments",
     "as_kernel_array",
     "fuse",
     "get_device_kernel_implementation",
     "get_host_kernel_implementation",
     "kernel_output",
-    "resolve_host_args",
     "set_device_kernel_implementation",
     "set_host_kernel_implementation",
     "use_device_kernel_implementation",

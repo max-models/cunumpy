@@ -18,7 +18,7 @@ unchanged.
 | `CudaKernel` | wraps a CUDA C kernel, checks every call against its signature | [Writing CUDA kernels](cuda-kernel.md) |
 | `Kernel` | a host kernel plus its CUDA kernel; calls the one matching the backend | [Pairing host and CUDA kernels](dispatch.md) |
 | `KernelCatalog` | all `Kernel`s of a package, found by folder convention | [Pairing host and CUDA kernels](dispatch.md) |
-| `CudaArguments`, `KernelArguments`, `CudaStruct` | pass a group of arrays and scalars as one argument | [Kernel arguments and structs](arguments.md) |
+| `CudaArguments`, `CudaStruct`, `CudaStructArguments` | pass a group of arrays and scalars as one argument | [Kernel arguments and structs](arguments.md) |
 | `DeviceMirror`, `cunumpy/atomic.cuh` | scatter-add into a buffer owned by a host library | [Accumulation kernels](accumulation.md) |
 | `cunumpy.kernel_testing` | check that host and CUDA kernels compute the same | [Testing kernels](testing.md) |
 
@@ -34,8 +34,8 @@ unchanged.
   host/CUDA pair in a `Kernel`, collect them in a `KernelCatalog`, and test each
   pair with `assert_kernels_agree`. Unported kernels either raise or fall back
   to the host version.
-* **"My kernels take ten arrays each."** Group them with `KernelArguments` (host
-  form and device form of the same data) or a `CudaStruct`.
+* **"My kernels take ten arrays each."** Group them in a `CudaStruct`, or a
+  `CudaStructArguments` class next to the host argument class.
 
 ## A typical porting workflow
 
