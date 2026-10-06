@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
-from cunumpy.cuda import CudaKernel
 from cunumpy.kernel_testing import emulate_cuda_kernel, emulation_compiler
+from cunumpy.kernels import CudaKernel
 
 pytestmark = pytest.mark.skipif(
     emulation_compiler() is None,

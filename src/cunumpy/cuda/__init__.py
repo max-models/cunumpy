@@ -1,45 +1,42 @@
-"""CUDA kernels, device helpers, and reusable stream/event interfaces.
+"""CUDA device runtime, reusable streams/events, and CUDA source tools.
 
-The kernel classes
-(:class:`CudaKernel`, :class:`CudaStruct`, ...) need CuPy to launch; the device
-functions (:func:`set_device`, :func:`memory_info`, :func:`stream`, ...) do
-nothing (or return ``None``/``0``) on the NumPy backend::
+The device functions (:func:`set_device`, :func:`memory_info`, :func:`stream`,
+...) do nothing (or return ``None``/``0``) on the NumPy backend::
 
     import cunumpy as xp
 
-    kernel = xp.cuda.CudaKernel(source, "push")
+    kernel = xp.kernels.CudaKernel(source, "push")
     with xp.cuda.stream():
         kernel(positions, velocities, dt, n_threads=n)
 
 The CUDA headers shipped with cunumpy (``cunumpy/atomic.cuh``,
-``cunumpy/random.cuh``, ...) are in :func:`cuda_include_dir`.
+``cunumpy/random.cuh``, ...) are in :func:`cuda_include_dir`;
+:func:`parse_cuda_signature` and the other source tools inspect CUDA sources.
 
 Reusable :func:`create_stream` and :func:`create_event` return synchronous host
 equivalents on NumPy, supporting the same recording and completion interface.
 
-Backend-neutral kernel tools (:class:`~cunumpy.kernels.Kernel`,
-:class:`~cunumpy.kernels.PyccelKernel`, ...) are in :mod:`cunumpy.kernels`.
+The kernel classes (:class:`~cunumpy.kernels.CudaKernel`,
+:class:`~cunumpy.kernels.PyccelKernel`, :class:`~cunumpy.kernels.Kernel`, ...)
+are in :mod:`cunumpy.kernels`, the argument objects
+(:class:`~cunumpy.arguments.CudaStructArguments`, ...) in :mod:`cunumpy.arguments`.
 
 Importing this module makes ``xp.cuda`` refer to it instead of ``cupy.cuda``;
 use ``import cupy; cupy.cuda`` for CuPy's module.
 """
 
+import importlib as _importlib
+import warnings as _warnings
+
 from cunumpy._cuda_kernel import (
     DEBUG_OPTIONS,
-    CudaArguments,
-    CudaKernel,
-    CudaKernelVariants,
     CudaParameter,
-    CudaStruct,
-    CudaStructArguments,
-    CudaStructValue,
     ctype_of,
     cuda_include_dir,
     cuda_kernel_names,
     include_hash,
     parse_cuda_signature,
     resolve_includes,
-    write_cuda_header,
 )
 from cunumpy._device import (
     DEFAULT_SHARED_MEMORY_PER_BLOCK,
@@ -68,13 +65,7 @@ from cunumpy._streams import (
 __all__ = [
     "DEBUG_OPTIONS",
     "DEFAULT_SHARED_MEMORY_PER_BLOCK",
-    "CudaArguments",
-    "CudaKernel",
-    "CudaKernelVariants",
     "CudaParameter",
-    "CudaStruct",
-    "CudaStructArguments",
-    "CudaStructValue",
     "HostEvent",
     "HostStream",
     "bind_local_device",
@@ -99,5 +90,29 @@ __all__ = [
     "set_device_for_rank",
     "stream",
     "wait_event",
-    "write_cuda_header",
 ]
+
+# Names that were in this module before they moved to cunumpy.kernels and
+# cunumpy.arguments. They still resolve (with a DeprecationWarning) until cunumpy 0.6.
+_MOVED = {
+    "CudaKernel": "kernels",
+    "CudaKernelVariants": "kernels",
+    "CudaArguments": "arguments",
+    "CudaStruct": "arguments",
+    "CudaStructArguments": "arguments",
+    "CudaStructValue": "arguments",
+    "write_cuda_header": "arguments",
+}
+
+
+def __getattr__(name: str):
+    submodule = _MOVED.get(name)
+    if submodule is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    _warnings.warn(
+        f"cunumpy.cuda.{name} moved to cunumpy.{submodule}.{name}; the old name "
+        "is deprecated and will be removed in cunumpy 0.6",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return getattr(_importlib.import_module(f"cunumpy.{submodule}"), name)

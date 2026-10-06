@@ -3,18 +3,18 @@
 Kernels of real simulations take many arguments: the marker array, its shape,
 the grid spacing, spline degrees, knot vectors, a dozen parameters. Listing
 them at every call site is error-prone, and every new field means editing every
-kernel signature. CuNumpy offers three ways to pass a group of values as one
-argument:
+kernel signature. CuNumpy groups them for CUDA kernels:
 
-| Tool | Host kernel sees | CUDA kernel sees | Use when |
-| --- | --- | --- | --- |
-| `CudaArguments` | (not used) | several parameters, flattened | grouping device arguments only |
-| `KernelArguments` | one object (`__host_args__()`) | several parameters (`__cuda_args__()`) | the host kernel takes an argument class, the CUDA kernel flat parameters |
-| `CudaStruct` | (not used) | one C struct parameter | many fields; one definition shared by all CUDA kernels |
-| `CudaStructArguments` | (not used) | one C struct parameter | the struct as a class: an object with attributes, built once and reused |
+| Tool | CUDA kernel sees | Use when |
+| --- | --- | --- |
+| `CudaArguments` | several parameters, flattened | grouping a few device arrays and scalars |
+| `CudaStruct` | one C struct parameter | many fields; one definition shared by all CUDA kernels |
+| `CudaStructArguments` | one C struct parameter | the struct as a class: an object with attributes, built once and reused |
 
-They combine: a `KernelArguments` object can return a `CudaStruct` value from
-`__cuda_args__()`.
+CuNumpy never converts an argument object between a host form and a CUDA
+form. A host kernel gets its own argument object (e.g. a pyccel class of NumPy
+arrays), a CUDA kernel gets a CUDA one, and the code that owns the arrays
+decides which one to build; see [Host and CUDA argument classes](#host-and-cuda-argument-classes).
 
 ## `CudaArguments`: flatten into several parameters
 
@@ -28,7 +28,7 @@ import numpy as np
 import cunumpy as xp
 
 
-class DeviceParticles(xp.cuda.CudaArguments):
+class DeviceParticles(xp.arguments.CudaArguments):
     def __init__(self, positions, velocities):
         self.positions = xp.as_device_array(
             positions, np.float64, ndim=2, name="positions"
@@ -43,7 +43,7 @@ PUSH = r"""
 extern "C" __global__
 void push(double dt, double* x, const double* v, int n) { ... }
 """
-push = xp.cuda.CudaKernel(PUSH, "push")
+push = xp.kernels.CudaKernel(PUSH, "push")
 particles = DeviceParticles(x, v)
 push(0.1, particles, n_threads=particles.positions.shape[0])  # -> push(0.1, x, v, n)
 ```
@@ -52,54 +52,6 @@ Build the object once and reuse it. `as_device_array()` references existing
 device arrays of the right dtype and copies everything else exactly once (see
 [Data movement](../guides/data-movement.md), section "Build device arguments once").
 
-## `KernelArguments`: one object, two forms
-
-A host kernel compiled with Pyccel often receives a group of arrays as an
-instance of an argument class, while the CUDA kernel receives the arrays as
-separate parameters. `KernelArguments` lets one object stand for both, so the
-call site never branches on the backend:
-
-```python
-class MarkerArguments:  # the host argument class, e.g. compiled with Pyccel
-    def __init__(self, markers: "float[:, :]", n_markers: int):
-        self.markers = markers
-        self.n_markers = n_markers
-
-
-class ParticleArguments(xp.kernels.KernelArguments):
-    def __init__(self, particles):
-        self._particles = particles
-        self._host = None
-        self._cuda = None
-
-    def __host_args__(self):
-        if self._host is None:
-            markers = self._particles.markers
-            self._host = MarkerArguments(markers, markers.shape[0])
-        return self._host
-
-    def __cuda_args__(self):
-        if self._cuda is None:
-            markers = self._particles.markers
-            self._cuda = (markers, markers.shape[0], markers.shape[1])
-        return self._cuda
-
-
-args = ParticleArguments(particles)
-push(args, dt, n_threads=n_markers)  # a Kernel: same call on both backends
-```
-
-* `Kernel` (on the NumPy backend) and `PyccelKernel` replace the argument with
-  `__host_args__()`; `CudaKernel` flattens `__cuda_args__()`.
-* Only top-level arguments are resolved, not objects inside lists or dicts.
-* Build both forms lazily, as above: a CPU run never builds device arguments, a
-  GPU run never builds the host object.
-* **Invalidate the cache** when the underlying arrays are replaced (resizing,
-  `deepcopy`, unpickling): reset the stored forms or create a new arguments
-  object. Stale cached arguments point at the old arrays.
-* `xp.kernels.resolve_host_args(args, kwargs)` applies the host replacement, for code
-  that calls host kernels without `Kernel`.
-
 ## `CudaStruct`: one C struct, defined once
 
 A `CudaStruct` defines a C struct in Python: its C declaration for the kernel
@@ -107,7 +59,7 @@ source, its exact memory layout, and a packer for values. The kernel takes the
 struct by value as one parameter:
 
 ```python
-Particles = xp.cuda.CudaStruct(
+Particles = xp.arguments.CudaStruct(
     "Particles",
     [("x", "double*"), ("v", "double*"), ("n", "long long"), ("charge", "double")],
 )
@@ -121,7 +73,7 @@ extern "C" __global__ void push(Particles p, double dt) {
 }
 """
 )
-push = xp.cuda.CudaKernel(PUSH, "push", structs=[Particles])
+push = xp.kernels.CudaKernel(PUSH, "push", structs=[Particles])
 
 value = Particles(x=x, v=v, n=x.size, charge=-1.0)
 push(value, 0.1, n_threads=x.size)
@@ -150,7 +102,7 @@ species, domain or grid, and kept next to the host argument object), subclass
 field values as attributes and is passed to kernels as it is:
 
 ```python
-class CudaMarkerArguments(xp.cuda.CudaStructArguments):
+class CudaMarkerArguments(xp.arguments.CudaStructArguments):
     struct_name = "MarkerArgs"
     fields = (
         ("markers", "double*"),
@@ -170,8 +122,8 @@ class CudaMarkerArguments(xp.cuda.CudaStructArguments):
         self.pack()
 
 
-xp.cuda.write_cuda_header("kernels/marker_args.cuh", [CudaMarkerArguments.struct])
-push = xp.cuda.CudaKernel.from_file(
+xp.arguments.write_cuda_header("kernels/marker_args.cuh", [CudaMarkerArguments.struct])
+push = xp.kernels.CudaKernel.from_file(
     "kernels/push_cuda.cu", structs=[CudaMarkerArguments.struct]
 )
 
@@ -189,7 +141,7 @@ push(args, dt, n_threads=args.n_markers)
   array:
 
   ```python
-  class CudaMarkerArguments(xp.cuda.CudaStructArguments):
+  class CudaMarkerArguments(xp.arguments.CudaStructArguments):
       struct_name = "MarkerArgs"
       fields = (("markers", "Array2D<double>"), ("n_markers", "int"))
 
@@ -210,50 +162,8 @@ push(args, dt, n_threads=args.n_markers)
   keep working on it: assign the new array to the attribute instead.
 * Copies and unpickled objects are packed again from their own arrays, so a
   `deepcopy` never points at the device memory of the original.
-* When the same call site must also reach a host kernel, pair it with the host
-  argument object in a `KernelArguments`: `__host_args__()` returns the host
-  object, `__cuda_args__()` returns `cuda_args.__cuda_args__()`.
-
-### `PyccelStructArguments`: a pyccel host class and a struct
-
-When the host kernels take a pyccel-compiled argument class, that class cannot
-inherit from `CudaStructArguments` (or anything else). `PyccelStructArguments`
-holds it instead: the same object is passed to a `Kernel` on both backends, and
-arrives as the pyccel object on the host path and as the struct on the device
-path:
-
-```python
-from my_sim.kernel_arguments import pusher_args_kernels  # compiled by pyccel
-
-
-class MarkerArguments(xp.kernels.PyccelStructArguments):
-    struct_name = "MarkerArgs"
-    fields = (("markers", "Array2D<double>"), ("Np", "long long"), ("n_markers", "int"))
-    host_class = pusher_args_kernels.MarkerArguments
-    host_fields = ("markers", "Np")  # its constructor arguments, in order
-
-    def __init__(self, markers, Np):
-        self.markers = markers  # NumPy or CuPy, whatever the owner has
-        self.Np = Np
-        self.n_markers = markers.shape[0]
-        if self.has_device_arrays():
-            self.pack()  # fail early on a bad device array
-
-
-args = MarkerArguments(particles.markers, Np)
-push(args, dt, n_threads=args.n_markers)  # Kernel: same call on both backends
-```
-
-* `__host_args__()` builds `host_class(*host_fields)` once and again when one of
-  those attributes was replaced (a resized array, a changed scalar). The host
-  object is not pickled; a copy or an unpickled object rebuilds it.
-* On the CuPy backend the attributes are device arrays, and there is no host
-  form: `__host_args__()` raises. Set `host_copies = True` on a class whose host
-  kernels only *read* the arrays (an evaluation, not a push): the host object
-  is then built from host copies, which `count_transfers()` reports, and what
-  the host kernel writes is not copied back.
-* Objects holding host arrays are copied and pickled without packing; the
-  struct is only built from device arrays.
+* For the host kernels, write the matching host class and let the owner choose,
+  see [Host and CUDA argument classes](#host-and-cuda-argument-classes).
 
 ### Check the layout against the compiler
 
@@ -281,7 +191,7 @@ class MarkerArguments:
     def __init__(self, markers: "float[:, :]", n_markers: int, valid: "bool[:]"): ...
 
 
-MarkerArgs = xp.cuda.CudaStruct.from_signature(MarkerArguments.__init__, "MarkerArgs")
+MarkerArgs = xp.arguments.CudaStruct.from_signature(MarkerArguments.__init__, "MarkerArgs")
 print(MarkerArgs.declaration)
 ```
 
@@ -307,7 +217,7 @@ the parameter is stored in (`self.first_init_idx = first_pusher_idx` gives a
 field `first_init_idx`), and skips the parameters in `exclude=`:
 
 ```python
-MarkerArgs = xp.cuda.CudaStruct.from_pyccel_class(
+MarkerArgs = xp.arguments.CudaStruct.from_pyccel_class(
     "my_sim/kernel_arguments/pusher_args_kernels.py", "MarkerArguments", "MarkerArgs"
 )
 ```
@@ -335,7 +245,7 @@ C-contiguous (a marker array, a grid), declare it as `CArray1D<T>` to
 fast one, as in the row-major memory the host code uses.
 
 ```python
-MarkerArgs = xp.cuda.CudaStruct.from_pyccel_class(
+MarkerArgs = xp.arguments.CudaStruct.from_pyccel_class(
     "my_sim/kernel_arguments/pusher_args_kernels.py",
     "MarkerArguments",
     "MarkerArgs",
@@ -365,7 +275,7 @@ Kernels in `.cu` files include the struct from a header. Generate it from the
 Python definition and commit it:
 
 ```python
-xp.cuda.write_cuda_header("kernels/marker_args.cuh", [MarkerArgs, DomainArgs])
+xp.arguments.write_cuda_header("kernels/marker_args.cuh", [MarkerArgs, DomainArgs])
 ```
 
 The header gets an include guard (`MARKER_ARGS_CUH`), the `array_view.cuh`
@@ -377,19 +287,64 @@ from pathlib import Path
 
 
 def test_marker_args_header_is_up_to_date(tmp_path):
-    generated = xp.cuda.write_cuda_header(
+    generated = xp.arguments.write_cuda_header(
         tmp_path / "marker_args.cuh", [MarkerArgs, DomainArgs]
     )
     assert Path("kernels/marker_args.cuh").read_text() == generated
 ```
 
+## Host and CUDA argument classes
+
+A host kernel compiled with Pyccel often receives a group of arrays as an
+instance of an argument class. Write its CUDA counterpart as a
+`CudaStructArguments` subclass with the same constructor and attributes, and
+let the owner of the arrays create the one that matches the backend:
+
+```python
+from my_sim.kernel_arguments.pusher_args_kernels import MarkerArguments  # pyccel
+
+
+class CudaMarkerArguments(xp.arguments.CudaStructArguments):
+    """CUDA version of MarkerArguments: same constructor, same attributes."""
+
+    struct_name = "MarkerArgs"
+    fields = (("markers", "Array2D<double>"), ("n_markers", "int"))
+
+    def __init__(self, markers, n_markers):
+        self.markers = markers  # a CuPy array
+        self.n_markers = n_markers
+        self.pack()
+
+
+class Particles:
+    def __init__(self, markers):
+        self.markers = markers
+        args_class = CudaMarkerArguments if xp.is_gpu(markers) else MarkerArguments
+        self.args_markers = args_class(markers, markers.shape[0])
+
+
+push = xp.kernels.Kernel.from_folder("my_sim.kernels.push")
+push(particles.args_markers, dt)  # the pyccel object on NumPy, the struct on CuPy
+```
+
+* `Kernel` and `PyccelKernel` pass the host object to the host kernel as it
+  is; `CudaKernel` flattens a CUDA argument object with `__cuda_args__()`.
+* Pass the CUDA object to the host kernel, or the pyccel object to the CUDA
+  kernel, and the kernel's own argument checks raise. Nothing is copied
+  behind your back.
+* A test can check that the two classes of a pair stay in sync, by comparing
+  `CudaStruct.from_pyccel_class(...)` (the pyccel constructor) with
+  `CudaMarkerArguments.struct.fields`.
+
 ## Choosing
 
 * Start with plain arguments. Group when the same set of five or more values
   appears in several kernels.
-* Use `KernelArguments` when the host kernels already take argument objects;
-  it keeps the call sites identical.
 * Use a `CudaStruct` when many CUDA kernels take the same group, or when
   signatures become too long to read and keep in sync.
-* Generate the struct with `from_signature` when a host argument class exists,
-  so the two cannot drift apart.
+* When the host kernels take an argument class, write a `CudaStructArguments`
+  with the same constructor and attributes, and build one of the two per
+  backend.
+* Generate the struct with `from_signature` or `from_pyccel_class` when a host
+  argument class exists, or test that the two field lists match, so the two
+  cannot drift apart.

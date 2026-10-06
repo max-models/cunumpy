@@ -6,7 +6,8 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
-from cunumpy.cuda import CudaArguments, CudaKernel, CudaStructArguments, CudaStructValue
+from cunumpy.arguments import CudaArguments, CudaStructArguments, CudaStructValue
+from cunumpy.kernels import CudaKernel
 
 SOURCE = 'extern "C" __global__ void work() {}'
 

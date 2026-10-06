@@ -15,7 +15,8 @@ import pytest
 
 import cunumpy as xp
 import cunumpy.kernel_testing
-from cunumpy.cuda import CudaArguments, CudaKernel, parse_cuda_signature
+from cunumpy.arguments import CudaArguments
+from cunumpy.cuda import parse_cuda_signature
 from cunumpy.kernel_testing import (
     BACKENDS,
     _collect_arrays,
@@ -25,7 +26,7 @@ from cunumpy.kernel_testing import (
     device_function_kernel,
     requires_cupy,
 )
-from cunumpy.kernels import Kernel
+from cunumpy.kernels import CudaKernel, Kernel
 
 SCALE_CUDA = r"""
 extern "C" __global__ void scale(double* x, double factor, int n) {
@@ -329,7 +330,7 @@ def test_struct_arguments_are_compared_by_field_name():
             self.weights = owner.weights
             self.n = 3
 
-    class DeviceArguments(xp.cuda.CudaStructArguments):
+    class DeviceArguments(xp.arguments.CudaStructArguments):
         struct_name = "OwnerArgs"
         fields = (("markers", "Array2D<double>"), ("weights", "double*"), ("n", "int"))
 
@@ -355,7 +356,7 @@ def test_struct_arguments_are_compared_by_field_name():
     assert device["argument 1.markers"] is owner.markers
 
     struct = DeviceArguments.struct
-    value = xp.cuda.CudaStructValue(
+    value = xp.arguments.CudaStructValue(
         struct,
         np.zeros((), struct.dtype)[()],
         vars(owner) | {"n": 3},

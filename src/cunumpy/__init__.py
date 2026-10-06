@@ -3,7 +3,18 @@ import re as _re
 import warnings as _warnings
 from importlib.metadata import PackageNotFoundError, version
 
-from cunumpy import algorithms, cuda, kernels, memory, mpi, petsc, profiling, rng, xp
+from cunumpy import (
+    algorithms,
+    arguments,
+    cuda,
+    kernels,
+    memory,
+    mpi,
+    petsc,
+    profiling,
+    rng,
+    xp,
+)
 from cunumpy._scipy_backend import scipy
 from cunumpy.xp import (
     as_device_array,
@@ -29,6 +40,7 @@ from cunumpy.xp import (
 # moved to. They still resolve (with a DeprecationWarning) until cunumpy 0.6.
 _MOVED = {
     **dict.fromkeys(cuda.__all__, "cuda"),
+    **dict.fromkeys(arguments.__all__, "arguments"),
     **dict.fromkeys(
         (
             name
@@ -97,6 +109,7 @@ def require_version(minimum: str) -> None:
 __all__ = [
     "__version__",
     "algorithms",
+    "arguments",
     "as_device_array",
     "assert_same_backend",
     "backend_info",

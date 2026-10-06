@@ -33,15 +33,16 @@ function that needs to follow an input array's location should use
 
 The top level of `cunumpy` is the NumPy (or CuPy) namespace plus the functions
 that select the backend and convert arrays. Everything else is in a submodule,
-imported with `cunumpy` (`xp.cuda.CudaKernel`, `xp.rng.random_streams`, ...).
+imported with `cunumpy` (`xp.kernels.CudaKernel`, `xp.rng.random_streams`, ...).
 The submodules are named so that they do not hide a NumPy name (`rng`, not
 `random`):
 
 | Submodule | Backends | Contents |
 |---|---|---|
 | `cunumpy` | both | NumPy/CuPy namespace, backend selection, array inspection and conversion, `synchronize`, `scipy`, `require_version` |
-| `cunumpy.cuda` | CUDA only | `CudaKernel`, `CudaKernelVariants`, `CudaStruct`, `CudaStructArguments`, `CudaArguments`, CUDA headers, debug mode, device selection and memory, `stream`, `pin_memory` |
-| `cunumpy.kernels` | both | `Kernel`, `KernelCatalog`, `PyccelKernel`, `KernelArguments`, `PyccelStructArguments`, host implementations, `as_kernel_array`, `kernel_output`, `fuse` |
+| `cunumpy.kernels` | both | `Kernel`, `KernelCatalog`, `PyccelKernel`, `CudaKernel`, `CudaKernelVariants`, host implementations, `as_kernel_array`, `kernel_output`, `fuse` |
+| `cunumpy.arguments` | CUDA only | `CudaArguments`, `CudaStruct`, `CudaStructArguments`, `CudaStructValue`, `write_cuda_header` |
+| `cunumpy.cuda` | CUDA only | device selection and memory, `stream`, streams/events, `pin_memory`, debug mode, CUDA headers and source tools (`cuda_include_dir`, `parse_cuda_signature`) |
 | `cunumpy.rng` | both | `random_streams`, `get_rng`, `philox_*` |
 | `cunumpy.algorithms` | both | `morton_*`, `sort_by_key`, `segment_sum` |
 | `cunumpy.mpi` | both | `mpi_buffer`, CUDA-aware MPI detection, `local_rank`, `synchronize_for_mpi` |
@@ -365,7 +366,7 @@ running on CuPy, and host data is never copied to the device implicitly. If
 `ValueError`; `name` is the argument name used in error messages.
 
 ```python
-class DeviceParticles(xp.cuda.CudaArguments):
+class DeviceParticles(xp.arguments.CudaArguments):
     def __init__(self, markers, degree):
         self.markers = xp.as_device_array(markers, np.float64, ndim=2, name="markers")
         self.degree = xp.as_device_array(degree, np.int32, ndim=1, name="degree")
@@ -853,12 +854,12 @@ lists) are converted back using `is_array`; dictionaries in return values are
 not recursively converted. On the NumPy path, the original return value and
 normal Python mutation and exception behavior are preserved.
 
-## `cuda.CudaKernel`
+## `kernels.CudaKernel`
 
 ### Constructor
 
 ```python
-xp.cuda.CudaKernel(
+xp.kernels.CudaKernel(
     source,
     name,
     *,
@@ -873,8 +874,8 @@ xp.cuda.CudaKernel(
     n_threads_from="auto",
     check_finite=False,
 )
-xp.cuda.CudaKernel.from_file(path, name=None, *, suffix="_cuda.cu", **kwargs)
-xp.cuda.CudaKernel.all_from_file(path, **kwargs)
+xp.kernels.CudaKernel.from_file(path, name=None, *, suffix="_cuda.cu", **kwargs)
+xp.kernels.CudaKernel.all_from_file(path, **kwargs)
 ```
 
 Wraps the `__global__` function `name` in the CUDA C `source` (declared
@@ -900,7 +901,7 @@ compiles the file once. `xp.cuda.cuda_kernel_names(source)` lists the `__global_
 functions of a source string (ignoring comments).
 
 ```python
-kernels = xp.cuda.CudaKernel.all_from_file("small_kernels.cu", block_size=64)
+kernels = xp.kernels.CudaKernel.all_from_file("small_kernels.cu", block_size=64)
 kernels["scale"](x, 2.0, x.size, n_threads=x.size)
 kernels["shift"](x, 1.0, x.size, n_threads=x.size)
 ```
@@ -941,7 +942,7 @@ resolves the quoted includes of its source when it compiles and adds a define
 with a hash of their contents to the options:
 
 ```python
-kernel = xp.cuda.CudaKernel.from_file("push/push_cuda.cu", include_dirs=[src_root])
+kernel = xp.kernels.CudaKernel.from_file("push/push_cuda.cu", include_dirs=[src_root])
 kernel.included_headers  # (Path('push/helpers.cuh'), Path('.../common.cuh'))
 kernel.options  # ('-Ipush', '-I<src_root>')
 kernel.compile_options()  # options + ('-DCUNUMPY_INCLUDE_HASH=0x3f9a...',)
@@ -1004,7 +1005,7 @@ Missing arrays or insufficient array dimensions raise with instructions to
 give an explicit size.
 
 ```python
-push = xp.cuda.CudaKernel.from_file("push_cuda.cu")
+push = xp.kernels.CudaKernel.from_file("push_cuda.cu")
 push(positions, velocities, e_field, dt)  # n_threads = positions.shape[0]
 ```
 
@@ -1037,7 +1038,7 @@ extern "C" __global__ void block_sum(const double* x, double* out, int n) {
     if (threadIdx.x == 0) out[blockIdx.x] = buffer[0];
 }
 """
-block_sum = xp.cuda.CudaKernel(BLOCK_SUM, "block_sum", block_size=128)
+block_sum = xp.kernels.CudaKernel(BLOCK_SUM, "block_sum", block_size=128)
 (n_blocks,), _ = block_sum.launch_shape(x.size)
 partial = xp.zeros(n_blocks)
 block_sum(x, partial, x.size, n_threads=x.size, shared_mem=128 * 8)
@@ -1103,7 +1104,7 @@ void scale_column(Array2D<double> a, long long column, double factor) {
     a(i, column) *= factor;
 }
 """
-scale_column = xp.cuda.CudaKernel(SCALE_COLUMN, "scale_column")
+scale_column = xp.kernels.CudaKernel(SCALE_COLUMN, "scale_column")
 view = markers[::2, 1:5]  # non-contiguous is fine
 scale_column(view, 1, 10.0, n_threads=view.shape[0])
 ```
@@ -1149,7 +1150,7 @@ __global__ void scale(T* x, T factor, int n) {
     if (i < n) x[i] = factor * x[i] * (T)N;
 }
 """
-scale_f64 = xp.cuda.CudaKernel(SCALE, "scale", template_args=(np.float64, 3))
+scale_f64 = xp.kernels.CudaKernel(SCALE, "scale", template_args=(np.float64, 3))
 scale_f64(x, 2.0, x.size, n_threads=x.size)  # instantiation scale<double, 3>
 ```
 
@@ -1158,8 +1159,8 @@ dimensions and dtype), `CudaKernelVariants` creates and caches one kernel per
 key:
 
 ```python
-matvec = xp.cuda.CudaKernelVariants(
-    lambda ndim, dtype: xp.cuda.CudaKernel(
+matvec = xp.kernels.CudaKernelVariants(
+    lambda ndim, dtype: xp.kernels.CudaKernel(
         make_source(ndim, xp.cuda.ctype_of(dtype)), "matvec"
     )
 )
@@ -1178,7 +1179,7 @@ threads (see `KernelCatalog.compile_all`).
 xp.cuda.set_cuda_debug(enabled)
 xp.cuda.get_cuda_debug()
 xp.cuda.cuda_debug(enabled=True)  # context manager
-xp.cuda.CudaKernel(..., debug=None)
+xp.kernels.CudaKernel(..., debug=None)
 kernel.debug_active()
 kernel.compile_options()
 xp.cuda.DEBUG_OPTIONS  # ("-lineinfo", "-DCUNUMPY_BOUNDS_CHECK")
@@ -1214,7 +1215,7 @@ now would use.
 
 ```python
 with xp.cuda.cuda_debug():
-    kernel = xp.cuda.CudaKernel(SOURCE, "kernel")
+    kernel = xp.kernels.CudaKernel(SOURCE, "kernel")
     kernel(
         x, y, n, n_threads=n
     )  # RuntimeError: CUDA error after launching kernel 'kernel' ...
@@ -1231,10 +1232,10 @@ CUNUMPY_CUDA_DEBUG=1 compute-sanitizer python -m pytest tests/unit/test_my_kerne
 Note that after an illegal memory access the CUDA context is unusable; the
 process (or the pytest run) has to be restarted.
 
-## `cuda.CudaStruct`
+## `arguments.CudaStruct`
 
 ```python
-Particles = xp.cuda.CudaStruct(
+Particles = xp.arguments.CudaStruct(
     "Particles",
     [("x", "double*"), ("v", "double*"), ("n", "int"), ("charge", "double")],
 )
@@ -1247,7 +1248,7 @@ extern "C" __global__ void push(Particles p, double dt) {
 }
 """
 )
-push = xp.cuda.CudaKernel(source, "push", structs=[Particles])
+push = xp.kernels.CudaKernel(source, "push", structs=[Particles])
 push(Particles(x=x, v=v, n=x.size, charge=-1.0), 0.1, n_threads=x.size)
 ```
 
@@ -1296,7 +1297,7 @@ class MarkerArguments:  # the pyccel argument class, e.g. in struphy
     def __init__(self, markers: "float[:, :]", n_markers: int, valid: "bool[:]"): ...
 
 
-MarkerArgs = xp.cuda.CudaStruct.from_signature(MarkerArguments.__init__, "MarkerArgs")
+MarkerArgs = xp.arguments.CudaStruct.from_signature(MarkerArguments.__init__, "MarkerArgs")
 print(MarkerArgs.declaration)
 # struct MarkerArgs {
 #     Array2D<double> markers;
@@ -1333,14 +1334,14 @@ or an annotation cannot be mapped.
 ### Generating headers
 
 ```python
-xp.cuda.write_cuda_header("pusher_args.cuh", [MarkerArgs, DomainArgs])
+xp.arguments.write_cuda_header("pusher_args.cuh", [MarkerArgs, DomainArgs])
 ```
 
 `struct.to_header(path=None, *, guard=None, includes=())` returns the struct
 definition as a header: an include guard (`<NAME>_CUH` by default),
 `#include "cunumpy/array_view.cuh"` if the struct has array view fields, the
 `includes` (file names or `#include` lines), and the definition. With `path`
-the header is also written. `xp.cuda.write_cuda_header(path, structs, guard=None,
+the header is also written. `xp.arguments.write_cuda_header(path, structs, guard=None,
 *, includes=())` writes several structs to one header (the guard defaults to
 the file name, `pusher_args.cuh` -> `PUSHER_ARGS_CUH`) and returns the source.
 
@@ -1349,7 +1350,7 @@ to the kernels that `#include` it, and keep it in sync with a test:
 
 ```python
 def test_pusher_args_header_is_up_to_date():
-    generated = xp.cuda.write_cuda_header(
+    generated = xp.arguments.write_cuda_header(
         tmp_path / "pusher_args.cuh", [MarkerArgs, DomainArgs]
     )
     assert Path("kernels/pusher_args.cuh").read_text() == generated
@@ -1358,10 +1359,10 @@ def test_pusher_args_header_is_up_to_date():
 Kernels created with `structs=[MarkerArgs, ...]` also check a definition in
 their own source against the Python definition (`check_source`).
 
-## `cuda.CudaStructArguments`
+## `arguments.CudaStructArguments`
 
 ```python
-class MarkerArguments(xp.cuda.CudaStructArguments):
+class MarkerArguments(xp.arguments.CudaStructArguments):
     struct_name = "MarkerArgs"
     fields = (("markers", "Array2D<double>"), ("valid", "bool*"), ("n_markers", "int"))
 
@@ -1372,7 +1373,7 @@ class MarkerArguments(xp.cuda.CudaStructArguments):
         self.pack()
 
 
-push = xp.cuda.CudaKernel(source, "push", structs=[MarkerArguments.struct])
+push = xp.kernels.CudaKernel(source, "push", structs=[MarkerArguments.struct])
 push(MarkerArguments(markers, valid), dt, n_threads=markers.shape[0])
 ```
 
@@ -1402,29 +1403,10 @@ built once per subclass when the class is defined and is the class attribute
   base class (its instances cannot be packed); setting only one raises
   `TypeError`. Subclasses of a complete class inherit its struct.
 
-## `kernels.PyccelStructArguments`
-
-`CudaStructArguments` with a host form (the `KernelArguments` protocol). Class
-attributes, besides `struct_name` and `fields`:
-
-* `host_class`: the class of the host argument object, e.g. the
-  pyccel-compiled class (which cannot inherit from anything).
-* `host_fields`: the attributes passed to `host_class(...)`, positionally and
-  in this order; by default the struct fields.
-* `host_copies`: whether `__host_args__()` may build the host object from host
-  copies of device arrays (default `False`: it raises on the CuPy backend).
-  Copies are counted by `count_transfers()`; results are not copied back.
-
-`__host_args__()` builds `host_class(*host_fields)` once, and again when one of
-the attributes was replaced (array identity or address, scalar value).
-`__cuda_args__()` is the packed struct. `has_device_arrays()` tells whether the
-array fields are device arrays; objects holding host arrays are copied and
-pickled without packing, and the host object is never pickled.
-
-## `cuda.CudaArguments`
+## `arguments.CudaArguments`
 
 ```python
-class Particles(xp.cuda.CudaArguments):
+class Particles(xp.arguments.CudaArguments):
     def __init__(self, positions, velocities):
         self.positions = positions
         super().__init__(positions, velocities, positions.shape[0])
@@ -1436,83 +1418,11 @@ kernel(dt, Particles(x, v), n_threads=x.shape[0])
 Base class for objects passed to a `CudaKernel` as one argument that stands
 for several kernel parameters. `CudaArguments(*values)` stores the values;
 `__cuda_args__()` returns them. Subclassing is optional: any object with a
-`__cuda_args__()` method returning a tuple is flattened. This lets an
-application keep its host argument objects (e.g. Pyccel classes holding NumPy
-arrays) and matching device argument objects that reference the same data on
-the device, and pass either to the same call. A `CudaArguments` object may also
-return struct values (`CudaStructValue.packed`) among its values.
-
-## `kernels.KernelArguments`
-
-```python
-class ParticleArguments(xp.kernels.KernelArguments):
-    def __init__(self, particles):
-        self._particles = particles
-        self._host = None
-        self._cuda = None
-
-    def __host_args__(self):
-        if self._host is None:  # e.g. a Pyccel class holding NumPy arrays
-            self._host = MarkerArguments(self._particles.markers)
-        return self._host
-
-    def __cuda_args__(self):
-        if self._cuda is None:  # device arrays and scalars, flattened
-            markers = self._particles.markers
-            self._cuda = (markers, markers.shape[0], markers.shape[1])
-        return self._cuda
-
-
-class Particles:
-    @property
-    def kernel_args(self):
-        if self._kernel_args is None:
-            self._kernel_args = ParticleArguments(self)
-        return self._kernel_args
-
-
-push(particles.kernel_args, dt, n_threads=n)  # same call on both backends
-```
-
-Base class for argument objects that have a host form and a device form. A
-group of arrays, e.g. the marker data of a particle species, is typically
-passed to the host kernel as one object holding NumPy arrays (a Pyccel class)
-and to the CUDA kernel as several device arrays and scalars. `KernelArguments`
-lets one object stand for both, so a `Kernel` call never branches on the
-backend:
-
-* `__host_args__()` returns the single object the host kernel receives in that
-  position. `Kernel` (on the NumPy backend) and `PyccelKernel` (always, so the
-  `missing_cuda="fallback"` path works with the same objects) replace the
-  argument by this value.
-* `__cuda_args__()` returns the tuple of CUDA kernel arguments the object
-  stands for, the `CudaArguments` protocol above; `CudaKernel` flattens it.
-
-Only top-level positional and keyword arguments are resolved, not objects
-nested in tuples, lists or dicts. The check is made on the type, like for
-`__cuda_args__`: an instance attribute named `__host_args__` (e.g. a stored
-object) is not treated as the protocol. Subclassing is optional; both methods
-of the base class raise `NotImplementedError`, so a subclass overrides the ones
-it supports (a `KernelArguments` without `__cuda_args__` raises when it reaches
-a `CudaKernel`).
-
-In the example above both forms are built lazily on first access and cached,
-so a CPU run never builds device arguments and a GPU run never builds the host
-object. The owner is responsible for invalidating the cache (setting the
-stored forms to `None`, or replacing the `ParticleArguments` object) when its
-arrays are replaced, e.g. after resizing, `deepcopy` or unpickling.
-
-### `kernels.resolve_host_args(args, kwargs=None)`
-
-Returns `(args, kwargs)` with every top-level argument whose type defines a
-callable `__host_args__()` replaced by its result; everything else is passed
-through untouched. `Kernel` and `PyccelKernel` call it before the host kernel;
-it is exported for code that calls host kernels by other means:
-
-```python
-args, kwargs = xp.kernels.resolve_host_args((particles.kernel_args, dt), {"out": out})
-host_push(*args, **kwargs)
-```
+`__cuda_args__()` method returning a tuple is flattened. Host kernels
+receive their own argument objects (e.g. Pyccel classes holding NumPy arrays)
+unchanged: the caller passes the host or the CUDA object, cunumpy never
+converts one into the other. A `CudaArguments` object may also return struct
+values (`CudaStructValue.packed`) among its values.
 
 ## `kernels.Kernel`
 
@@ -1540,10 +1450,9 @@ kernel(*args, n_threads=None, grid=None, block=None, shared_mem=0, stream=None)
 
 calls the kernel of the active backend. The launch arguments are passed to the
 CUDA kernel and ignored by the host kernel. Omitted sizes use the CUDA kernel's
-shape-based default or its configured callback. Arguments implementing
-`KernelArguments` are replaced by their
-`__host_args__()` on the host path and flattened via `__cuda_args__()` on the
-CUDA path. `kernel.compile()` compiles the CUDA kernel now and returns whether
+shape-based default or its configured callback. Arguments are passed to the
+selected kernel as they are (a `CudaKernel` flattens `__cuda_args__()`
+objects). `kernel.compile()` compiles the CUDA kernel now and returns whether
 there is one.
 
 Without a CUDA kernel on the CuPy backend, `missing_cuda="raise"` raises
@@ -1562,8 +1471,8 @@ device. Passing `host_options` together with a `PyccelKernel` raises
 `dispatch` decides which kernel a call runs. `"backend"` (default): the CUDA
 kernel on the CuPy backend, the host kernel on the NumPy backend.
 `"arrays"`: the CUDA kernel if any top-level argument lives on the GPU (a CuPy
-array, or a device-only argument object: one with `__cuda_args__()` but no
-`__host_args__()`, such as a `CudaArguments` or a struct value), else the host
+array, or a CUDA argument object: one with `__cuda_args__()`, such as a
+`CudaArguments` or a struct value), else the host
 kernel, whatever the backend. Use `"arrays"` in codes that hand host arrays to
 kernels while CuPy is active (diagnostics, MPI staging, CPU fallbacks): those
 calls then run the host kernel instead of failing in the CUDA argument checks,
