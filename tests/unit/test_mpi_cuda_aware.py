@@ -2,7 +2,6 @@
 `require_cuda_aware_mpi`. They need neither MPI nor a GPU: the communicator is
 a fake and the probe buffers are host arrays. The last test needs both."""
 
-import sys
 from types import SimpleNamespace
 
 import numpy as np
@@ -43,19 +42,21 @@ class FakeComm:
 
 
 @pytest.fixture
-def no_mpi4py(monkeypatch):
-    """Make any import of mpi4py fail."""
-    monkeypatch.setitem(sys.modules, "mpi4py", None)
-    monkeypatch.setitem(sys.modules, "mpi4py.MPI", None)
+def no_mpi(monkeypatch):
+    """Make any attempt to get the MPI module fail."""
+
+    def fail():
+        raise AssertionError("get_mpi() must not be called")
+
+    monkeypatch.setattr(mpi_module, "get_mpi", fail)
 
 
 @pytest.fixture
 def fake_mpi(monkeypatch):
-    """A fake `mpi4py.MPI` module with `COMM_WORLD` and `LAND`."""
+    """A fake `get_mpi()` module with `COMM_WORLD` and `LAND`."""
     comm = FakeComm()
     MPI = SimpleNamespace(COMM_WORLD=comm, LAND="LAND")
-    monkeypatch.setitem(sys.modules, "mpi4py", SimpleNamespace(MPI=MPI))
-    monkeypatch.setitem(sys.modules, "mpi4py.MPI", MPI)
+    monkeypatch.setattr(mpi_module, "get_mpi", lambda: MPI)
     return comm
 
 
@@ -70,11 +71,11 @@ def device_buffers(monkeypatch):
     monkeypatch.setattr(mpi_module, "_mpi_probe_buffers", buffers)
 
 
-def test_numpy_backend_returns_false_without_mpi(no_mpi4py):
+def test_numpy_backend_returns_false_without_mpi(no_mpi):
     with xp.use_backend("numpy"):
         assert xp.mpi.mpi_is_cuda_aware() is False
         assert xp.mpi.mpi_is_cuda_aware(FakeComm()) is False
-        assert xp.mpi.require_cuda_aware_mpi() is None  # no-op, mpi4py not imported
+        assert xp.mpi.require_cuda_aware_mpi() is None  # no-op, MPI not touched
 
 
 def test_unknown_method():
@@ -126,6 +127,5 @@ def test_require_raises(device_buffers, fake_mpi):
 def test_probe_on_comm_world():
     if not xp.cupy_available():
         pytest.skip("CuPy not installed or not functional")
-    pytest.importorskip("mpi4py")
     with xp.use_backend("cupy"):
         assert isinstance(xp.mpi.mpi_is_cuda_aware(), bool)
