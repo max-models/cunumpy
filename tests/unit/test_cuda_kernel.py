@@ -1,4 +1,4 @@
-"""Tests for `cunumpy.cuda.CudaKernel` and `cunumpy.cuda.parse_cuda_signature`.
+"""Tests for `cunumpy.kernels.CudaKernel` and `cunumpy.cuda.parse_cuda_signature`.
 
 Signature parsing and argument checking run everywhere: a small stand-in for a
 device array (`FakeDeviceArray`) takes the place of CuPy arrays. Launching
@@ -15,20 +15,21 @@ import pytest
 import cunumpy as xp
 import cunumpy._cuda_kernel as cuda_module
 from cunumpy import as_device_array
-from cunumpy.cuda import (
+from cunumpy.arguments import (
     CudaArguments,
-    CudaKernel,
-    CudaKernelVariants,
     CudaStruct,
     CudaStructValue,
+    write_cuda_header,
+)
+from cunumpy.cuda import (
     ctype_of,
     cuda_include_dir,
     cuda_kernel_names,
     include_hash,
     parse_cuda_signature,
     resolve_includes,
-    write_cuda_header,
 )
+from cunumpy.kernels import CudaKernel, CudaKernelVariants
 
 AXPY = r"""
 // y = a * x + y
@@ -992,7 +993,7 @@ def test_bounds_check_traps_on_gpu():
 
 BOUNDS_TRAP = f"""
 import cupy as cp
-from cunumpy.cuda import CudaKernel
+from cunumpy.kernels import CudaKernel
 
 kernel = CudaKernel({SCALE_COLUMN!r}, "scale_column", options=("-DCUNUMPY_BOUNDS_CHECK",))
 a = cp.ones((4, 3))
@@ -1526,7 +1527,7 @@ extern "C" __global__ void smash(double* y, int n) {
     if (i < n) y[((long long)i + 1) << 36] = 1.0;  // 512 GB and more past y
 }
 '''
-kernel = xp.cuda.CudaKernel(SOURCE, "smash", debug=DEBUG)
+kernel = xp.kernels.CudaKernel(SOURCE, "smash", debug=DEBUG)
 y = cp.zeros(64)
 try:
     kernel(y, 64, n_threads=64)
@@ -1816,7 +1817,7 @@ def test_as_device_array_checks_ndim():
 # ---------------------------------------------------------------------------
 
 
-class ParticleArguments(xp.cuda.CudaStructArguments):
+class ParticleArguments(xp.arguments.CudaStructArguments):
     """The class form of PARTICLES."""
 
     struct_name = "Particles"
@@ -1881,7 +1882,7 @@ def test_struct_arguments_check_their_fields():
 
 
 def test_struct_arguments_need_every_field_attribute():
-    class Incomplete(xp.cuda.CudaStructArguments):
+    class Incomplete(xp.arguments.CudaStructArguments):
         struct_name = "Incomplete"
         fields = (("x", "double*"), ("n", "int"))
 
@@ -1899,16 +1900,16 @@ def test_struct_arguments_need_every_field_attribute():
 def test_struct_arguments_class_definition():
     with pytest.raises(TypeError, match="must define both struct_name and fields"):
 
-        class OnlyName(xp.cuda.CudaStructArguments):
+        class OnlyName(xp.arguments.CudaStructArguments):
             struct_name = "OnlyName"
 
     with pytest.raises(ValueError, match="unsupported type"):
 
-        class BadField(xp.cuda.CudaStructArguments):
+        class BadField(xp.arguments.CudaStructArguments):
             struct_name = "BadField"
             fields = (("a", "Other"),)
 
-    class Base(xp.cuda.CudaStructArguments):  # intermediate base: no struct
+    class Base(xp.arguments.CudaStructArguments):  # intermediate base: no struct
         def __init__(self):
             self.pack()
 
@@ -1950,7 +1951,7 @@ class Owner:
         self.markers = FakeDeviceArray(np.float64, ptr=ptr, shape=(n, 4))
 
 
-class OwnerArguments(xp.cuda.CudaStructArguments):
+class OwnerArguments(xp.arguments.CudaStructArguments):
     struct_name = "OwnerArgs"
     fields = (("markers", "Array2D<double>"), ("n_markers", "int"))
 
@@ -2013,7 +2014,7 @@ def test_struct_arguments_as_kernel_arguments():
     packed, dt, _, _ = kernel.prepare_args(args, 1, out, size)
     assert packed is args.packed and type(dt) is np.float64
 
-    class Other(xp.cuda.CudaStructArguments):
+    class Other(xp.arguments.CudaStructArguments):
         struct_name = "Other"
         fields = (("x", "double*"),)
 

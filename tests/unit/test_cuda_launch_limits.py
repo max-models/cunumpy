@@ -9,8 +9,7 @@ import pytest
 
 import cunumpy as xp
 from cunumpy import _cuda_kernel as implementation
-from cunumpy.cuda import CudaKernel
-from cunumpy.kernels import Kernel, KernelCatalog
+from cunumpy.kernels import CudaKernel, Kernel, KernelCatalog
 
 EMPTY = 'extern "C" __global__ void empty() {}'
 requires_gpu = pytest.mark.skipif(not xp.cupy_available(), reason="requires CUDA")

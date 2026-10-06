@@ -1,8 +1,8 @@
 """Deprecated alias of :mod:`cunumpy._cuda_kernel`, removed in cunumpy 0.6.
 
-The public names are in :mod:`cunumpy.cuda`.
+The public names are in :mod:`cunumpy.kernels` and :mod:`cunumpy.arguments`.
 """
 
 from cunumpy._deprecated import alias_module
 
-alias_module(__name__, "cunumpy._cuda_kernel", "cunumpy.cuda")
+alias_module(__name__, "cunumpy._cuda_kernel", "cunumpy.kernels")

@@ -19,7 +19,7 @@ CUNUMPY_CUDA_DEBUG=1 python simulate.py            # whole process
 xp.cuda.set_cuda_debug(True)  # globally, from now on
 with xp.cuda.cuda_debug():  # for a block
     ...
-xp.cuda.CudaKernel(
+xp.kernels.CudaKernel(
     src, "push", debug=True
 )  # one kernel, regardless of the global setting
 ```
@@ -39,7 +39,7 @@ In debug mode a `CudaKernel`:
 
 ```python
 with xp.cuda.cuda_debug():
-    push = xp.cuda.CudaKernel(SOURCE, "push")
+    push = xp.kernels.CudaKernel(SOURCE, "push")
     push(markers, dt, n, n_threads=n)
 # RuntimeError: CUDA error after launching kernel 'push' with grid (79,) and block (128,): ...
 ```

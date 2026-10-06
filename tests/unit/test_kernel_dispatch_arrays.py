@@ -12,9 +12,10 @@ import pytest
 
 import cunumpy as xp
 from cunumpy import _dispatch as dispatch_module
-from cunumpy.cuda import CudaArguments, CudaKernel
+from cunumpy.arguments import CudaArguments
 from cunumpy.kernels import (
     CompiledHostKernel,
+    CudaKernel,
     HostImplementations,
     Kernel,
     KernelCatalog,

@@ -79,7 +79,7 @@ def deposit_host(x, w, rho, n_particles, n_cells, dx):
     np.add.at(rho, cells[inside], w[:n_particles][inside] / dx)
 
 
-deposit = xp.kernels.Kernel(deposit_host, xp.cuda.CudaKernel(DEPOSIT, "deposit"))
+deposit = xp.kernels.Kernel(deposit_host, xp.kernels.CudaKernel(DEPOSIT, "deposit"))
 
 # owned by a host library, e.g. a distributed vector
 rho_host = np.zeros(64)

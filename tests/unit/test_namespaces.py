@@ -13,6 +13,7 @@ import cunumpy as xp
 
 SUBMODULES = (
     "algorithms",
+    "arguments",
     "cuda",
     "kernels",
     "memory",
@@ -50,6 +51,28 @@ def test_moved_names_warn_and_resolve(name):
     with pytest.warns(DeprecationWarning, match=f"cunumpy.{submodule}.{name}"):
         value = getattr(xp, name)
     assert value is getattr(getattr(xp, submodule), name)
+
+
+def test_kernel_classes_are_in_kernels_and_arguments():
+    import cunumpy._cuda_kernel as impl
+
+    assert xp.kernels.CudaKernel is impl.CudaKernel
+    assert xp.kernels.PyccelKernel is not None
+    assert xp.arguments.CudaStructArguments is impl.CudaStructArguments
+    assert not set(xp.cuda._MOVED) & set(xp.cuda.__all__)
+    # the pre-0.5 top-level names point to the new homes
+    assert xp._MOVED["CudaKernel"] == "kernels"
+    assert xp._MOVED["CudaStruct"] == "arguments"
+
+
+@pytest.mark.parametrize("name", sorted(xp.cuda._MOVED))
+def test_names_moved_out_of_cuda_warn_and_resolve(name):
+    submodule = xp.cuda._MOVED[name]
+    with pytest.warns(DeprecationWarning, match=f"cunumpy.{submodule}.{name}"):
+        value = getattr(xp.cuda, name)
+    assert value is getattr(getattr(xp, submodule), name)
+    with pytest.raises(AttributeError):
+        _ = xp.cuda.no_such_name
 
 
 def test_numpy_names_do_not_warn():

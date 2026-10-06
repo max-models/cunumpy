@@ -14,8 +14,8 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
-from cunumpy.cuda import CudaArguments, CudaKernel
-from cunumpy.kernels import Kernel, KernelCatalog, PyccelKernel
+from cunumpy.arguments import CudaArguments
+from cunumpy.kernels import CudaKernel, Kernel, KernelCatalog, PyccelKernel
 
 SCALE_CUDA = r"""
 extern "C" __global__ void scale(double* x, double factor, int n) {

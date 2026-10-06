@@ -1,7 +1,8 @@
 """Kernels that run on either backend: dispatch, host implementations, fusion.
 
 A :class:`Kernel` pairs a host implementation (Pyccel, numba, NumPy or plain
-Python) with an optional CUDA version and runs the one matching the arrays it
+Python, wrapped in a :class:`PyccelKernel`) with an optional CUDA version (a
+:class:`CudaKernel`) and runs the one matching the arrays it
 is given; a :class:`KernelCatalog` loads every kernel of a package::
 
     import cunumpy as xp
@@ -16,11 +17,13 @@ array. :func:`fuse` turns an elementwise function into one CuPy kernel.
 Device dispatch can require CUDA with :func:`set_device_kernel_implementation`
 or temporarily with :func:`use_device_kernel_implementation`.
 
-The CUDA-only classes (:class:`~cunumpy.cuda.CudaKernel`, ...) are in
-:mod:`cunumpy.cuda`; the pytest helpers for kernel pairs are in
+Argument objects for CUDA kernels (:class:`~cunumpy.arguments.CudaStruct`, ...)
+are in :mod:`cunumpy.arguments`, the device runtime (streams, devices, debug
+mode) in :mod:`cunumpy.cuda`, and the pytest helpers for kernel pairs in
 :mod:`cunumpy.kernel_testing`.
 """
 
+from cunumpy._cuda_kernel import CudaKernel, CudaKernelVariants
 from cunumpy._dispatch import Kernel, KernelCatalog
 from cunumpy._fusion import fuse
 from cunumpy._kernel import (
@@ -43,6 +46,8 @@ __all__ = [
     "DEVICE_IMPLEMENTATIONS",
     "HOST_IMPLEMENTATIONS",
     "CompiledHostKernel",
+    "CudaKernel",
+    "CudaKernelVariants",
     "HostImplementations",
     "Kernel",
     "KernelCatalog",

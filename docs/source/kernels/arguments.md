@@ -28,7 +28,7 @@ import numpy as np
 import cunumpy as xp
 
 
-class DeviceParticles(xp.cuda.CudaArguments):
+class DeviceParticles(xp.arguments.CudaArguments):
     def __init__(self, positions, velocities):
         self.positions = xp.as_device_array(
             positions, np.float64, ndim=2, name="positions"
@@ -43,7 +43,7 @@ PUSH = r"""
 extern "C" __global__
 void push(double dt, double* x, const double* v, int n) { ... }
 """
-push = xp.cuda.CudaKernel(PUSH, "push")
+push = xp.kernels.CudaKernel(PUSH, "push")
 particles = DeviceParticles(x, v)
 push(0.1, particles, n_threads=particles.positions.shape[0])  # -> push(0.1, x, v, n)
 ```
@@ -59,7 +59,7 @@ source, its exact memory layout, and a packer for values. The kernel takes the
 struct by value as one parameter:
 
 ```python
-Particles = xp.cuda.CudaStruct(
+Particles = xp.arguments.CudaStruct(
     "Particles",
     [("x", "double*"), ("v", "double*"), ("n", "long long"), ("charge", "double")],
 )
@@ -73,7 +73,7 @@ extern "C" __global__ void push(Particles p, double dt) {
 }
 """
 )
-push = xp.cuda.CudaKernel(PUSH, "push", structs=[Particles])
+push = xp.kernels.CudaKernel(PUSH, "push", structs=[Particles])
 
 value = Particles(x=x, v=v, n=x.size, charge=-1.0)
 push(value, 0.1, n_threads=x.size)
@@ -102,7 +102,7 @@ species, domain or grid, and kept next to the host argument object), subclass
 field values as attributes and is passed to kernels as it is:
 
 ```python
-class CudaMarkerArguments(xp.cuda.CudaStructArguments):
+class CudaMarkerArguments(xp.arguments.CudaStructArguments):
     struct_name = "MarkerArgs"
     fields = (
         ("markers", "double*"),
@@ -122,8 +122,8 @@ class CudaMarkerArguments(xp.cuda.CudaStructArguments):
         self.pack()
 
 
-xp.cuda.write_cuda_header("kernels/marker_args.cuh", [CudaMarkerArguments.struct])
-push = xp.cuda.CudaKernel.from_file(
+xp.arguments.write_cuda_header("kernels/marker_args.cuh", [CudaMarkerArguments.struct])
+push = xp.kernels.CudaKernel.from_file(
     "kernels/push_cuda.cu", structs=[CudaMarkerArguments.struct]
 )
 
@@ -141,7 +141,7 @@ push(args, dt, n_threads=args.n_markers)
   array:
 
   ```python
-  class CudaMarkerArguments(xp.cuda.CudaStructArguments):
+  class CudaMarkerArguments(xp.arguments.CudaStructArguments):
       struct_name = "MarkerArgs"
       fields = (("markers", "Array2D<double>"), ("n_markers", "int"))
 
@@ -191,7 +191,7 @@ class MarkerArguments:
     def __init__(self, markers: "float[:, :]", n_markers: int, valid: "bool[:]"): ...
 
 
-MarkerArgs = xp.cuda.CudaStruct.from_signature(MarkerArguments.__init__, "MarkerArgs")
+MarkerArgs = xp.arguments.CudaStruct.from_signature(MarkerArguments.__init__, "MarkerArgs")
 print(MarkerArgs.declaration)
 ```
 
@@ -217,7 +217,7 @@ the parameter is stored in (`self.first_init_idx = first_pusher_idx` gives a
 field `first_init_idx`), and skips the parameters in `exclude=`:
 
 ```python
-MarkerArgs = xp.cuda.CudaStruct.from_pyccel_class(
+MarkerArgs = xp.arguments.CudaStruct.from_pyccel_class(
     "my_sim/kernel_arguments/pusher_args_kernels.py", "MarkerArguments", "MarkerArgs"
 )
 ```
@@ -245,7 +245,7 @@ C-contiguous (a marker array, a grid), declare it as `CArray1D<T>` to
 fast one, as in the row-major memory the host code uses.
 
 ```python
-MarkerArgs = xp.cuda.CudaStruct.from_pyccel_class(
+MarkerArgs = xp.arguments.CudaStruct.from_pyccel_class(
     "my_sim/kernel_arguments/pusher_args_kernels.py",
     "MarkerArguments",
     "MarkerArgs",
@@ -275,7 +275,7 @@ Kernels in `.cu` files include the struct from a header. Generate it from the
 Python definition and commit it:
 
 ```python
-xp.cuda.write_cuda_header("kernels/marker_args.cuh", [MarkerArgs, DomainArgs])
+xp.arguments.write_cuda_header("kernels/marker_args.cuh", [MarkerArgs, DomainArgs])
 ```
 
 The header gets an include guard (`MARKER_ARGS_CUH`), the `array_view.cuh`
@@ -287,7 +287,7 @@ from pathlib import Path
 
 
 def test_marker_args_header_is_up_to_date(tmp_path):
-    generated = xp.cuda.write_cuda_header(
+    generated = xp.arguments.write_cuda_header(
         tmp_path / "marker_args.cuh", [MarkerArgs, DomainArgs]
     )
     assert Path("kernels/marker_args.cuh").read_text() == generated
@@ -304,7 +304,7 @@ let the owner of the arrays create the one that matches the backend:
 from my_sim.kernel_arguments.pusher_args_kernels import MarkerArguments  # pyccel
 
 
-class CudaMarkerArguments(xp.cuda.CudaStructArguments):
+class CudaMarkerArguments(xp.arguments.CudaStructArguments):
     """CUDA version of MarkerArguments: same constructor, same attributes."""
 
     struct_name = "MarkerArgs"

@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- `CudaKernel` and `CudaKernelVariants` moved to `cunumpy.kernels`, next to
+  `Kernel` and `PyccelKernel`. The argument classes `CudaArguments`,
+  `CudaStruct`, `CudaStructArguments`, `CudaStructValue` and
+  `write_cuda_header` moved to the new `cunumpy.arguments`. `cunumpy.cuda`
+  keeps the device runtime and the CUDA source tools. The old
+  `cunumpy.cuda.<name>` imports still work with a `DeprecationWarning` and
+  will be removed in cunumpy 0.6.
 - **Removed** `kernels.KernelArguments`, `kernels.resolve_host_args`,
   `kernels.PyccelStructArguments` and the `__host_args__()` protocol, with no
   replacement. Kernels receive argument objects as they are. Write the host

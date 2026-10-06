@@ -24,7 +24,7 @@ def axpy_host(a, x, y, n):
         y[i] += a * x[i]
 
 
-axpy = xp.kernels.Kernel(axpy_host, xp.cuda.CudaKernel(AXPY, "axpy"), name="axpy")
+axpy = xp.kernels.Kernel(axpy_host, xp.kernels.CudaKernel(AXPY, "axpy"), name="axpy")
 
 axpy(2.0, x, y, x.size)  # infer n_threads = x.shape[0]
 ```

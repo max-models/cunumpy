@@ -24,9 +24,9 @@ import cunumpy as xp
 import cunumpy._cuda_kernel as cuda_kernel_module
 import cunumpy.kernel_testing
 from cunumpy._dispatch import FORTRAN_NAME_LIMIT, _pyccel_stub_parameters
-from cunumpy.cuda import CudaKernel, CudaStruct
+from cunumpy.arguments import CudaStruct
 from cunumpy.kernel_testing import check_parity, device_function_kernel, parity_cases
-from cunumpy.kernels import Kernel, KernelCatalog
+from cunumpy.kernels import CudaKernel, Kernel, KernelCatalog
 
 
 class FakeDeviceArray:
@@ -246,7 +246,7 @@ def test_check_finite(monkeypatch):
     kernel(Arr([1.0, np.nan]), 2.0, 2, n_threads=2)
 
 
-class CudaMarkerArguments(xp.cuda.CudaStructArguments):
+class CudaMarkerArguments(xp.arguments.CudaStructArguments):
     struct_name = "MarkerArgs"
     fields = (("markers", "Array2D<double>"), ("Np", "long long"))
 
@@ -490,7 +490,8 @@ import numpy as np
 import pytest
 import cunumpy as xp
 import cunumpy.kernel_testing as testing
-from cunumpy.cuda import CudaKernel, CudaStruct
+from cunumpy.arguments import CudaStruct
+from cunumpy.kernels import CudaKernel
 
 assert testing.fake_cupy_active()
 assert xp.cupy_available() and xp.get_backend() == "cupy", xp.get_backend()

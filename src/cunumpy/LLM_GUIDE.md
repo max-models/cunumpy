@@ -54,11 +54,13 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
     An argument the kernel writes but that is not declared leaves stale device
     data, silently. If unsure, leave `outputs=None` (copies everything back).
 11. **Helpers are in submodules; the top level is NumPy plus backend control.**
-    `xp.cuda.CudaKernel`, `xp.kernels.Kernel`, `xp.rng.random_streams`,
+    `xp.kernels.CudaKernel`, `xp.kernels.Kernel`, `xp.arguments.CudaStructArguments`,
+    `xp.rng.random_streams`,
     `xp.algorithms.morton_keys`, `xp.mpi.mpi_buffer`, `xp.profiling.timed_region`,
     `xp.memory.HostStaging`, `xp.petsc.petsc_vec`; kernel test helpers in
     `cunumpy.kernel_testing`. The old top-level names (`xp.CudaKernel`) and
-    `cunumpy.testing` are deprecated (removed in 0.6); do not write new code
+    `cunumpy.testing`, and the kernel and argument classes in `xp.cuda`
+    (`xp.cuda.CudaKernel`), are deprecated (removed in 0.6); do not write new code
     with them. Modules starting with `_` (`cunumpy._cuda_kernel`, ...) are
     private; never import from them.
 
@@ -71,7 +73,7 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
 | normalize inputs at an API boundary | `xp.to_cunumpy(a)` once |
 | hand data to SciPy/matplotlib/h5py | `xp.to_numpy(a)` |
 | call an existing NumPy-only kernel with GPU arrays (slow, correct) | `xp.kernels.PyccelKernel(fn, outputs=(...))` |
-| launch a hand-written CUDA C kernel | `xp.cuda.CudaKernel(source, "name")` / `CudaKernel.from_file(path)` |
+| launch a hand-written CUDA C kernel | `xp.kernels.CudaKernel(source, "name")` / `CudaKernel.from_file(path)` |
 | host kernel + CUDA port, chosen by backend | `xp.kernels.Kernel(host_fn, cuda_kernel_or_None)` |
 | many kernels in a package, ported incrementally | `xp.kernels.KernelCatalog.from_package(__name__, missing_cuda="fallback")` |
 | host kernels compiled at first call (your compile function), NumPy fallback | `from_package(..., host_suffix="_pyccel", compile_host=my_compile, host_fallback={...})` -> `xp.kernels.CompiledHostKernel` |
@@ -89,8 +91,8 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
 | copy device arrays to the host for output without stalling | `xp.memory.HostStaging(shape, dtype)`: `c = staging.copy(a)` ... `c.result()` |
 | PIC recipes (compaction, sort by cell, MPI exchange, graphs) | docs guide "Particle codes" |
 | reproducible random numbers per MPI rank | `xp.rng.random_streams.seed(seed, rank=rank)`, then `xp.rng.random_streams.normal(...)` / `.generator()` |
-| group arrays/scalars into one kernel argument | `xp.cuda.CudaArguments` (flattened), `xp.cuda.CudaStruct` (C struct), `xp.cuda.CudaStructArguments` (C struct as a class); host kernels take their own argument objects, the caller picks one per backend |
-| CUDA struct from a Pyccel argument class | `xp.cuda.CudaStruct.from_signature(Cls.__init__, "Name")`, `xp.cuda.write_cuda_header(...)` |
+| group arrays/scalars into one kernel argument | `xp.arguments.CudaArguments` (flattened), `xp.arguments.CudaStruct` (C struct), `xp.arguments.CudaStructArguments` (C struct as a class); host kernels take their own argument objects, the caller picks one per backend |
+| CUDA struct from a Pyccel argument class | `xp.arguments.CudaStruct.from_signature(Cls.__init__, "Name")`, `xp.arguments.write_cuda_header(...)` |
 | SciPy (sparse, sparse.linalg, fft, special, ndimage, ...) on either backend | `xp.scipy.<subpackage>.<name>` (SciPy or `cupyx.scipy`); `xp.scipy.special.available(name)` |
 | chain of elementwise operations as one GPU kernel | `@xp.kernels.fuse` (`cupy.fuse` for CuPy arrays, plain call otherwise) |
 | PETSc solve on device arrays without copies | `xp.petsc.petsc_vec(array)` (CUDA/HIP petsc4py for CuPy arrays); `xp.synchronize()` around PETSc calls |
@@ -263,17 +265,17 @@ CuPy. Does not compile anything.
 `CudaKernel`:
 
 ```python
-k = xp.cuda.CudaKernel(source, name, *, block_size=128, options=(), include_dirs=(),
+k = xp.kernels.CudaKernel(source, name, *, block_size=128, options=(), include_dirs=(),
                   source_dir=None, structs=(), template_args=None,
                   check_signature=True, debug=None)
-k = xp.cuda.CudaKernel.from_file("push/push_cuda.cu")           # name "push"
-ks = xp.cuda.CudaKernel.all_from_file("ops.cu")                 # dict name -> kernel
+k = xp.kernels.CudaKernel.from_file("push/push_cuda.cu")           # name "push"
+ks = xp.kernels.CudaKernel.all_from_file("ops.cu")                 # dict name -> kernel
 k(*args, n_threads=None, grid=None, block=None, shared_mem=0, stream=None)
 k.compile(log_stream=None); k.recompile(log_stream=None)
 k.is_compiled  # successful compilation on the current CUDA device
 k.launch_shape(n_threads=None, *, grid=None, block=None, args=None) -> (grid, block)
 k.included_headers; k.compile_options(); k.debug_active()
-xp.cuda.CudaKernelVariants(factory).get(*key); .compile_all(keys, jobs=1)
+xp.kernels.CudaKernelVariants(factory).get(*key); .compile_all(keys, jobs=1)
 xp.cuda.ctype_of(np.float64) == "double"
 xp.cuda.cuda_kernel_names(source); xp.cuda.parse_cuda_signature(source, name)
 xp.cuda.cuda_include_dir()
@@ -339,12 +341,12 @@ function `<name>` (host); optional `pkg/<name>/<name>_cuda.cu` defines
 Argument objects:
 
 ```python
-class Dev(xp.cuda.CudaArguments):  # flattened into several CUDA params
+class Dev(xp.arguments.CudaArguments):  # flattened into several CUDA params
     def __init__(self, x, n):
         super().__init__(x, n)
 
 
-S = xp.cuda.CudaStruct(
+S = xp.arguments.CudaStruct(
     "S", [("x", "double*"), ("n", "long long"), ("a", "Array2D<double>")]
 )
 S.declaration
@@ -352,12 +354,12 @@ S.dtype
 S.to_header(path)
 value = S(x=..., n=..., a=...)
 S.verify_layout()  # GPU test: compiler layout == S.dtype (also verify_layout("hdr.cuh"))
-S = xp.cuda.CudaStruct.from_signature(Cls.__init__, "S", int_type="long long")
-xp.cuda.write_cuda_header("args.cuh", [S1, S2])
+S = xp.arguments.CudaStruct.from_signature(Cls.__init__, "S", int_type="long long")
+xp.arguments.write_cuda_header("args.cuh", [S1, S2])
 
 
 class A(
-    xp.cuda.CudaStructArguments
+    xp.arguments.CudaStructArguments
 ):  # the struct as a class; A.struct is the CudaStruct
     struct_name = "A"
     fields = (("x", "double*"), ("n", "int"))
@@ -367,7 +369,7 @@ class A(
         self.pack()  # repacks itself when a field changes; copies repack
 
 
-xp.cuda.CudaKernel(S.declaration + src, "k", structs=[S])
+xp.kernels.CudaKernel(S.declaration + src, "k", structs=[S])
 
 # host kernels: a pyccel class and a CudaStructArguments with the same
 # constructor; the owner builds one per backend, cunumpy never converts them
@@ -403,7 +405,7 @@ Debugging:
 
 ```python
 xp.cuda.set_cuda_debug(True); xp.cuda.get_cuda_debug(); with xp.cuda.cuda_debug(): ...
-xp.cuda.CudaKernel(..., debug=True)    # env: CUNUMPY_CUDA_DEBUG=1
+xp.kernels.CudaKernel(..., debug=True)    # env: CUNUMPY_CUDA_DEBUG=1
 ```
 
 Debug mode adds `-lineinfo -DCUNUMPY_BOUNDS_CHECK` at compile time and
@@ -438,7 +440,7 @@ def test_parity(kernel): check_parity(kernel)
 # stand-in, no kernel launches; fake_cupy_active(); requires_cupy skips)
 
 # struct fields from a pyccel argument class (contiguous=True or names -> CArray2D<T>)
-MarkerArgs = xp.cuda.CudaStruct.from_pyccel_class("pusher_args_kernels.py", "MarkerArguments", "MarkerArgs")
+MarkerArgs = xp.arguments.CudaStruct.from_pyccel_class("pusher_args_kernels.py", "MarkerArguments", "MarkerArgs")
 kernel.n_threads_from = lambda args: args[0].n_markers   # launch size from an argument
 kernel.check_finite = True                               # NaN/inf after each launch (debug)
 ```
@@ -487,7 +489,7 @@ def scale_host(x: "float[:]", a: float, n: int):
 
 
 scale = xp.kernels.Kernel(
-    scale_host, xp.cuda.CudaKernel(SRC, "scale"), host_options={"outputs": (0,)}
+    scale_host, xp.kernels.CudaKernel(SRC, "scale"), host_options={"outputs": (0,)}
 )
 scale(x, 2.0, x.size, n_threads=x.size)
 ```
