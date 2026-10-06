@@ -8,8 +8,8 @@ from contextlib import contextmanager
 from typing import Any
 
 import array_api_compat.numpy as np
+from maybempi import local_rank
 
-from cunumpy._mpi_serial import local_rank
 from cunumpy.xp import array_backend, cupy_available
 
 

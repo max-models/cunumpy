@@ -4,7 +4,9 @@
 launcher (:func:`launched_under_mpi`, decided from the environment without
 importing mpi4py), and :class:`SerialMPI` otherwise: a stand-in whose
 ``COMM_WORLD`` is a :class:`SerialComm` of size 1, so that the same code runs
-serially without starting MPI::
+serially without starting MPI. These come from the `maybempi
+<https://max-models.github.io/maybempi/>`_ package and are re-exported here;
+``MAYBEMPI=1``/``0`` overrides the launcher detection::
 
     import cunumpy as xp
 
@@ -21,6 +23,19 @@ finds out which. :func:`local_rank` is the rank of this process on its node
 mpi4py is imported only by the functions that need it.
 """
 
+from maybempi import (
+    OVERRIDE_VARIABLE,
+    SerialComm,
+    SerialMPI,
+    SerialRequest,
+    SerialStatus,
+    get_mpi,
+    is_serial,
+    launched_under_mpi,
+    local_rank,
+    set_copy_hook,
+)
+
 from cunumpy._mpi import (
     MPIStaging,
     get_mpi_cuda_aware,
@@ -30,16 +45,21 @@ from cunumpy._mpi import (
     set_mpi_cuda_aware,
     synchronize_for_mpi,
 )
-from cunumpy._mpi_serial import (
-    OVERRIDE_VARIABLE,
-    SerialComm,
-    SerialMPI,
-    SerialRequest,
-    SerialStatus,
-    get_mpi,
-    launched_under_mpi,
-    local_rank,
-)
+from cunumpy._transfers import _ACTIVE as _COUNTERS
+from cunumpy._transfers import _nbytes, _record
+
+
+def _count_serial_copy(kind: str, array: object) -> None:
+    """Count the host/device copies of the serial stand-in's buffer collectives."""
+    if _COUNTERS:
+        _record(
+            kind,
+            f"SerialComm receive ({kind.replace('_', ' ')})",
+            nbytes=_nbytes(array),
+        )
+
+
+set_copy_hook(_count_serial_copy)
 
 __all__ = [
     "OVERRIDE_VARIABLE",
@@ -50,6 +70,7 @@ __all__ = [
     "SerialStatus",
     "get_mpi",
     "get_mpi_cuda_aware",
+    "is_serial",
     "launched_under_mpi",
     "local_rank",
     "mpi_buffer",

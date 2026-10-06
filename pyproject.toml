@@ -23,6 +23,7 @@ classifiers = [
 ]
 dependencies = [
   "array-api-compat",
+  "maybempi>=0.1",
   "numpy",
 ]
 

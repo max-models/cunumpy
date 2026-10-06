@@ -3,9 +3,9 @@
 
 import numpy as np
 import pytest
+from maybempi import LOCAL_RANK_VARIABLES as _LOCAL_RANK_VARIABLES
 
 import cunumpy as xp
-from cunumpy._mpi import _LOCAL_RANK_VARIABLES
 
 
 @pytest.fixture

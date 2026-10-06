@@ -155,6 +155,7 @@ MPI = (
     xp.mpi.get_mpi()
 )  # mpi4py.MPI under mpirun/srun, else a serial stand-in (no MPI_Init)
 xp.mpi.launched_under_mpi()  # from the launcher env, without importing mpi4py
+xp.mpi.is_serial(MPI)  # True for the stand-in (re-exported from maybempi; MAYBEMPI=0/1)
 xp.mpi.mpi_is_cuda_aware(comm)  # collective, once at startup; remembered
 with xp.mpi.mpi_buffer(a) as buf:
     comm.Send(buf, ...)  # host array, CUDA-aware device
