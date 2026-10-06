@@ -325,6 +325,40 @@ extern "C" __global__ void push(MarkerArgs m, double dt) {
 }
 ```
 
+### Contiguous views: `CArray2D<T>`
+
+`Array2D<T>` takes any view, so its strides are only known at run time and a
+kernel cannot tell which index is the fast one. When an array is always
+C-contiguous (a marker array, a grid), declare it as `CArray1D<T>` to
+`CArray4D<T>` instead. The view holds a pointer and the shape, no strides, and
+`m.markers(ip, 0)` is `data[ip * shape[1] + 0]`: the last index is always the
+fast one, as in the row-major memory the host code uses.
+
+```python
+MarkerArgs = xp.cuda.CudaStruct.from_pyccel_class(
+    "my_sim/kernel_arguments/pusher_args_kernels.py",
+    "MarkerArguments",
+    "MarkerArgs",
+    contiguous=["markers"],  # or True for every array field
+)
+```
+
+```c
+struct MarkerArgs {
+    CArray2D<double> markers;
+    long long n_markers;
+    Array1D<bool> valid;
+};
+```
+
+* A non-contiguous array (e.g. `markers[:, 0:3]`) raises `TypeError` at
+  packing or launch. It is **not** copied with `ascontiguousarray`, since
+  the kernel would write into the copy and the result would be lost.
+  Use `Array2D<T>` for arguments that are sometimes views.
+* A `CArrayND<T>` converts to an `ArrayND<T>`, so device helper functions
+  written for strided views also take it.
+* `contiguous=` works the same in `CudaStruct.from_signature`.
+
 ### Write the struct to a header
 
 Kernels in `.cu` files include the struct from a header. Generate it from the

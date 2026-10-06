@@ -69,6 +69,37 @@ def test_strided_view_written_back_into_the_callers_array():
     np.testing.assert_array_equal(markers, expected)
 
 
+CONTIGUOUS = r"""
+#include "cunumpy/array_view.cuh"
+#include <cunumpy/index.cuh>
+__device__ double sum_row(Array2D<double> a, long long i) {
+    double total = 0.0;
+    for (long long j = 0; j < a.shape[1]; ++j) total += a(i, j);
+    return total;
+}
+extern "C" __global__
+void row_sums(CArray2D<double> a, CArray3D<double> b, CArray1D<double> out) {
+    CUNUMPY_GRID_STRIDE_1D(i, a.shape[0]) {
+        out(i) = sum_row(a, i) + b(i, 1, 2);  // CArray2D converts to Array2D
+    }
+}
+"""
+
+
+def test_contiguous_views():
+    a = np.arange(12.0).reshape(4, 3)
+    b = np.arange(4 * 2 * 3.0).reshape(4, 2, 3)
+    out = np.zeros(4)
+    kernel = CudaKernel(CONTIGUOUS, "row_sums")
+    emulate_cuda_kernel(kernel, a, b, out, grid=1, block=2)
+    np.testing.assert_array_equal(out, a.sum(axis=1) + b[:, 1, 2])
+
+    with pytest.raises(TypeError, match="must be C-contiguous"):
+        emulate_cuda_kernel(
+            kernel, a[:, :2].copy()[::2], b[::2], out[:2], grid=1, block=2
+        )
+
+
 TEMPLATE = r"""
 template <typename T, int K>
 __global__ void power(T* x, int n) {

@@ -343,12 +343,18 @@ def emulate_cuda_kernel(
                         f"argument {i} ({param.name}) must be a {param.view_ndim}D "
                         f"array, got {value.ndim}D",
                     )
+                if param.contiguous and not value.flags.c_contiguous:
+                    # as on the GPU: a copy would drop what the kernel writes
+                    raise TypeError(
+                        f"argument {i} ({param.name}) must be C-contiguous for "
+                        f"{param.ctype}",
+                    )
                 buffer = np.ascontiguousarray(value)
                 path = tmp_path / f"{name}.bin"
                 buffer.tofile(path)
                 ctype = param.ctype if param.dtype is not None else "unsigned char"
                 element = (
-                    re.match(r"Array\dD<(.*)>", ctype).group(1)
+                    re.match(r"C?Array\dD<(.*)>", ctype).group(1)
                     if param.view_ndim is not None
                     else ctype
                 )
@@ -362,10 +368,11 @@ def emulate_cuda_kernel(
                     strides = ", ".join(
                         f"{s // buffer.itemsize}LL" for s in buffer.strides
                     )
+                    members = f"{{{shape}}}"
+                    if not param.contiguous:
+                        members += f", {{{strides}}}"
                     globals_.append(f"static {ctype} {name}_view;")
-                    inits.append(
-                        f"    {name}_view = {ctype}{{{name}, {{{shape}}}, {{{strides}}}}};",
-                    )
+                    inits.append(f"    {name}_view = {ctype}{{{name}, {members}}};")
                     call_args.append(f"{name}_view")
                 else:
                     call_args.append(name)
