@@ -161,9 +161,10 @@ def _pytest() -> Any:
 
 def _build_lazy() -> None:
     pytest = _pytest()
-    if cuda_required():
+    if cuda_required() and not _can_launch():
         # a string condition is evaluated when the test is set up; it fails the
-        # test (instead of skipping it) if there is no real GPU
+        # test (instead of skipping it) because there is no real GPU. With a
+        # working GPU the marker is the ordinary one below.
         requires_cupy = pytest.mark.skipif(
             "__import__('cunumpy.kernel_testing', fromlist=['_']).cuda_gate()",
             reason=SKIP_REASON,

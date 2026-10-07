@@ -553,6 +553,7 @@ print("fake cupy OK")
 def test_fake_cupy_in_subprocess():
     root = Path(__file__).resolve().parents[2]
     env = dict(os.environ, CUNUMPY_FAKE_CUPY="1", CUNUMPY_BACKEND="cupy")
+    env.pop("CUNUMPY_REQUIRE_CUDA", None)  # the fake CuPy skips by design
     env["PYTHONPATH"] = os.pathsep.join(
         p for p in (str(root / "src"), env.get("PYTHONPATH", "")) if p
     )
