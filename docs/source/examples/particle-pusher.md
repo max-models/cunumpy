@@ -335,7 +335,7 @@ as here, pure Python) host kernels on the CPU.
 ## Where to go from here
 
 * The kernels take five to seven loose arguments. In a real code, group the
-  particle data with [`KernelArguments` or a `CudaStruct`](../kernels/arguments.md).
+  particle data with [a `CudaStruct`](../kernels/arguments.md).
 * If the charge density belongs to a host library (a distributed vector
   exchanged over MPI), deposit into a [`DeviceMirror`](../kernels/accumulation.md).
 * For several GPUs, split the particles over MPI ranks, bind one GPU per rank

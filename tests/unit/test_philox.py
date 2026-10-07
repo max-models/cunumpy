@@ -6,8 +6,9 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
-from cunumpy.cuda import CudaKernel, cuda_include_dir
+from cunumpy.cuda import cuda_include_dir
 from cunumpy.kernel_testing import emulate_cuda_kernel, emulation_compiler
+from cunumpy.kernels import CudaKernel
 
 # Known-answer vectors of Philox4x32-10 (Random123, kat_vectors)
 KAT = [

@@ -24,8 +24,9 @@ never hide a NumPy name:
 
 | Submodule | Contents |
 |---|---|
-| `xp.cuda` | CUDA only: `CudaKernel`, `CudaStruct`, CUDA headers, devices, streams |
-| `xp.kernels` | `Kernel`, `KernelCatalog`, `PyccelKernel`, host implementations, `fuse` |
+| `xp.kernels` | `Kernel`, `KernelCatalog`, `PyccelKernel`, `CudaKernel`, host implementations, `fuse` |
+| `xp.arguments` | CUDA only: `CudaStruct`, `CudaStructArguments`, `CudaArguments` |
+| `xp.cuda` | CUDA only: devices, streams, debug mode, CUDA headers |
 | `xp.rng` | `random_streams`, `get_rng`, `philox_*` |
 | `xp.algorithms` | `morton_*`, `sort_by_key`, `cell_offsets`, `segment_boundaries`, `segment_sum`, `SegmentPlan` |
 | `xp.mpi` | `mpi_buffer`, reusable `MPIStaging`, CUDA-aware MPI |
@@ -34,7 +35,7 @@ never hide a NumPy name:
 | `xp.petsc` | `petsc_vec` |
 | `cunumpy.kernel_testing` | pytest helpers for host/CUDA kernel pairs |
 
-Everything except `xp.cuda` works on both backends.
+Everything except `xp.cuda`, `xp.arguments` and `CudaKernel` works on both backends.
 
 ## Install
 
@@ -333,7 +334,7 @@ def axpy(a, x, y, n):  # host version, e.g. compiled with Pyccel
         y[i] += a * x[i]
 
 
-kernel = xp.kernels.Kernel(axpy, xp.cuda.CudaKernel(AXPY, "axpy"))
+kernel = xp.kernels.Kernel(axpy, xp.kernels.CudaKernel(AXPY, "axpy"))
 
 with xp.use_backend("cupy"):
     x = xp.arange(1000, dtype=xp.float64)
@@ -356,8 +357,8 @@ the matching memory layout) and packs values into it, which the kernel takes
 as one parameter:
 
 ```python
-Vec = xp.cuda.CudaStruct("Vec", [("data", "double*"), ("n", "int")])
-scale = xp.cuda.CudaKernel(
+Vec = xp.arguments.CudaStruct("Vec", [("data", "double*"), ("n", "int")])
+scale = xp.kernels.CudaKernel(
     Vec.declaration
     + r"""
     extern "C" __global__ void scale(Vec v, double a) {
@@ -379,29 +380,15 @@ device copies. Call it once when the object is
 built, not per kernel call; on the NumPy backend it raises, so host data is
 never copied to the device implicitly.
 When the host kernel takes such a group as one object too (e.g. a Pyccel class
-holding NumPy arrays), give the group both forms with `KernelArguments`:
-`__host_args__()` returns the object for the host kernel, `__cuda_args__()`
-the flattened device arguments. `Kernel` and `PyccelKernel` resolve
-`__host_args__()` on the host path and `CudaKernel` flattens `__cuda_args__()`
-on the CUDA path, so the call site is the same on both backends and each form
-can be built lazily on first access (a CPU run never builds device arguments):
+holding NumPy arrays), write a CUDA class with the same constructor and
+attributes (a `CudaStructArguments`, see below) and let the owner of the arrays
+build the one for the active backend. CuNumpy passes argument objects through
+as they are and never converts one form into the other:
 
 ```python
-class ParticleArguments(xp.kernels.KernelArguments):
-    def __init__(self, markers):
-        self.markers = markers
-        self._host = None
-
-    def __host_args__(self):
-        if self._host is None:
-            self._host = MarkerArguments(self.markers)  # Pyccel class
-        return self._host
-
-    def __cuda_args__(self):
-        return (self.markers, self.markers.shape[0])
-
-
-kernel(particles.kernel_args, dt, n_threads=n)  # host or CUDA kernel
+args_class = CudaMarkerArguments if xp.is_gpu(markers) else MarkerArguments
+particles.args_markers = args_class(markers, markers.shape[0])
+kernel(particles.args_markers, dt)  # host or CUDA kernel
 ```
 
 Kernels ported from pyccel index arrays like `markers[ip, j]`, which needs
@@ -417,11 +404,11 @@ class MarkerArguments:
     def __init__(self, markers: "float[:, :]", n_markers: int, valid: "bool[:]"): ...
 
 
-MarkerArgs = xp.cuda.CudaStruct.from_signature(MarkerArguments.__init__, "MarkerArgs")
+MarkerArgs = xp.arguments.CudaStruct.from_signature(MarkerArguments.__init__, "MarkerArgs")
 MarkerArgs.to_header(
     "marker_args.cuh"
 )  # Array2D<double> markers; long long n_markers; ...
-push = xp.cuda.CudaKernel(
+push = xp.kernels.CudaKernel(
     r"""
     #include "marker_args.cuh"
     #include <cunumpy/index.cuh>

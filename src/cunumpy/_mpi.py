@@ -10,8 +10,8 @@ from typing import Any
 
 import array_api_compat
 import array_api_compat.numpy as np
+from maybempi import get_mpi
 
-from cunumpy._mpi_serial import _LOCAL_RANK_VARIABLES  # noqa: F401 - re-exported
 from cunumpy._transfers import _ACTIVE as _COUNTERS
 from cunumpy._transfers import _describe, _nbytes, _record
 from cunumpy.xp import array_backend, cupy_available, to_numpy
@@ -265,18 +265,6 @@ def mpi_buffer(
             cp.cuda.get_current_stream().synchronize()
 
 
-def _mpi_module() -> Any:
-    """Import and return ``mpi4py.MPI``, with a clear error if it is missing."""
-    try:
-        from mpi4py import MPI
-    except ImportError as e:
-        raise ImportError(
-            "mpi4py is required for the CUDA-aware MPI check: install it, or "
-            "pass a communicator explicitly.",
-        ) from e
-    return MPI
-
-
 def _device_buffers_in_use() -> bool:
     """Whether MPI calls of this process would carry device (CuPy) buffers."""
     return array_backend.backend == "cupy" and cupy_available()
@@ -306,8 +294,9 @@ def mpi_is_cuda_aware(comm: Any = None, *, method: str = "probe") -> bool:
     Parameters
     ----------
     comm
-        The communicator to check; ``None`` means ``mpi4py.MPI.COMM_WORLD``
-        (``mpi4py`` is imported only then, and only on the CuPy backend).
+        The communicator to check; ``None`` means ``COMM_WORLD`` of
+        :func:`~cunumpy.mpi.get_mpi` (mpi4py under an MPI launcher, else the
+        serial stand-in; only on the CuPy backend).
     method
         Only ``"probe"`` is available: each rank sends a tiny device buffer to
         rank ``(rank + 1) % size`` and receives from ``(rank - 1) % size`` with
@@ -341,7 +330,7 @@ def mpi_is_cuda_aware(comm: Any = None, *, method: str = "probe") -> bool:
     if not _device_buffers_in_use():
         return False
 
-    MPI = _mpi_module()
+    MPI = get_mpi()
     if comm is None:
         comm = MPI.COMM_WORLD
 
@@ -377,7 +366,7 @@ def require_cuda_aware_mpi(comm: Any = None) -> None:
     Parameters
     ----------
     comm
-        The communicator to check; ``None`` means ``mpi4py.MPI.COMM_WORLD``.
+        The communicator to check; ``None`` means ``get_mpi().COMM_WORLD``.
     """
     if not _device_buffers_in_use():
         return

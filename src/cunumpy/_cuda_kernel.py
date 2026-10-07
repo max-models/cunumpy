@@ -21,7 +21,9 @@ arguments as the host kernel it mirrors:
   (from the shipped header ``cunumpy/array_view.cuh``, see
   :func:`cuda_include_dir`) takes a 2D CuPy array, contiguous or not, and
   receives its pointer, shape and strides, so that kernels index ``a(i, j)``
-  like the pyccel kernels they are ported from;
+  like the pyccel kernels they are ported from; ``CArray2D<double>`` is the
+  C-contiguous variant (shape only, ``a(i, j)`` is ``data[i * shape[1] + j]``),
+  which takes C-contiguous arrays only and raises for other views;
 * C++ function templates are instantiated with ``template_args``, and generated
   kernels (one source per variant) are compiled once per variant by
   :class:`CudaKernelVariants`.
@@ -73,7 +75,6 @@ __all__ = [
     "CudaStruct",
     "CudaStructArguments",
     "CudaStructValue",
-    "PyccelStructArguments",
     "ctype_of",
     "cuda_include_dir",
     "cuda_kernel_names",
@@ -187,7 +188,11 @@ class CudaParameter(NamedTuple):
         The struct type, for a struct passed by value.
     view_ndim : int | None
         The number of dimensions, for an array view (``Array1D<T>`` to
-        ``Array4D<T>``, see :func:`cuda_include_dir`) passed by value.
+        ``Array4D<T>`` or ``CArray1D<T>`` to ``CArray4D<T>``, see
+        :func:`cuda_include_dir`) passed by value.
+    contiguous : bool
+        Whether the array view is C-contiguous (``CArray2D<T>``): packed
+        without strides, and only C-contiguous arrays are accepted.
     """
 
     name: str
@@ -196,6 +201,7 @@ class CudaParameter(NamedTuple):
     pointer: bool
     struct: CudaStruct | None = None
     view_ndim: int | None = None
+    contiguous: bool = False
 
 
 # C types (after removing qualifiers) and their NumPy dtypes. ``long`` is 64 bit,
@@ -259,30 +265,30 @@ _CTYPE_OF = {
 _QUALIFIERS = {"const", "volatile", "__restrict__", "__restrict", "restrict"}
 
 _COMPLEX = re.compile(r"(?:(?:thrust|cuda::std)::)?complex\s*<\s*(float|double)\s*>")
-# Array1D<T> to Array4D<T> (cunumpy/array_view.cuh), T a scalar type of _CTYPES
-_VIEW = re.compile(r"\bArray([1234])D\s*<((?:[^<>]|complex<[^<>]*>)+?)>")
+# Array1D<T> to Array4D<T> and CArray1D<T> to CArray4D<T> (cunumpy/array_view.cuh),
+# T a scalar type of _CTYPES
+_VIEW = re.compile(r"\b(C?)Array([1234])D\s*<((?:[^<>]|complex<[^<>]*>)+?)>")
 _TOKEN = re.compile(
-    r"Array[1234]D<[^<>]*(?:<[^<>]*>[^<>]*)?>|complex<(?:float|double)>"
+    r"C?Array[1234]D<[^<>]*(?:<[^<>]*>[^<>]*)?>|complex<(?:float|double)>"
     r"|[A-Za-z_]\w*|\*|\[\s*\]",
 )
 
 
 def _normalize_view(match: re.Match) -> str:
     """``Array2D< const double >`` -> ``Array2D<double>``."""
-    words = [w for w in match.group(2).split() if w not in _QUALIFIERS]
-    return f"Array{match.group(1)}D<{' '.join(words)}>"
+    words = [w for w in match.group(3).split() if w not in _QUALIFIERS]
+    return f"{match.group(1)}Array{match.group(2)}D<{' '.join(words)}>"
 
 
-def _view_dtype(ndim: int) -> np.dtype:
-    """The structured dtype with the C layout of ``Array<ndim>D<T>``."""
-    return np.dtype(
-        [
-            ("data", np.uint64),
-            ("shape", np.int64, (ndim,)),
-            ("strides", np.int64, (ndim,)),
-        ],
-        align=True,
-    )
+def _view_dtype(ndim: int, contiguous: bool = False) -> np.dtype:
+    """The structured dtype with the C layout of ``Array<ndim>D<T>``.
+
+    ``CArray<ndim>D<T>`` (`contiguous`) has no strides.
+    """
+    fields = [("data", np.uint64), ("shape", np.int64, (ndim,))]
+    if not contiguous:
+        fields.append(("strides", np.int64, (ndim,)))
+    return np.dtype(fields, align=True)
 
 
 def ctype_of(dtype: Any) -> str:
@@ -318,10 +324,6 @@ def _includes(source: str) -> list[tuple[str, bool]]:
         (quoted or angle, bool(quoted))
         for quoted, angle in _INCLUDE.findall(_strip_comments(source))
     ]
-
-
-def _quoted_includes(source: str) -> list[str]:
-    return [name for name, quoted in _includes(source) if quoted]
 
 
 def resolve_includes(
@@ -515,14 +517,15 @@ def _parse_parameter(
         return CudaParameter(name, ctype, struct.dtype, False, struct)
     view = _VIEW.fullmatch(ctype)
     if view is not None:
-        element = view.group(2)
+        element = view.group(3)
         if pointers or element not in _CTYPES:
             raise ValueError(
                 f"cannot check the kernel parameter {text.strip()!r}: array views "
                 f"take a scalar element type and are passed by value",
             )
-        ndim = int(view.group(1))
-        return CudaParameter(name, ctype, np.dtype(_CTYPES[element]), False, None, ndim)
+        ndim = int(view.group(2))
+        dtype = np.dtype(_CTYPES[element])
+        return CudaParameter(name, ctype, dtype, False, None, ndim, bool(view.group(1)))
     if ctype == "void" and pointers == 1:
         return CudaParameter(name, ctype, None, True)
     if pointers > 1 or ctype not in _CTYPES:
@@ -714,10 +717,13 @@ def _view_checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
     """Checker for an array view: packs (pointer, shape, strides) of a device array.
 
     Strides are converted from bytes to elements; the array need not be
-    contiguous.
+    contiguous. A contiguous view (``CArray2D<T>``) packs (pointer, shape) and
+    takes C-contiguous arrays only: it is never copied, since what the kernel
+    writes into a copy would be lost.
     """
     ndim = param.view_ndim
-    dtype = _view_dtype(ndim)
+    contiguous = param.contiguous
+    dtype = _view_dtype(ndim, contiguous)
 
     def check(value: Any) -> Any:
         _check_device_array(param, index, value)
@@ -725,6 +731,19 @@ def _view_checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
             raise TypeError(
                 f"{_describe(param, index)} must be a {ndim}D array, got {value.ndim}D",
             )
+        if contiguous:
+            flags = getattr(value, "flags", None)
+            if flags is not None and not flags.c_contiguous:
+                raise TypeError(
+                    f"{_describe(param, index)} must be C-contiguous: got a view "
+                    f"with strides {tuple(value.strides)}; declare the parameter "
+                    f"as Array{ndim}D to take strided views, or pass "
+                    f"cupy.ascontiguousarray(...) and copy the result back",
+                )
+            packed = np.zeros((), dtype=dtype)
+            packed["data"] = value.data.ptr
+            packed["shape"] = value.shape
+            return packed[()]
         itemsize = value.dtype.itemsize
         strides = [s // itemsize for s in value.strides]
         if any(s * itemsize != stride for s, stride in zip(strides, value.strides)):
@@ -835,7 +854,7 @@ def _field_dtype(field: CudaParameter) -> np.dtype:
     if field.pointer:
         return np.dtype(np.uint64)
     if field.view_ndim is not None:
-        return _view_dtype(field.view_ndim)
+        return _view_dtype(field.view_ndim, field.contiguous)
     return field.dtype
 
 
@@ -891,6 +910,27 @@ def _pyccel_ctype(annotation: Any, scalars: Mapping[str, str], what: str) -> str
     return f"Array{ndim}D<{ctype}>"
 
 
+def _apply_contiguous(
+    fields: list[tuple[str, str]],
+    contiguous: bool | Iterable[str],
+    what: str,
+) -> list[tuple[str, str]]:
+    """Make array fields ``CArray<n>D<T>``: all of them, or those named."""
+    if contiguous is True:
+        names = {f for f, ctype in fields if ctype.startswith("Array")}
+    elif contiguous is False:
+        return fields
+    else:
+        names = {contiguous} if isinstance(contiguous, str) else set(contiguous)
+        arrays = {f for f, ctype in fields if ctype.startswith("Array")}
+        if names - arrays:
+            raise ValueError(
+                f"{what}: contiguous names {sorted(names - arrays)} that are not "
+                f"array fields (array fields: {sorted(arrays)})",
+            )
+    return [(f, f"C{ctype}" if f in names else ctype) for f, ctype in fields]
+
+
 def _header_guard(name: str) -> str:
     guard = re.sub(r"\W", "_", name).upper().strip("_")
     return guard if re.match(r"[A-Z_]", guard) else f"_{guard}"
@@ -905,7 +945,7 @@ def _header_source(
     if any(f.view_ndim is not None for s in structs for f in s.fields):
         includes.insert(0, _ARRAY_VIEW_INCLUDE)
     lines = [
-        "// Generated by cunumpy.cuda.CudaStruct from the Python definition; do not edit.",
+        "// Generated by cunumpy.arguments.CudaStruct from the Python definition; do not edit.",
         f"#ifndef {guard}",
         f"#define {guard}",
         "",
@@ -1084,6 +1124,7 @@ class CudaStruct:
         *,
         int_type: str = "long long",
         scalar_names: Mapping[str, str] | None = None,
+        contiguous: bool | Iterable[str] = False,
     ) -> CudaStruct:
         """Build the struct from the annotated parameters of a Python function.
 
@@ -1109,6 +1150,10 @@ class CudaStruct:
         scalar_names : Mapping[str, str] | None
             Additional (or changed) mappings from annotation scalar names to
             C types, e.g. ``{"float": "float"}`` for single precision.
+        contiguous : bool | Iterable[str]
+            Array fields that become C-contiguous views (``CArray2D<double>``
+            instead of ``Array2D<double>``): ``True`` for all of them, or their
+            names. Packing such a field raises for a non-contiguous array.
 
         Raises
         ------
@@ -1141,7 +1186,8 @@ class CudaStruct:
                 continue
             what = f"parameter {param.name!r} of {getattr(func, '__qualname__', func)}"
             fields.append((param.name, _pyccel_ctype(param.annotation, scalars, what)))
-        return cls(name, fields)
+        what = f"{getattr(func, '__qualname__', func)}"
+        return cls(name, _apply_contiguous(fields, contiguous, what))
 
     @classmethod
     def from_pyccel_class(
@@ -1154,6 +1200,7 @@ class CudaStruct:
         scalar_names: Mapping[str, str] | None = None,
         exclude: Sequence[str] = (),
         attribute_names: bool = True,
+        contiguous: bool | Iterable[str] = False,
     ) -> CudaStruct:
         """Build the struct from the ``__init__`` of a class in a Python source file.
 
@@ -1177,8 +1224,9 @@ class CudaStruct:
             Name of the class in the source.
         name : str | None
             Name of the struct type in C; `class_name` by default.
-        int_type, scalar_names
-            As for :meth:`from_signature`.
+        int_type, scalar_names, contiguous
+            As for :meth:`from_signature` (`contiguous` takes field names, i.e.
+            attribute names when `attribute_names` is set).
         exclude : Sequence[str]
             Parameter or attribute names that do not become fields, e.g.
             scratch arrays the host class allocates for itself.
@@ -1217,6 +1265,7 @@ class CudaStruct:
                 raise ValueError(f"{what} has no type annotation")
             annotation = _annotation_text(arg.annotation)
             fields.append((field, _pyccel_ctype(annotation, scalars, what)))
+        fields = _apply_contiguous(fields, contiguous, f"{class_name} in {where}")
         return cls(class_name if name is None else name, fields)
 
     def __repr__(self) -> str:
@@ -1704,143 +1753,6 @@ def _is_device_array(value: Any) -> bool:
         value,
         "__cuda_array_interface__",
     )
-
-
-def _host_state(value: Any) -> Any:
-    """What a host argument object depends on, to detect replaced values."""
-    if _is_device_array(value) or isinstance(value, np.ndarray):
-        ptr = getattr(getattr(value, "data", None), "ptr", None)
-        if ptr is None:
-            ptr = getattr(getattr(value, "ctypes", None), "data", None)
-        return (id(value), ptr, tuple(getattr(value, "shape", ())))
-    if isinstance(value, (bool, int, float, complex, str, np.generic)):
-        return (type(value), value)
-    return ("id", id(value))
-
-
-class PyccelStructArguments(CudaStructArguments):
-    """Argument object with a pyccel host class and a C struct for CUDA kernels.
-
-    The :class:`~cunumpy.kernels.KernelArguments` form of :class:`CudaStructArguments`:
-    the same object is passed to a :class:`~cunumpy.kernels.Kernel` on both backends.
-    On the device path it arrives as the packed struct (``__cuda_args__()``);
-    on the host path, ``__host_args__()`` builds an instance of
-    :attr:`host_class` (typically a pyccel-compiled argument class, which
-    cannot inherit from anything) from the attributes named in
-    :attr:`host_fields`, once, and again when one of them was replaced.
-
-    A subclass sets :attr:`struct_name`, :attr:`fields` and :attr:`host_class`,
-    stores every field as an attribute (NumPy or CuPy arrays, whatever the
-    owner has) and, on the CuPy backend, calls :meth:`pack` at the end of its
-    constructor so that invalid arrays raise there (:meth:`has_device_arrays`
-    tells). Objects holding host arrays are copied and pickled without
-    packing; the struct is only built from device arrays.
-
-    On the CuPy backend there is no host form: the arrays are device arrays,
-    and a host kernel would have to copy them. ``__host_args__()`` raises
-    then, unless :attr:`host_copies` is True, in which case the host object is
-    built from host copies (counted by :func:`~cunumpy.profiling.count_transfers`) and
-    what the host kernel writes is **not** copied back; use it for read-only
-    evaluations only.
-
-    Attributes
-    ----------
-    host_class : type
-        The class of the host argument object, e.g. the pyccel class.
-    host_fields : Sequence[str] | None
-        The attributes passed to ``host_class(...)``, positionally and in this
-        order; by default the struct fields in declaration order.
-    host_copies : bool
-        Whether ``__host_args__()`` may copy device arrays to the host
-        (default False).
-
-    Examples
-    --------
-    >>> from my_kernels import pusher_args_kernels  # pyccel-compiled module
-    >>> class MarkerArguments(PyccelStructArguments):
-    ...     struct_name = "MarkerArgs"
-    ...     fields = (("markers", "Array2D<double>"), ("Np", "long long"))
-    ...     host_class = pusher_args_kernels.MarkerArguments
-    ...
-    ...     def __init__(self, markers, Np):
-    ...         self.markers = markers
-    ...         self.Np = Np
-    ...         if xp.is_gpu(markers):
-    ...             self.pack()
-    >>> push(MarkerArguments(markers, Np), dt, n_threads=markers.shape[0])  # doctest: +SKIP
-    """
-
-    host_class: type | None = None
-    host_fields: Sequence[str] | None = None
-    host_copies: bool = False
-
-    def _host_field_names(self) -> tuple[str, ...]:
-        if self.host_fields is not None:
-            return tuple(self.host_fields)
-        struct = getattr(type(self), "struct", None)
-        if struct is None:
-            raise TypeError(
-                f"{type(self).__qualname__} does not define struct_name and fields",
-            )
-        return tuple(field.name for field in struct.fields)
-
-    def __host_args__(self) -> Any:
-        """The host argument object, built from the current attributes."""
-        host_class = self.host_class
-        if host_class is None:
-            raise TypeError(
-                f"{type(self).__qualname__}.host_class is not set: the class of "
-                "the host argument object (e.g. the pyccel class) is required",
-            )
-        names = self._host_field_names()
-        values = [getattr(self, name) for name in names]
-        state = tuple(_host_state(value) for value in values)
-        if (
-            self.__dict__.get("_host_value") is not None
-            and self.__dict__.get("_host_state") == state
-        ):
-            return self._host_value
-        host_values = []
-        for name, value in zip(names, values):
-            if _is_device_array(value):
-                if not self.host_copies:
-                    raise RuntimeError(
-                        f"{type(self).__qualname__}.{name} is a device array: there "
-                        "is no host form on the CuPy backend. Call the CUDA kernel, "
-                        "or set host_copies = True for a read-only host evaluation "
-                        "from host copies",
-                    )
-                from cunumpy.xp import to_numpy
-
-                value = to_numpy(value)
-            host_values.append(value)
-        self._host_value = host_class(*host_values)
-        self._host_state = state
-        return self._host_value
-
-    def has_device_arrays(self) -> bool:
-        """Whether any array field is a device array (then the struct can be packed)."""
-        struct = getattr(type(self), "struct", None)
-        if struct is None:
-            return False
-        return any(
-            _is_device_array(getattr(self, field.name, None))
-            for field in struct.fields
-            if field.pointer or field.view_ndim is not None
-        )
-
-    def __getstate__(self) -> dict[str, Any]:
-        # the host object is rebuilt from the copied or restored attributes
-        state = super().__getstate__()
-        state.pop("_host_value", None)
-        state.pop("_host_state", None)
-        return state
-
-    def __setstate__(self, state: dict[str, Any]) -> None:
-        # on the NumPy backend the fields are host arrays: nothing to pack
-        self.__dict__.update(state)
-        if self.has_device_arrays():
-            self.pack()
 
 
 def _array_shapes_in(args: Sequence[Any]) -> Iterator[tuple[int, ...]]:

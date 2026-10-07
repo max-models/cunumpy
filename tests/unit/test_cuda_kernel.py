@@ -1,4 +1,4 @@
-"""Tests for `cunumpy.cuda.CudaKernel` and `cunumpy.cuda.parse_cuda_signature`.
+"""Tests for `cunumpy.kernels.CudaKernel` and `cunumpy.cuda.parse_cuda_signature`.
 
 Signature parsing and argument checking run everywhere: a small stand-in for a
 device array (`FakeDeviceArray`) takes the place of CuPy arrays. Launching
@@ -15,20 +15,21 @@ import pytest
 import cunumpy as xp
 import cunumpy._cuda_kernel as cuda_module
 from cunumpy import as_device_array
-from cunumpy.cuda import (
+from cunumpy.arguments import (
     CudaArguments,
-    CudaKernel,
-    CudaKernelVariants,
     CudaStruct,
     CudaStructValue,
+    write_cuda_header,
+)
+from cunumpy.cuda import (
     ctype_of,
     cuda_include_dir,
     cuda_kernel_names,
     include_hash,
     parse_cuda_signature,
     resolve_includes,
-    write_cuda_header,
 )
+from cunumpy.kernels import CudaKernel, CudaKernelVariants
 
 AXPY = r"""
 // y = a * x + y
@@ -756,6 +757,129 @@ def test_view_parameter_errors():
         )
 
 
+SCALE_COLUMN_CONTIGUOUS = r"""
+#include "cunumpy/array_view.cuh"
+#include <cunumpy/index.cuh>
+extern "C" __global__
+void scale_column(CArray2D<double> a, long long column, double factor) {
+    CUNUMPY_THREAD_1D(i, a.shape[0]);
+    a(i, column) *= factor;
+}
+"""
+
+
+def test_parse_contiguous_view_parameters():
+    source = (
+        "__global__ void f(CArray1D<double> a, const CArray3D< float > b, "
+        "Array2D<double> c, CArray4D<complex<double>> d) {}"
+    )
+    params = parse_cuda_signature(source, "f")
+    assert [(p.ctype, p.view_ndim, p.contiguous, p.dtype) for p in params] == [
+        ("CArray1D<double>", 1, True, np.dtype(np.float64)),
+        ("CArray3D<float>", 3, True, np.dtype(np.float32)),
+        ("Array2D<double>", 2, False, np.dtype(np.float64)),
+        ("CArray4D<complex<double>>", 4, True, np.dtype(np.complex128)),
+    ]
+    with pytest.raises(ValueError, match="array views"):
+        parse_cuda_signature("__global__ void f(CArray2D<double>* a) {}", "f")
+
+
+def test_contiguous_view_packs_pointer_and_shape_only():
+    kernel = CudaKernel(SCALE_COLUMN_CONTIGUOUS, "scale_column")
+    a = FakeDeviceArray(np.float64, ptr=0xF00, shape=(4, 3))
+    packed, _, _ = kernel.prepare_args(a, 1, 2.0)
+    assert packed.dtype.names == ("data", "shape")
+    assert packed.dtype.itemsize == 8 + 2 * 8  # data, shape[2]
+    assert packed["data"] == 0xF00
+    assert packed["shape"].tolist() == [4, 3]
+
+
+def test_contiguous_view_rejects_strided_arrays_instead_of_copying():
+    kernel = CudaKernel(SCALE_COLUMN_CONTIGUOUS, "scale_column")
+    every_second_row = FakeDeviceArray(np.float64, shape=(4, 3), strides=(48, 8))
+    with pytest.raises(TypeError, match=r"CArray2D<double> a\) must be C-contiguous"):
+        kernel.prepare_args(every_second_row, 1, 2.0)
+    with pytest.raises(TypeError, match="must be a 2D array, got 1D"):
+        kernel.prepare_args(FakeDeviceArray(np.float64, shape=(3,)), 1, 2.0)
+
+
+def test_struct_with_contiguous_view_fields():
+    struct = CudaStruct(
+        "Markers",
+        [("markers", "CArray2D<double>"), ("valid", "Array1D<bool>"), ("n", "int")],
+    )
+    assert [f.contiguous for f in struct.fields] == [True, False, False]
+    assert struct.has_views
+    assert "    CArray2D<double> markers;" in struct.declaration
+    # 24 (CArray2D) + 24 (Array1D) + 4 (int) + 4 padding
+    assert struct.dtype.itemsize == 56
+    value = struct(
+        markers=FakeDeviceArray(np.float64, ptr=0xA0, shape=(10, 7)),
+        valid=FakeDeviceArray(np.bool_, shape=(10,)),
+        n=10,
+    )
+    assert value.packed["markers"]["shape"].tolist() == [10, 7]
+    assert value.packed["markers"].dtype.names == ("data", "shape")
+    with pytest.raises(TypeError, match="must be C-contiguous"):
+        struct(
+            markers=FakeDeviceArray(np.float64, shape=(10, 3), strides=(56, 8)),
+            valid=FakeDeviceArray(np.bool_, shape=(10,)),
+            n=10,
+        )
+
+
+def test_from_signature_contiguous():
+    class Args:
+        def __init__(self, markers: "float[:, :]", valid: "bool[:]", n: "int"): ...
+
+    every = CudaStruct.from_signature(Args.__init__, "A", contiguous=True)
+    assert [f.ctype for f in every.fields] == [
+        "CArray2D<double>",
+        "CArray1D<bool>",
+        "long long",
+    ]
+    some = CudaStruct.from_signature(Args.__init__, "A", contiguous=["markers"])
+    assert [f.ctype for f in some.fields][:2] == ["CArray2D<double>", "Array1D<bool>"]
+    with pytest.raises(ValueError, match=r"\['n'\] that are not array fields"):
+        CudaStruct.from_signature(Args.__init__, "A", contiguous=["n"])
+
+    source = (
+        "class MarkerArguments:\n"
+        "    def __init__(self, mks: 'float[:, :]', n: 'int'):\n"
+        "        self.markers = mks\n"
+    )
+    struct = CudaStruct.from_pyccel_class(
+        source, "MarkerArguments", contiguous=["markers"]
+    )
+    assert [(f.name, f.ctype) for f in struct.fields] == [
+        ("markers", "CArray2D<double>"),
+        ("n", "long long"),
+    ]
+
+
+def test_scale_column_of_contiguous_view_on_gpu():
+    _skip_without_cupy()
+    import cupy as cp
+
+    a = cp.arange(12, dtype=cp.float64).reshape(4, 3)
+    expected = a.get()
+    kernel = CudaKernel(SCALE_COLUMN_CONTIGUOUS, "scale_column", block_size=2)
+    kernel(a, 1, 10.0, n_threads=4)
+    expected[:, 1] *= 10.0
+    assert np.array_equal(a.get(), expected)
+    with pytest.raises(TypeError, match="must be C-contiguous"):
+        kernel(a[::2], 1, 10.0, n_threads=2)
+
+
+def test_contiguous_view_layout_on_gpu():
+    _skip_without_cupy()
+    struct = CudaStruct(
+        "ContiguousLayout",
+        [("a", "CArray3D<float>"), ("n", "int"), ("b", "Array2D<double>")],
+    )
+    struct.verify_layout()
+
+
 MARKERS = CudaStruct(
     "Markers",
     [("markers", "Array2D<double>"), ("valid", "Array1D<bool>"), ("n", "int")],
@@ -869,7 +993,7 @@ def test_bounds_check_traps_on_gpu():
 
 BOUNDS_TRAP = f"""
 import cupy as cp
-from cunumpy.cuda import CudaKernel
+from cunumpy.kernels import CudaKernel
 
 kernel = CudaKernel({SCALE_COLUMN!r}, "scale_column", options=("-DCUNUMPY_BOUNDS_CHECK",))
 a = cp.ones((4, 3))
@@ -987,7 +1111,7 @@ def test_to_header(tmp_path):
     struct = CudaStruct.from_signature(MarkerArguments.__init__, "MarkerArgs")
     header = struct.to_header()
     assert header == (
-        "// Generated by cunumpy.cuda.CudaStruct from the Python definition; do not edit.\n"
+        "// Generated by cunumpy.arguments.CudaStruct from the Python definition; do not edit.\n"
         "#ifndef MARKERARGS_CUH\n"
         "#define MARKERARGS_CUH\n"
         "\n"
@@ -1027,7 +1151,7 @@ def test_write_cuda_header(tmp_path):
     )
     assert path.read_text() == header
     assert header.startswith(
-        "// Generated by cunumpy.cuda.CudaStruct from the Python definition; do not edit.\n"
+        "// Generated by cunumpy.arguments.CudaStruct from the Python definition; do not edit.\n"
         "#ifndef PUSHER_ARGS_CUH\n#define PUSHER_ARGS_CUH\n\n"
         '#include "cunumpy/array_view.cuh"\n#include <cupy/complex.cuh>\n\n',
     )
@@ -1403,7 +1527,7 @@ extern "C" __global__ void smash(double* y, int n) {
     if (i < n) y[((long long)i + 1) << 36] = 1.0;  // 512 GB and more past y
 }
 '''
-kernel = xp.cuda.CudaKernel(SOURCE, "smash", debug=DEBUG)
+kernel = xp.kernels.CudaKernel(SOURCE, "smash", debug=DEBUG)
 y = cp.zeros(64)
 try:
     kernel(y, 64, n_threads=64)
@@ -1693,7 +1817,7 @@ def test_as_device_array_checks_ndim():
 # ---------------------------------------------------------------------------
 
 
-class ParticleArguments(xp.cuda.CudaStructArguments):
+class ParticleArguments(xp.arguments.CudaStructArguments):
     """The class form of PARTICLES."""
 
     struct_name = "Particles"
@@ -1758,7 +1882,7 @@ def test_struct_arguments_check_their_fields():
 
 
 def test_struct_arguments_need_every_field_attribute():
-    class Incomplete(xp.cuda.CudaStructArguments):
+    class Incomplete(xp.arguments.CudaStructArguments):
         struct_name = "Incomplete"
         fields = (("x", "double*"), ("n", "int"))
 
@@ -1776,16 +1900,16 @@ def test_struct_arguments_need_every_field_attribute():
 def test_struct_arguments_class_definition():
     with pytest.raises(TypeError, match="must define both struct_name and fields"):
 
-        class OnlyName(xp.cuda.CudaStructArguments):
+        class OnlyName(xp.arguments.CudaStructArguments):
             struct_name = "OnlyName"
 
     with pytest.raises(ValueError, match="unsupported type"):
 
-        class BadField(xp.cuda.CudaStructArguments):
+        class BadField(xp.arguments.CudaStructArguments):
             struct_name = "BadField"
             fields = (("a", "Other"),)
 
-    class Base(xp.cuda.CudaStructArguments):  # intermediate base: no struct
+    class Base(xp.arguments.CudaStructArguments):  # intermediate base: no struct
         def __init__(self):
             self.pack()
 
@@ -1827,7 +1951,7 @@ class Owner:
         self.markers = FakeDeviceArray(np.float64, ptr=ptr, shape=(n, 4))
 
 
-class OwnerArguments(xp.cuda.CudaStructArguments):
+class OwnerArguments(xp.arguments.CudaStructArguments):
     struct_name = "OwnerArgs"
     fields = (("markers", "Array2D<double>"), ("n_markers", "int"))
 
@@ -1890,7 +2014,7 @@ def test_struct_arguments_as_kernel_arguments():
     packed, dt, _, _ = kernel.prepare_args(args, 1, out, size)
     assert packed is args.packed and type(dt) is np.float64
 
-    class Other(xp.cuda.CudaStructArguments):
+    class Other(xp.arguments.CudaStructArguments):
         struct_name = "Other"
         fields = (("x", "double*"),)
 

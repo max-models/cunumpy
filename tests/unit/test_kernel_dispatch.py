@@ -14,14 +14,8 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
-from cunumpy.cuda import CudaKernel
-from cunumpy.kernels import (
-    Kernel,
-    KernelArguments,
-    KernelCatalog,
-    PyccelKernel,
-    resolve_host_args,
-)
+from cunumpy.arguments import CudaArguments
+from cunumpy.kernels import CudaKernel, Kernel, KernelCatalog, PyccelKernel
 
 SCALE_CUDA = r"""
 extern "C" __global__ void scale(double* x, double factor, int n) {
@@ -403,7 +397,7 @@ def test_catalog_kernel_includes_from_the_source_root(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# KernelArguments: one argument object with a host and a device form
+# argument objects: the host object for the host kernel, the CUDA one for CUDA
 # ---------------------------------------------------------------------------
 
 
@@ -435,28 +429,13 @@ class HostVector:
         self.n = n
 
 
-class VectorArguments(KernelArguments):
-    """Lazy owner of both forms; counts how often each is built."""
+class CudaVector(CudaArguments):
+    """The CUDA counterpart of `HostVector`: flattened into (x, n)."""
 
     def __init__(self, x, n):
         self.x = x
         self.n = n
-        self.host_builds = 0
-        self.cuda_builds = 0
-        self._host = None
-        self._cuda = None
-
-    def __host_args__(self):
-        if self._host is None:
-            self.host_builds += 1
-            self._host = HostVector(self.x, self.n)
-        return self._host
-
-    def __cuda_args__(self):
-        if self._cuda is None:
-            self.cuda_builds += 1
-            self._cuda = (self.x, self.n)
-        return self._cuda
+        super().__init__(x, n)
 
 
 def scale_vector(vector, factor):
@@ -466,83 +445,21 @@ def scale_vector(vector, factor):
         vector.x[i] *= factor
 
 
-def test_kernel_arguments_base_class():
-    args = KernelArguments()
-    with pytest.raises(NotImplementedError, match="__host_args__"):
-        args.__host_args__()
-    with pytest.raises(NotImplementedError, match="__cuda_args__"):
-        args.__cuda_args__()
-
-
-def test_resolve_host_args():
-    args = VectorArguments(np.ones(3), 3)
-    plain = object()
-    received, kwargs = resolve_host_args((args, 2.0, plain), {"v": args, "n": 3})
-    assert isinstance(received[0], HostVector) and received[0].x is args.x
-    assert received[1] == 2.0 and received[2] is plain
-    assert kwargs["v"] is received[0] and kwargs["n"] == 3  # built once, cached
-    assert args.host_builds == 1 and args.cuda_builds == 0
-
-    # only the top level is resolved, and kwargs are optional
-    received, kwargs = resolve_host_args(([args], (args,)))
-    assert received[0][0] is args and received[1][0] is args and kwargs == {}
-
-
-def test_non_callable_host_args_attribute_is_not_the_protocol():
-    """Like `__cuda_args__`, the protocol is looked up on the type."""
-
-    class Holder:
-        def __init__(self):
-            self.__host_args__ = "not a method"
-
-    class ClassAttribute:
-        __host_args__ = None
-
-    holder, other = Holder(), ClassAttribute()
-    assert resolve_host_args((holder, other)) == ((holder, other), {})
-
-    kernel = Kernel(lambda h: h)
-    with xp.use_backend("numpy"):
-        assert kernel(holder) is holder
-        assert PyccelKernel(lambda h: h)(other) is other
-
-
-def test_kernel_arguments_reach_host_kernel_on_numpy():
+def test_host_argument_object_reaches_host_kernel_unchanged():
     kernel = Kernel(scale_vector, CudaKernel(SCALE_VECTOR_CUDA, "scale_vector"))
-    args = VectorArguments(np.ones(4), 4)
+    vector = HostVector(np.ones(4), 4)
     with xp.use_backend("numpy"):
-        kernel(args, 3.0)
-        kernel(args, 2.0, n_threads=4)
-    assert np.all(args.x == 6.0)
-    assert args.host_builds == 1 and args.cuda_builds == 0  # lazy and cached
+        kernel(vector, 3.0)
+        kernel(vector, 2.0, n_threads=4)
+        PyccelKernel(scale_vector)(vector, factor=0.5)
+    assert np.all(vector.x == 3.0)
 
 
-def test_kernel_arguments_with_pyccel_kernel():
-    kernel = PyccelKernel(scale_vector)
-    args = VectorArguments(np.ones(4), 4)
-    with xp.use_backend("numpy"):
-        kernel(args, 3.0)
-        kernel(args, factor=2.0)
-        kernel(vector=args, factor=0.5)
-    assert np.all(args.x == 3.0)
-    assert args.host_builds == 1 and args.cuda_builds == 0
-
-
-def test_kernel_arguments_are_flattened_for_cuda_kernel():
-    """`CudaKernel.prepare_args` uses `__cuda_args__`, `__host_args__` is not built."""
+def test_cuda_argument_object_is_flattened_for_cuda_kernel():
     x = FakeDeviceArray(np.float64)
-    args = VectorArguments(x, 7)
     kernel = CudaKernel(SCALE_VECTOR_CUDA, "scale_vector")
-    x_out, n, factor = kernel.prepare_args(args, 2.0)
+    x_out, n, factor = kernel.prepare_args(CudaVector(x, 7), 2.0)
     assert x_out is x and n == 7 and type(n) is np.int32 and factor == 2.0
-    assert args.cuda_builds == 1 and args.host_builds == 0
-
-    class HostOnly(KernelArguments):
-        def __host_args__(self):
-            return HostVector(x, 7)
-
-    with pytest.raises(NotImplementedError, match="__cuda_args__"):
-        kernel.prepare_args(HostOnly(), 2.0)
 
 
 def test_objects_without_protocol_pass_through():
@@ -554,34 +471,12 @@ def test_objects_without_protocol_pass_through():
     assert received[0] is holder and received[1][0] is holder and received[2] == 1
 
 
-def test_kernel_arguments_on_cupy():
-    """On the CuPy backend the same object is flattened via `__cuda_args__`."""
+def test_cuda_argument_object_on_cupy():
     _skip_without_cupy()
     import cupy as cp
 
     kernel = Kernel(scale_vector, CudaKernel(SCALE_VECTOR_CUDA, "scale_vector"))
-    args = VectorArguments(cp.ones(300), 300)
+    vector = CudaVector(cp.ones(300), 300)
     with xp.use_backend("cupy"):
-        kernel(args, 3.0, n_threads=300)
-    assert cp.all(args.x == 3.0)
-    assert args.cuda_builds == 1 and args.host_builds == 0
-
-
-def test_kernel_arguments_in_fallback_on_cupy():
-    """`missing_cuda="fallback"` resolves `__host_args__` through PyccelKernel."""
-    _skip_without_cupy()
-    import cupy as cp
-
-    class DeviceVectorArguments(VectorArguments):
-        def __host_args__(self):  # the host form holds host copies
-            if self._host is None:
-                self.host_builds += 1
-                self._host = HostVector(xp.to_numpy(self.x), self.n)
-            return self._host
-
-    kernel = Kernel(scale_vector, missing_cuda="fallback")
-    args = DeviceVectorArguments(cp.ones(4), 4)
-    with xp.use_backend("cupy"), pytest.warns(RuntimeWarning):
-        kernel(args, 3.0)
-    assert np.all(args.__host_args__().x == 3.0)
-    assert args.host_builds == 1 and args.cuda_builds == 0
+        kernel(vector, 3.0, n_threads=300)
+    assert cp.all(vector.x == 3.0)

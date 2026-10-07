@@ -19,7 +19,7 @@ void axpy(double a, const double* x, double* y, int n) {
 }
 """
 
-axpy = xp.cuda.CudaKernel(AXPY, "axpy")
+axpy = xp.kernels.CudaKernel(AXPY, "axpy")
 
 xp.set_backend("cupy")
 x = xp.arange(10_000, dtype=xp.float64)
@@ -138,7 +138,7 @@ extern "C" __global__ void block_sum(const double* x, double* out, int n) {
     if (threadIdx.x == 0) out[blockIdx.x] = buffer[0];
 }
 """
-block_sum = xp.cuda.CudaKernel(BLOCK_SUM, "block_sum", block_size=128)
+block_sum = xp.kernels.CudaKernel(BLOCK_SUM, "block_sum", block_size=128)
 (n_blocks,), (threads,) = block_sum.launch_shape(x.size)
 partial = xp.zeros(n_blocks)
 block_sum(x, partial, x.size, n_threads=x.size, shared_mem=threads * 8)
@@ -151,7 +151,7 @@ Keeping CUDA source in `.cu` files gives editor support and lets kernels share
 headers:
 
 ```python
-push = xp.cuda.CudaKernel.from_file("kernels/push/push_cuda.cu")  # kernel name "push"
+push = xp.kernels.CudaKernel.from_file("kernels/push/push_cuda.cu")  # kernel name "push"
 ```
 
 `from_file` derives the kernel name from the file name minus the `_cuda.cu`
@@ -162,7 +162,7 @@ A file with several small kernels is loaded at once with `all_from_file`, which
 returns a dict by name; the kernels share one compilation:
 
 ```python
-ops = xp.cuda.CudaKernel.all_from_file("kernels/vector_ops.cu", block_size=256)
+ops = xp.kernels.CudaKernel.all_from_file("kernels/vector_ops.cu", block_size=256)
 ops["scale"](x, 2.0, x.size, n_threads=x.size)
 ops["shift"](x, 1.0, x.size, n_threads=x.size)
 ```
@@ -210,7 +210,7 @@ void scale_column(Array2D<double> a, long long column, double factor) {
     a(i, column) *= factor;
 }
 """
-scale_column = xp.cuda.CudaKernel(SCALE_COLUMN, "scale_column")
+scale_column = xp.kernels.CudaKernel(SCALE_COLUMN, "scale_column")
 
 markers = xp.zeros((1000, 7))
 view = markers[::2, 1:5]  # non-contiguous view is fine
@@ -247,8 +247,8 @@ __global__ void scale(T* x, T factor, int n) {
     if (i < n) x[i] *= factor;
 }
 """
-scale_f64 = xp.cuda.CudaKernel(SCALE, "scale", template_args=(np.float64,))
-scale_f32 = xp.cuda.CudaKernel(SCALE, "scale", template_args=(np.float32,))
+scale_f64 = xp.kernels.CudaKernel(SCALE, "scale", template_args=(np.float64,))
+scale_f32 = xp.kernels.CudaKernel(SCALE, "scale", template_args=(np.float32,))
 ```
 
 When the source itself is generated per variant (unrolled loops per dimension,
@@ -257,10 +257,10 @@ on first use and caches it:
 
 ```python
 def make_matvec(ndim, dtype):
-    return xp.cuda.CudaKernel(generate_source(ndim, xp.cuda.ctype_of(dtype)), "matvec")
+    return xp.kernels.CudaKernel(generate_source(ndim, xp.cuda.ctype_of(dtype)), "matvec")
 
 
-matvec = xp.cuda.CudaKernelVariants(make_matvec)
+matvec = xp.kernels.CudaKernelVariants(make_matvec)
 matvec.get(3, np.float64)(mat, x, out, n_threads=out.size)
 matvec.compile_all([(3, np.float64), (3, np.complex128)], jobs=4)  # at setup
 ```

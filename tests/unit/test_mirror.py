@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
-from cunumpy.cuda import CudaKernel
+from cunumpy.kernels import CudaKernel
 from cunumpy.memory import DeviceMirror
 
 requires_gpu = pytest.mark.skipif(

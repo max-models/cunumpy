@@ -2,7 +2,7 @@
 
 A :class:`Kernel` holds a host kernel (a :class:`~cunumpy.kernels.PyccelKernel`, e.g. a
 Pyccel-compiled function) and, optionally, its 1:1 corresponding CUDA kernel
-(:class:`~cunumpy.cuda.CudaKernel`). It calls the host kernel on the NumPy backend and
+(:class:`~cunumpy.kernels.CudaKernel`). It calls the host kernel on the NumPy backend and
 the CUDA kernel on the CuPy backend (or, with ``dispatch="arrays"``, the CUDA
 kernel for device arguments and the host kernel for host arguments), so a code
 base can port its kernels to CUDA one by one.
@@ -40,7 +40,6 @@ from cunumpy._kernel import (
     HostImplementations,
     PyccelKernel,
     get_device_kernel_implementation,
-    resolve_host_args,
 )
 from cunumpy._transfers import _ACTIVE as _COUNTERS
 from cunumpy._transfers import _record
@@ -58,17 +57,10 @@ _is_device_array = array_api_compat.is_cupy_array
 def _on_device(arg: Any) -> bool:
     """Whether a kernel argument lives on the GPU.
 
-    A CuPy array, or a device-only argument object (one with ``__cuda_args__``
-    but no ``__host_args__``, e.g. a :class:`~cunumpy.cuda.CudaArguments` or a struct
-    value). A :class:`~cunumpy.kernels.KernelArguments` object has both forms and does
-    not decide.
+    A CuPy array, or a CUDA argument object (one with ``__cuda_args__``, e.g. a
+    :class:`~cunumpy.arguments.CudaArguments` or a struct value).
     """
-    if _is_device_array(arg):
-        return True
-    kind = type(arg)
-    return callable(getattr(kind, "__cuda_args__", None)) and not callable(
-        getattr(kind, "__host_args__", None),
-    )
+    return _is_device_array(arg) or callable(getattr(type(arg), "__cuda_args__", None))
 
 
 #: Longest name a Fortran compiler accepts. pyccel names the wrapper module of a
@@ -179,7 +171,7 @@ class Kernel:
         the CUDA kernel on the CuPy backend, the host kernel on the NumPy
         backend. ``"arrays"``: the CUDA kernel if any top-level argument lives
         on the GPU (a CuPy array, or a device-only argument object such as a
-        :class:`~cunumpy.cuda.CudaArguments` or a struct value), else the host
+        :class:`~cunumpy.arguments.CudaArguments` or a struct value), else the host
         kernel, whatever the backend. Use ``"arrays"`` when a code deliberately
         hands host arrays to kernels while CuPy is active (diagnostics, MPI
         staging, CPU fallbacks): the host kernel then runs on the host arrays
@@ -189,11 +181,11 @@ class Kernel:
     -----
     Both kernels take the same arguments, except that the CUDA kernel gets the
     launch shape (``n_threads`` or ``grid``) and argument objects in their CUDA
-    form (see :class:`~cunumpy.cuda.CudaArguments` and :class:`~cunumpy.cuda.CudaStruct`).
-    An argument object implementing :class:`~cunumpy.kernels.KernelArguments` is
-    replaced by its ``__host_args__()`` on the host path and flattened via
-    ``__cuda_args__()`` on the CUDA path, so the call site is the same on both
-    backends.
+    form (see :class:`~cunumpy.arguments.CudaArguments` and :class:`~cunumpy.arguments.CudaStruct`).
+    Argument objects are passed as they are: the caller passes the host
+    argument object (e.g. a pyccel class) on the host and the CUDA one (a
+    :class:`~cunumpy.arguments.CudaStructArguments`) on the device; see
+    :doc:`/kernels/arguments`.
     """
 
     def __init__(
@@ -602,12 +594,10 @@ class Kernel:
         Parameters
         ----------
         *args
-            Kernel arguments. Objects implementing
-            :class:`~cunumpy.kernels.KernelArguments` are resolved per backend (see
-            :func:`~cunumpy.kernels.resolve_host_args`).
+            Kernel arguments, as the selected kernel takes them.
         n_threads, grid, block, shared_mem, stream
             Launch configuration of the CUDA kernel, see
-            :meth:`CudaKernel.__call__ <cunumpy.cuda.CudaKernel.__call__>`;
+            :meth:`CudaKernel.__call__ <cunumpy.kernels.CudaKernel.__call__>`;
             Thread counts are inferred from array shapes by default;
             `n_threads` or `grid` overrides that choice.
             Ignored by the host kernel.
@@ -625,7 +615,6 @@ class Kernel:
                     f"Kernel {self._name!r} has no CUDA kernel: host kernel "
                     "called on the CuPy backend",
                 )
-            args, _ = resolve_host_args(args)
             if (
                 self._dispatch == "arrays"
                 and not on_device
@@ -698,7 +687,7 @@ class KernelCatalog(Mapping):
         is the CUDA kernel (with a ``__global__`` function ``<name>``). Other
         ``__global__`` functions in that file are ignored by the catalog; load
         them with :meth:`CudaKernel.all_from_file
-        <cunumpy.cuda.CudaKernel.all_from_file>`.
+        <cunumpy.kernels.CudaKernel.all_from_file>`.
 
         Parameters
         ----------

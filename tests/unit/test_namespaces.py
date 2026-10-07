@@ -1,4 +1,4 @@
-"""Tests for the submodule layout of cunumpy (0.5) and the deprecated top-level names."""
+"""Tests for the submodule layout of cunumpy and the backend names of the top level."""
 
 import importlib
 import os
@@ -13,6 +13,7 @@ import cunumpy as xp
 
 SUBMODULES = (
     "algorithms",
+    "arguments",
     "cuda",
     "kernels",
     "memory",
@@ -38,18 +39,19 @@ def test_submodule_exports_resolve(name):
 
 
 def test_top_level_is_backend_and_numpy_only():
-    moved = set(xp._MOVED)
-    assert not moved & set(xp.__all__)
     for name in xp.__all__:
         assert hasattr(xp, name)
 
 
-@pytest.mark.parametrize("name", sorted(xp._MOVED))
-def test_moved_names_warn_and_resolve(name):
-    submodule = xp._MOVED[name]
-    with pytest.warns(DeprecationWarning, match=f"cunumpy.{submodule}.{name}"):
-        value = getattr(xp, name)
-    assert value is getattr(getattr(xp, submodule), name)
+def test_kernel_classes_are_in_kernels_and_arguments():
+    import cunumpy._cuda_kernel as impl
+
+    assert xp.kernels.CudaKernel is impl.CudaKernel
+    assert xp.kernels.PyccelKernel is not None
+    assert xp.arguments.CudaStructArguments is impl.CudaStructArguments
+    for name in ("CudaKernel", "CudaStruct"):
+        assert not hasattr(xp.cuda, name)
+        assert name not in vars(xp)
 
 
 def test_numpy_names_do_not_warn():
@@ -63,6 +65,8 @@ def test_numpy_names_do_not_warn():
 def test_unknown_name_raises():
     with pytest.raises(AttributeError):
         _ = xp.no_such_function_in_cunumpy
+    with pytest.raises(AttributeError):
+        _ = xp.cuda.no_such_name
 
 
 def test_kernel_testing_keeps_numpy_testing():
@@ -70,25 +74,6 @@ def test_kernel_testing_keeps_numpy_testing():
 
     with xp.use_backend("numpy"):
         assert xp.testing is np.testing
-
-
-def test_testing_alias_is_deprecated():
-    # a fresh process: importing cunumpy.testing rebinds xp.testing for the rest of it
-    code = (
-        "import warnings\n"
-        "warnings.simplefilter('error')\n"
-        "try:\n"
-        "    import cunumpy.testing\n"
-        "except DeprecationWarning as w:\n"
-        "    assert 'cunumpy.kernel_testing' in str(w)\n"
-        "else:\n"
-        "    raise SystemExit('no warning')\n"
-        "warnings.simplefilter('ignore')\n"
-        "import cunumpy.testing, cunumpy.kernel_testing\n"
-        "assert cunumpy.testing.assert_kernels_agree is "
-        "cunumpy.kernel_testing.assert_kernels_agree\n"
-    )
-    subprocess.run([sys.executable, "-c", code], check=True)
 
 
 def test_backend_names_are_plain_attributes():
@@ -102,8 +87,6 @@ def test_backend_names_are_plain_attributes():
 def test_backend_names_never_hide_cunumpy_names():
     assert xp.cuda is importlib.import_module("cunumpy.cuda")
     assert xp.scipy is importlib.import_module("cunumpy._scipy_backend").scipy
-    for name in xp._MOVED:
-        assert name not in vars(xp), name
 
 
 def test_switching_the_backend_replaces_the_names():

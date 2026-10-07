@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
-from cunumpy.cuda import CudaKernel
 from cunumpy.kernel_testing import emulate_cuda_kernel, emulation_compiler
+from cunumpy.kernels import CudaKernel
 
 requires_cuda = pytest.mark.skipif(not xp.cupy_available(), reason="requires CUDA")
 

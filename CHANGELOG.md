@@ -8,6 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- The launcher detection and the serial MPI stand-in moved to the new package
+  [maybempi](https://github.com/max-models/maybempi), a dependency of cunumpy.
+  `xp.mpi` re-exports them (`get_mpi`, `launched_under_mpi`, `local_rank`,
+  `SerialMPI`, `SerialComm`, ...), plus the new `xp.mpi.is_serial`. The override
+  variable is now `MAYBEMPI=1`/`0`; `CUNUMPY_MPI` is no longer read.
+- `CudaKernel` and `CudaKernelVariants` moved to `cunumpy.kernels`, next to
+  `Kernel` and `PyccelKernel`. The argument classes `CudaArguments`,
+  `CudaStruct`, `CudaStructArguments`, `CudaStructValue` and
+  `write_cuda_header` moved to the new `cunumpy.arguments`. `cunumpy.cuda`
+  keeps the device runtime and the CUDA source tools. The old
+  `cunumpy.cuda.<name>` names are removed.
+- **Removed** the deprecated names that were kept for one release after the
+  0.5 reorganisation, with no replacement other than the submodules:
+  the top-level helpers (`xp.CudaKernel`, `xp.mpi_buffer`, `xp.fuse` as cunumpy's,
+  ...; use `xp.kernels`, `xp.arguments`, `xp.cuda`, `xp.mpi`, `xp.rng`,
+  `xp.algorithms`, `xp.profiling`, `xp.memory` and `xp.petsc`), and the modules
+  `cunumpy.testing` (now `cunumpy.kernel_testing`), `cunumpy.kernel`,
+  `cunumpy.dispatch` and `cunumpy.cuda_kernel` (public names are in
+  `cunumpy.kernels` and `cunumpy.arguments`). Also removed the placeholder
+  `cunumpy.main`. `xp.fuse` is now CuPy's own `fuse`.
+- **Removed** `kernels.KernelArguments`, `kernels.resolve_host_args`,
+  `kernels.PyccelStructArguments` and the `__host_args__()` protocol, with no
+  replacement. Kernels receive argument objects as they are. Write the host
+  argument class (e.g. pyccel) and a `CudaStructArguments` with the same
+  constructor, and let the owner of the arrays build the one for its backend.
+  `Kernel(dispatch="arrays")` now treats every object with `__cuda_args__()` as
+  a device argument.
 - Rename `CUNUMPY_KERNEL_IMPLEMENTATION` to
   `CUNUMPY_HOST_KERNEL_IMPLEMENTATION` to make its host-only scope explicit.
   The former environment variable is no longer read; update job scripts.
@@ -17,6 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The former function names are removed without compatibility aliases.
 
 ### Added
+- C-contiguous array views `CArray1D<T>` to `CArray4D<T>` in
+  `cunumpy/array_view.cuh`. They hold a pointer and shape only, so `a(i, j)` is
+  `data[i * shape[1] + j]`. As kernel parameters or struct fields, they reject
+  non-contiguous arrays and never copy them. `CudaStruct.from_signature` and
+  `from_pyccel_class` take `contiguous=True` or field names to generate them.
 - Device implementation selection via `kernels.set_device_kernel_implementation`,
   `get_device_kernel_implementation`, `use_device_kernel_implementation`, and
   `CUNUMPY_DEVICE_KERNEL_IMPLEMENTATION`. Accept `"cuda"` or automatic selection

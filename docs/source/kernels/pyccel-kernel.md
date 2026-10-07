@@ -83,8 +83,6 @@ Other details:
   (for NumPy subclasses).
 * **`use_cupy`** forces conversion on (`True`) or off (`False`); the default
   `None` decides per call.
-* **Argument objects with two forms** (`KernelArguments`) are replaced by their
-  `__host_args__()` first; see [Kernel arguments and structs](arguments.md).
 
 ## Costs and when to move on
 

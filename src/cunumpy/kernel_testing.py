@@ -201,7 +201,7 @@ def _collect_arrays(
     argument object (e.g. a ``CudaArguments`` object), are named
     ``"argument <i>[<j>]"`` or ``"argument <i>.<attribute>"``, and arrays in a
     container attribute of an object ``"argument <i>.<attribute>[<j>]"``. A
-    :class:`~cunumpy.cuda.CudaStructArguments` object or a struct value is read
+    :class:`~cunumpy.arguments.CudaStructArguments` object or a struct value is read
     through its struct fields, ``"argument <i>.<field>"``, so that its arrays
     get the names of the attributes of the host argument object it mirrors,
     also when the fields are properties.
@@ -291,7 +291,7 @@ def assert_kernels_agree(
         arguments only.
     n_threads, grid, block
         Launch configuration of the CUDA kernel, see
-        :meth:`CudaKernel.__call__ <cunumpy.cuda.CudaKernel.__call__>`. `n_threads`
+        :meth:`CudaKernel.__call__ <cunumpy.kernels.CudaKernel.__call__>`. `n_threads`
         may also be a function of the tuple of arguments, e.g.
         ``lambda args: args[0].shape[0]``. Omitted sizes use the CUDA kernel's
         shape-based default or its configured ``n_threads_from``; explicit sizes
@@ -548,7 +548,7 @@ def device_function_kernel(
         Name of the generated output array parameter.
     **kwargs
         Passed on to :class:`CudaKernel`, e.g. ``include_dirs``, ``options``,
-        ``block_size`` or ``structs`` (the :class:`~cunumpy.cuda.CudaStruct` types
+        ``block_size`` or ``structs`` (the :class:`~cunumpy.arguments.CudaStruct` types
         of struct parameters, whose definitions `header_source` or the
         `includes` must provide).
 
@@ -563,7 +563,7 @@ def device_function_kernel(
           every call (an array shared by all threads);
         * a struct parameter (``DomainArgs d`` or ``const DomainArgs& d``) is
           taken by value and passed through unchanged to every call (pass a
-          :class:`~cunumpy.cuda.CudaStructArguments` object or a packed value);
+          :class:`~cunumpy.arguments.CudaStructArguments` object or a packed value);
         * a scalar parameter ``T x`` becomes a device array ``const T* x`` of
           length ``n``, and thread ``i`` calls the function with ``x[i]``;
         * the return value of thread ``i`` is stored in ``out[i]``, an array

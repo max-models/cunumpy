@@ -91,7 +91,7 @@ def axpy(a, x, y, n):  # the host version
     y[:n] += a * x[:n]
 
 
-kernel = xp.kernels.Kernel(axpy, xp.cuda.CudaKernel(AXPY, "axpy"))
+kernel = xp.kernels.Kernel(axpy, xp.kernels.CudaKernel(AXPY, "axpy"))
 
 x = xp.arange(1000, dtype=xp.float64)
 y = xp.zeros(1000)
