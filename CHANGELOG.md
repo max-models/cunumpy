@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `xp.kernels.MetalKernel` runs a Metal Shading Language kernel on the GPU of an
+  Apple silicon Mac through MLX (`pip install 'cunumpy[metal]'`). It takes and
+  fills NumPy arrays, is float32 only (`float64="cast"` computes float64 data in
+  float32), and its copies are counted by `xp.profiling.count_transfers()`.
+  `xp.kernels.metal_available()` tells whether it can run.
 - `xp.host_call`, `xp.evaluate_on_host` and `xp.setup_on_host` run host-only code
   (SciPy splines, file readers, external libraries) with arguments of either
   backend: device arrays are copied to the host, the call runs on the NumPy
