@@ -14,6 +14,7 @@ from cunumpy import (
     rng,
     xp,
 )
+from cunumpy._host import evaluate_on_host, host_call, setup_on_host
 from cunumpy._scipy_backend import scipy
 from cunumpy.xp import (
     as_device_array,
@@ -79,9 +80,11 @@ __all__ = [
     "cupy_available",
     "cupy_backend",
     "default_float_dtype",
+    "evaluate_on_host",
     "get_array_backend",
     "get_array_module",
     "get_backend",
+    "host_call",
     "is_cpu",
     "is_gpu",
     "kernels",
@@ -95,6 +98,7 @@ __all__ = [
     "same_backend",
     "scipy",
     "set_backend",
+    "setup_on_host",
     "synchronize",
     "to_cunumpy",
     "to_cupy",

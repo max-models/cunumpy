@@ -39,7 +39,7 @@ The submodules are named so that they do not hide a NumPy name (`rng`, not
 
 | Submodule | Backends | Contents |
 |---|---|---|
-| `cunumpy` | both | NumPy/CuPy namespace, backend selection, array inspection and conversion, `synchronize`, `scipy`, `require_version` |
+| `cunumpy` | both | NumPy/CuPy namespace, backend selection, array inspection and conversion, `synchronize`, `host_call`, `evaluate_on_host`, `setup_on_host`, `scipy`, `require_version` |
 | `cunumpy.kernels` | both | `Kernel`, `KernelCatalog`, `PyccelKernel`, `CudaKernel`, `CudaKernelVariants`, host implementations, `as_kernel_array`, `kernel_output`, `fuse` |
 | `cunumpy.arguments` | CUDA only | `CudaArguments`, `CudaStruct`, `CudaStructArguments`, `CudaStructValue`, `write_cuda_header` |
 | `cunumpy.cuda` | CUDA only | device selection and memory, `stream`, streams/events, `pin_memory`, debug mode, CUDA headers and source tools (`cuda_include_dir`, `parse_cuda_signature`) |
