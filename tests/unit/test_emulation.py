@@ -387,3 +387,72 @@ def test_bounds_checks_from_the_view_header():
             n_threads=4,
             options=("-DCUNUMPY_BOUNDS_CHECK",),
         )
+
+
+@pytest.mark.parametrize("ndim", range(5, 17))
+@pytest.mark.parametrize("contiguous", [False, True])
+@pytest.mark.parametrize("backend", ["emulation", "cuda"])
+def test_high_dimensional_view_indexing_and_conversion(ndim, contiguous, backend):
+    # Exercise every axis with unequal extents, including singleton dimensions.
+    # Reading via a strided device helper also tests CArray -> Array conversion.
+    ctype = f"{'C' if contiguous else ''}Array{ndim}D<double>"
+    indices = ", ".join(f"i[{axis}]" for axis in range(ndim))
+    source = f"""
+    #include <cunumpy/array_view.cuh>
+    #include <cunumpy/index.cuh>
+    __device__ double read(Array{ndim}D<double> a, const long long* i) {{
+        return a({indices});
+    }}
+    extern "C" __global__ void update({ctype} a) {{
+        CUNUMPY_THREAD_1D(flat, a.size());
+        long long i[{ndim}], remaining = flat;
+        for (int axis = {ndim} - 1; axis >= 0; --axis) {{
+            i[axis] = remaining % a.shape[axis];
+            remaining /= a.shape[axis];
+        }}
+        a({indices}) = read(a, i) + flat + 1;
+    }}
+    """
+    shape = (2, 3) + (1,) * (ndim - 3) + (4,)
+    base = np.arange(48.0).reshape(shape[:-1] + (8,))
+    if contiguous:
+        a = base[..., :4].copy()
+    else:
+        a = base[..., ::-2].swapaxes(0, 1)
+    expected = a.copy() + np.arange(a.size).reshape(a.shape) + 1
+    kernel = CudaKernel(source, "update", options=("-DCUNUMPY_BOUNDS_CHECK",))
+    if backend == "emulation":
+        emulate_cuda_kernel(kernel, a, n_threads=a.size)
+        np.testing.assert_array_equal(a, expected)
+        if not contiguous:
+            np.testing.assert_array_equal(
+                base[..., 0::2], np.arange(48.0).reshape(base.shape)[..., 0::2]
+            )
+    else:
+        import cunumpy as xp
+
+        if not xp.cupy_available():
+            pytest.skip("CuPy not installed or not functional")
+        import cupy as cp
+
+        device_base = cp.asarray(base)
+        device = cp.asarray(a) if contiguous else device_base[..., ::-2].swapaxes(0, 1)
+        kernel(device, n_threads=device.size)
+        np.testing.assert_array_equal(cp.asnumpy(device), expected)
+
+
+@pytest.mark.parametrize("contiguous", [False, True])
+def test_high_dimensional_bounds_check(contiguous):
+    ctype = f"{'C' if contiguous else ''}Array16D<double>"
+    indices = ", ".join(["0"] * 15 + ["1"])
+    source = f"""
+    #include <cunumpy/array_view.cuh>
+    extern "C" __global__ void invalid({ctype} a) {{ a({indices}) = 1; }}
+    """
+    with pytest.raises(RuntimeError, match="crashed"):
+        emulate_cuda_kernel(
+            CudaKernel(source, "invalid"),
+            np.zeros((1,) * 16),
+            n_threads=1,
+            options=("-DCUNUMPY_BOUNDS_CHECK",),
+        )

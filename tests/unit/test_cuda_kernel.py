@@ -705,7 +705,7 @@ def test_parse_view_parameters():
     with pytest.raises(ValueError, match="array views"):
         parse_cuda_signature("__global__ void f(Array2D<Other> a) {}", "f")
     with pytest.raises(ValueError, match="unsupported type"):
-        parse_cuda_signature("__global__ void f(Array5D<double> a) {}", "f")
+        parse_cuda_signature("__global__ void f(Array17D<double> a) {}", "f")
 
 
 def test_view_parameters_pack_pointer_shape_and_strides():
@@ -1088,7 +1088,7 @@ def test_from_signature_errors():
     def unknown(x: "str[:]"):
         pass
 
-    def too_many(x: "float[:, :, :, :, :]"):
+    def too_many(x: "float[:, :, :, :, :, :, :, :, :, :, :, :, :, :, :, :, :]"):
         pass
 
     def unparsable(x: "float[:](order=F)"):  # noqa: F821  (deliberately unparsable)
@@ -1101,7 +1101,7 @@ def test_from_signature_errors():
         CudaStruct.from_signature(missing, "A")
     with pytest.raises(ValueError, match="unsupported scalar type 'str'"):
         CudaStruct.from_signature(unknown, "A")
-    with pytest.raises(ValueError, match="at most 4 dimensions"):
+    with pytest.raises(ValueError, match="at most 16 dimensions"):
         CudaStruct.from_signature(too_many, "A")
     with pytest.raises(ValueError, match="cannot parse the annotation"):
         CudaStruct.from_signature(unparsable, "A")
@@ -2263,9 +2263,11 @@ def test_array4d_struct_fields_and_annotations():
     from_annotations = CudaStruct.from_signature(init, "Grid")
     assert from_annotations.fields[0].ctype == "Array4D<double>"
 
-    def too_many(self, e: "float[:, :, :, :, :]"): ...
+    def too_many(
+        self, e: "float[:, :, :, :, :, :, :, :, :, :, :, :, :, :, :, :, :]"
+    ): ...
 
-    with pytest.raises(ValueError, match="at most 4 dimensions"):
+    with pytest.raises(ValueError, match="at most 16 dimensions"):
         CudaStruct.from_signature(too_many, "Grid")
 
 
@@ -2381,3 +2383,78 @@ def test_shared_memory_above_the_default_is_opted_in(recorded):
     with pytest.raises(ValueError, match="exceeds the 100000 bytes"):
         kernel(1.0, x, y, 1, n_threads=1, shared_mem=100_001)
     assert [s for *_, s in raw.launches] == [40_000, 80_000, 60_000]
+
+
+@pytest.mark.parametrize("ndim", range(5, 17))
+@pytest.mark.parametrize("contiguous", [False, True])
+def test_high_dimensional_views_pack_and_generate_structs(ndim, contiguous):
+    ctype = f"{'C' if contiguous else ''}Array{ndim}D<double>"
+    source = f"__global__ void f({ctype} a) {{}}"
+    (param,) = parse_cuda_signature(source, "f")
+    assert (param.view_ndim, param.contiguous) == (ndim, contiguous)
+    shape = (2, 3) + (1,) * (ndim - 3) + (4,)
+    array = FakeDeviceArray(np.float64, shape=shape)
+    if not contiguous:
+        array.strides = tuple(-2 * s for s in array.strides)
+    (packed,) = CudaKernel(source, "f").prepare_args(array)
+    assert packed["data"] == array.data.ptr
+    assert packed["shape"].tolist() == list(shape)
+    assert packed.dtype.itemsize == 8 * (1 + ndim * (1 if contiguous else 2))
+    if not contiguous:
+        assert packed["strides"].tolist() == [s // 8 for s in array.strides]
+    else:
+        assert packed.dtype.names == ("data", "shape")
+        with pytest.raises(TypeError, match="must be C-contiguous"):
+            CudaKernel(source, "f").prepare_args(
+                FakeDeviceArray(np.float64, shape=shape, strides=(16,) * ndim)
+            )
+    with pytest.raises(TypeError, match=f"must be a {ndim}D array"):
+        CudaKernel(source, "f").prepare_args(FakeDeviceArray(np.float64))
+    with pytest.raises(TypeError, match="dtype"):
+        CudaKernel(source, "f").prepare_args(FakeDeviceArray(np.float32, shape=shape))
+
+    def init(a): ...
+
+    init.__annotations__ = {"a": "float[" + ", ".join([":"] * ndim) + "]"}
+    struct = CudaStruct.from_signature(init, "HighDim", contiguous=contiguous)
+    assert struct.fields[0].ctype == ctype
+    assert struct.dtype.fields["a"][0] == packed.dtype
+    assert f"{ctype} a;" in struct.declaration
+    value = struct(a=array)
+    assert value.packed["a"]["shape"].tolist() == list(shape)
+
+
+@pytest.mark.parametrize("ndim", [5, 6, 10, 16])
+@pytest.mark.parametrize("contiguous", [False, True])
+def test_high_dimensional_struct_layout_and_execution_on_gpu(ndim, contiguous):
+    _skip_without_cupy()
+    import cupy as cp
+
+    annotation = "float[" + ", ".join([":"] * ndim) + "]"
+    struct = CudaStruct.from_pyccel_class(
+        f'class Grid:\n    def __init__(self, a: "{annotation}", n: int):\n'
+        "        self.a = a\n        self.n = n\n",
+        "Grid",
+        contiguous=contiguous,
+    )
+    struct.verify_layout()
+    indices = ", ".join(["0"] * (ndim - 1) + ["i"])
+    source = (
+        struct.to_header()
+        + f"""
+    #include <cunumpy/atomic.cuh>
+    #include <cunumpy/index.cuh>
+    extern "C" __global__ void accumulate(Grid g) {{
+        CUNUMPY_THREAD_1D(i, g.n);
+        cunumpy_atomic_add(&g.a({indices}), 2.0);
+    }}
+    """
+    )
+    base = cp.zeros((1,) * (ndim - 1) + (6,))
+    a = base if contiguous else base[..., ::2]
+    CudaKernel(source, "accumulate", structs=(struct,))(
+        struct(a=a, n=a.size), n_threads=a.size
+    )
+    expected = np.zeros(base.shape)
+    expected[..., slice(None) if contiguous else slice(None, None, 2)] = 2
+    np.testing.assert_array_equal(cp.asnumpy(base), expected)

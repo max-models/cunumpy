@@ -123,7 +123,7 @@ def cuda_include_dir() -> str:
 
     :class:`CudaKernel` adds it to the include path automatically, so kernels
     can ``#include "cunumpy/array_view.cuh"`` (strided ``Array1D<T>``
-    to ``Array4D<T>`` views passed by value) and
+    to ``Array16D<T>`` views passed by value) and
     ``#include "cunumpy/index.cuh"`` (thread-index and grid-stride macros such
     as ``CUNUMPY_THREAD_1D(i, n)``), ``#include "cunumpy/atomic.cuh"`` (atomic
     adds) and ``#include "cunumpy/reduce.cuh"`` (warp and block reductions).
@@ -188,7 +188,7 @@ class CudaParameter(NamedTuple):
         The struct type, for a struct passed by value.
     view_ndim : int | None
         The number of dimensions, for an array view (``Array1D<T>`` to
-        ``Array4D<T>`` or ``CArray1D<T>`` to ``CArray4D<T>``, see
+        ``Array16D<T>`` or ``CArray1D<T>`` to ``CArray16D<T>``, see
         :func:`cuda_include_dir`) passed by value.
     contiguous : bool
         Whether the array view is C-contiguous (``CArray2D<T>``): packed
@@ -265,11 +265,11 @@ _CTYPE_OF = {
 _QUALIFIERS = {"const", "volatile", "__restrict__", "__restrict", "restrict"}
 
 _COMPLEX = re.compile(r"(?:(?:thrust|cuda::std)::)?complex\s*<\s*(float|double)\s*>")
-# Array1D<T> to Array4D<T> and CArray1D<T> to CArray4D<T> (cunumpy/array_view.cuh),
+# Array1D<T> to Array16D<T> and CArray1D<T> to CArray16D<T> (cunumpy/array_view.cuh),
 # T a scalar type of _CTYPES
-_VIEW = re.compile(r"\b(C?)Array([1234])D\s*<((?:[^<>]|complex<[^<>]*>)+?)>")
+_VIEW = re.compile(r"\b(C?)Array([1-9]|1[0-6])D\s*<((?:[^<>]|complex<[^<>]*>)+?)>")
 _TOKEN = re.compile(
-    r"C?Array[1234]D<[^<>]*(?:<[^<>]*>[^<>]*)?>|complex<(?:float|double)>"
+    r"C?Array(?:[1-9]|1[0-6])D<[^<>]*(?:<[^<>]*>[^<>]*)?>|complex<(?:float|double)>"
     r"|[A-Za-z_]\w*|\*|\[\s*\]",
 )
 
@@ -905,8 +905,8 @@ def _pyccel_ctype(annotation: Any, scalars: Mapping[str, str], what: str) -> str
     ctype = scalars[scalar]
     if ndim == 0:
         return ctype
-    if ndim > 4:
-        raise ValueError(f"{what}: arrays have at most 4 dimensions, got {ndim}")
+    if ndim > 16:
+        raise ValueError(f"{what}: arrays have at most 16 dimensions, got {ndim}")
     return f"Array{ndim}D<{ctype}>"
 
 
@@ -1075,7 +1075,7 @@ class CudaStruct:
         ``(field name, C type)`` pairs, in order, e.g. ``("x", "double*")`` or
         ``("n", "int")``. Scalar fields, pointers to the scalar types of
         :func:`ctype_of` (or ``void*``), and array views ``Array1D<T>`` to
-        ``Array4D<T>`` of those scalar types (from ``cunumpy/array_view.cuh``,
+        ``Array16D<T>`` of those scalar types (from ``cunumpy/array_view.cuh``,
         packed as pointer, shape and strides in elements) are supported.
 
     Examples
@@ -1848,7 +1848,7 @@ class CudaKernel:
         The headers shipped with cunumpy (:func:`cuda_include_dir`) are always
         found at compile time (see :meth:`compile_options`):
         ``#include "cunumpy/array_view.cuh"`` gives the ``Array1D<T>`` to
-        ``Array4D<T>`` views, ``#include "cunumpy/index.cuh"`` the thread-index
+        ``Array16D<T>`` views, ``#include "cunumpy/index.cuh"`` the thread-index
         macros, ``#include "cunumpy/atomic.cuh"`` atomic adds,
         ``#include "cunumpy/reduce.cuh"`` warp and block reductions.
     source_dir : str | Path | None

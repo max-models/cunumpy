@@ -54,7 +54,7 @@ every call:
 | `void*` | C-contiguous CuPy array of any dtype | host arrays, views |
 | `double`, `float`, `complex<double>` | Python `int`/`float`, NumPy scalars that cast safely | strings, arrays, unsafe casts (`np.float64` into `float`) |
 | `int`, `long long`, `size_t`, `int64_t`, ... | Python `int` and NumPy integers whose value is in range, `bool` | out-of-range values (`OverflowError`), floats |
-| `Array1D<T>` ... `Array4D<T>` | CuPy array of dtype `T` and that ndim, contiguous or not | wrong dtype or ndim |
+| `Array1D<T>` ... `Array16D<T>` | CuPy array of dtype `T` and that ndim, contiguous or not | wrong dtype or ndim |
 | a `CudaStruct` type | a value of that struct | anything else |
 
 C types map to NumPy dtypes as on 64-bit Linux: `int` is `int32`, `long` and
@@ -177,7 +177,7 @@ Pass extra include directories with `include_dirs=[...]` and NVRTC flags with
 | Header | Provides |
 | --- | --- |
 | `<cunumpy/index.cuh>` | `CUNUMPY_THREAD_1D(i, n)`, `_2D`, `_3D`, `CUNUMPY_GRID_STRIDE_1D(i, n)` |
-| `<cunumpy/array_view.cuh>` | strided views `Array1D<T>` to `Array4D<T>` |
+| `<cunumpy/array_view.cuh>` | strided views `Array1D<T>` to `Array16D<T>` |
 | `<cunumpy/atomic.cuh>` | `cunumpy_atomic_add` and indexed 2D/3D variants, see [Accumulation kernels](accumulation.md) |
 | `<cunumpy/morton.cuh>` | Morton (Z-order) keys `cunumpy_morton_key2(x, y, ...)`, `_key3`, equal to `xp.algorithms.morton_keys` on the host |
 | `<cunumpy/random.cuh>` | counter-based random numbers `cunumpy_uniform(seed, stream, counter)`, `cunumpy_normal2(...)`, equal to `xp.rng.philox_uniform` on the host |

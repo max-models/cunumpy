@@ -80,7 +80,7 @@ push(value, 0.1, n_threads=x.size)
 ```
 
 Fields may be scalars, pointers to scalar types (or `void*`), and array views
-`Array1D<T>` to `Array4D<T>`. Packing checks every field like a kernel
+`Array1D<T>` to `Array16D<T>`. Packing checks every field like a kernel
 argument: pointers need C-contiguous CuPy arrays of the declared dtype, scalars
 are range-checked and cast. Adding a field means editing the one Python
 definition; kernels that use the struct pick it up.
@@ -240,7 +240,7 @@ extern "C" __global__ void push(MarkerArgs m, double dt) {
 `Array2D<T>` takes any view, so its strides are only known at run time and a
 kernel cannot tell which index is the fast one. When an array is always
 C-contiguous (a marker array, a grid), declare it as `CArray1D<T>` to
-`CArray4D<T>` instead. The view holds a pointer and the shape, no strides, and
+`CArray16D<T>` instead. The view holds a pointer and the shape, no strides, and
 `m.markers(ip, 0)` is `data[ip * shape[1] + 0]`: the last index is always the
 fast one, as in the row-major memory the host code uses.
 
