@@ -2421,6 +2421,10 @@ class CudaKernel:
         if shared_mem < 0:
             raise ValueError(f"shared_mem must be non-negative, got {shared_mem}")
         values = self.prepare_args(*args)
+        # RawKernel accepts size-one NumPy arrays for structs passed by value,
+        # but not structured NumPy scalars (np.void). Keep their packed bytes
+        # and alignment intact, including array-view pointers and strides.
+        values = tuple(np.asarray(v) if isinstance(v, np.void) else v for v in values)
         if 0 in grid_shape:
             return
 
