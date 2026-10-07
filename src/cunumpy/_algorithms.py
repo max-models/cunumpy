@@ -251,3 +251,49 @@ def sort_by_key(keys: Any, *arrays: Any) -> tuple[Any, ...]:
             )
     order = xpm.argsort(keys, kind="stable").astype(xpm.int64, copy=False)
     return (keys[order], order, *(array[order] for array in arrays))
+
+
+def compact_by_mask(mask: Any, *arrays: Any) -> int:
+    """Move the rows where `mask` is True to the front of every array, in place.
+
+    The usual step after particles left the domain or were absorbed: keep the
+    live ones at the front of the marker array (and of the arrays that go with
+    it) and continue with ``markers[:n]``. The order of the kept rows is
+    preserved, so the result is reproducible::
+
+        n = xp.algorithms.compact_by_mask(alive, markers, weights)
+        markers, weights = markers[:n], weights[:n]
+
+    Parameters
+    ----------
+    mask : array of bool, shape (n,)
+        True for the rows to keep.
+    *arrays : arrays
+        Arrays with ``n`` rows (any further axes), on the backend of `mask`.
+        Rows ``[:count]`` hold the kept rows afterwards; the rows after them
+        are unspecified, so ignore them (or overwrite them).
+
+    Returns
+    -------
+    int
+        The number of kept rows. Its value is needed on the host, so on CuPy
+        the call synchronizes once per call (counted by
+        :func:`~cunumpy.profiling.count_transfers` where it can be seen).
+    """
+    assert_same_backend(mask, *arrays)
+    xpm = get_array_module(mask)
+    mask = xpm.asarray(mask)
+    if mask.ndim != 1 or mask.dtype != np.bool_:
+        raise TypeError(
+            f"mask must be a 1D boolean array, got dtype {mask.dtype}, {mask.ndim}D",
+        )
+    for i, array in enumerate(arrays):
+        if array.ndim < 1 or array.shape[0] != mask.shape[0]:
+            raise ValueError(
+                f"array {i} has shape {array.shape}, expected {mask.shape[0]} rows",
+            )
+    rows = xpm.nonzero(mask)[0]
+    n_kept = int(rows.size)
+    for array in arrays:
+        array[:n_kept] = array[rows]  # the right side is a copy: no overlap problem
+    return n_kept

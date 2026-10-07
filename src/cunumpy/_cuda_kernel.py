@@ -66,6 +66,9 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
+from cunumpy._transfers import _ACTIVE as _COUNTERS
+from cunumpy._transfers import _record_sync
+
 __all__ = [
     "DEBUG_OPTIONS",
     "CudaArguments",
@@ -2532,6 +2535,8 @@ class CudaKernel:
             stream = cp.cuda.get_current_stream()
         if _is_capturing(stream):
             return
+        if _COUNTERS:
+            _record_sync(f"debug synchronization after kernel {self.expression!r}")
         try:
             stream.synchronize()
         except Exception as error:

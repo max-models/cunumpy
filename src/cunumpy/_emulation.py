@@ -28,11 +28,22 @@ thread runs to its next barrier before any thread continues past it, as on a
 GPU. Per-block deposits, shared-memory reductions and tiled kernels therefore
 work.
 
+Struct parameters take, for each struct, a mapping from field name to value, a
+:class:`~cunumpy.arguments.CudaStructValue`, or any object with an attribute
+per field (e.g. a :class:`~cunumpy.arguments.CudaStructArguments` or a host
+argument class); the arrays of the fields are updated in place like the others.
+
+:func:`emulated_launches` makes every :class:`~cunumpy.kernels.CudaKernel` launch
+in a block run through the emulation, on the arrays of the fake CuPy
+(:mod:`cunumpy._fake_cupy`), so that code that launches kernels (a
+:class:`~cunumpy.kernels.Kernel` on the CuPy backend, a propagator) can be
+tested without a GPU.
+
 What it does not emulate: concurrency between the barriers (threads run one
 after another, so atomics are plain additions and races never show), warp
 intrinsics (``__shfl_*``, ``__syncwarp``, ``__ballot_sync``, ...; a kernel or an
-included header using them is refused), structs and ``CudaArguments`` objects
-(not supported), and ``<cupy/complex.cuh>``. Use a GPU for those.
+included header using them is refused), and ``<cupy/complex.cuh>``. Use a GPU
+for those.
 
 Floating point: like NVRTC (``--fmad=true`` by default) the C++ compiler may
 fuse ``a * b + c`` into one fused multiply-add, so results can differ from
@@ -49,21 +60,25 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Generator, Mapping, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from cunumpy import _fake_cupy
 from cunumpy._cuda_kernel import (
     CudaKernel,
     CudaParameter,
+    CudaStructArguments,
+    CudaStructValue,
     _scalar_checker,
     _strip_comments,
     cuda_include_dir,
 )
 
-__all__ = ["emulate_cuda_kernel", "emulation_compiler"]
+__all__ = ["emulate_cuda_kernel", "emulated_launches", "emulation_compiler"]
 
 # CUDA constructs that serial emulation would get wrong
 _UNSUPPORTED = {
@@ -258,6 +273,76 @@ def _check_supported(kernel: CudaKernel) -> None:
             )
 
 
+def _host(value: Any) -> Any:
+    """The NumPy buffer of a fake CuPy array; anything else as it is."""
+    if _fake_cupy.is_active():
+        try:
+            return _fake_cupy.host_buffer(value)
+        except TypeError:
+            pass
+    return value
+
+
+def _field_value(struct_name: str, value: Any, field: CudaParameter) -> Any:
+    """The value of the struct field `field` in the struct argument `value`."""
+    try:
+        if isinstance(value, (CudaStructValue, Mapping)):
+            return value[field.name]
+        return getattr(value, field.name)
+    except (KeyError, AttributeError):
+        raise TypeError(
+            f"struct argument {struct_name!r} has no value for the field "
+            f"{field.name!r} ({type(value).__name__})",
+        ) from None
+
+
+def _declaration(param: CudaParameter, name: str) -> str:
+    if param.view_ndim is not None:
+        return f"{param.ctype} {name}"
+    return f"{param.ctype}{'*' if param.pointer else ''} {name}"
+
+
+def _flatten_structs(
+    kernel: CudaKernel,
+    args: Sequence[Any],
+) -> tuple[CudaKernel, list[Any]]:
+    """A kernel that takes every struct field as a parameter, and its arguments.
+
+    The wrapper kernel (the source of `kernel` plus a ``__global__`` function with
+    one parameter per field) rebuilds the structs and calls `kernel`, so that the
+    emulation only has to deal with arrays and scalars.
+    """
+    params, builds, call, flat = [], [], [], []
+    for p, value in zip(kernel.signature, args):
+        if p.struct is None:
+            params.append(_declaration(p, p.name))
+            call.append(p.name)
+            flat.append(value)
+            continue
+        names = [f"{p.name}__{f.name}" for f in p.struct.fields]
+        params += [_declaration(f, n) for f, n in zip(p.struct.fields, names)]
+        builds.append(f"    {p.struct.name} {p.name}_struct{{{', '.join(names)}}};")
+        call.append(f"{p.name}_struct")
+        flat += [_field_value(p.name, value, f) for f in p.struct.fields]
+    name = f"emulated_{kernel.name}"
+    source = (
+        kernel.source
+        + f'\nextern "C" __global__ void {name}({", ".join(params)}) {{\n'
+        + "\n".join(builds)
+        + f"\n    {kernel.expression}({', '.join(call)});\n}}\n"
+    )
+    wrapper = CudaKernel(
+        source,
+        name,
+        block_size=kernel.block_size,
+        options=[o for o in kernel.options if not o.startswith("-I")],
+        include_dirs=kernel.include_dirs,
+        source_dir=kernel.source_dir,
+        n_threads_from=kernel.n_threads_from,
+    )
+    return wrapper, flat
+
+
 def emulate_cuda_kernel(
     kernel: CudaKernel,
     *args: Any,
@@ -275,8 +360,11 @@ def emulate_cuda_kernel(
     kernel : CudaKernel
         The kernel; its signature must be parsed (the default).
     *args
-        The kernel arguments with NumPy arrays in place of CuPy arrays. Arrays
-        are updated in place with what the kernel wrote.
+        The kernel arguments with NumPy arrays in place of CuPy arrays (arrays of
+        the fake CuPy are used through their host buffer). Arrays are updated in
+        place with what the kernel wrote. A struct parameter takes a mapping of
+        field names to values, a :class:`~cunumpy.arguments.CudaStructValue`, or
+        an object with an attribute per field.
     n_threads, grid, block
         Launch shape, as for :meth:`CudaKernel.__call__`.
     compiler : str | None
@@ -291,8 +379,8 @@ def emulate_cuda_kernel(
     Raises
     ------
     NotImplementedError
-        If the kernel (or a header it includes) uses warp intrinsics, or the
-        kernel has struct parameters or complex scalars.
+        If the kernel (or a header it includes) uses warp intrinsics, or has
+        complex scalars.
     TypeError
         If an argument does not match its parameter (dtype, dimensions, a
         scalar that does not fit).
@@ -309,6 +397,19 @@ def emulate_cuda_kernel(
         raise TypeError(
             f"kernel {kernel.name!r} takes {len(params)} arguments, got {len(args)}",
         )
+    if any(p.struct is not None for p in params):
+        wrapper, flat = _flatten_structs(kernel, args)
+        return emulate_cuda_kernel(
+            wrapper,
+            *flat,
+            n_threads=n_threads,
+            grid=grid,
+            block=block,
+            compiler=compiler,
+            options=options,
+            shared_mem=shared_mem,
+        )
+    args = tuple(_host(a) for a in args)
     compiler = compiler or emulation_compiler()
     if compiler is None:
         raise RuntimeError("emulation needs a C++ compiler (set CXX or install c++)")
@@ -323,10 +424,6 @@ def emulate_cuda_kernel(
         globals_, inits, call_args, writes, arrays = [], [], [], [], []
         for i, (param, value) in enumerate(zip(params, args)):
             name = f"cunumpy_arg{i}"
-            if param.struct is not None:
-                raise NotImplementedError(
-                    "emulation does not support struct parameters",
-                )
             if param.pointer or param.view_ndim is not None:
                 if not isinstance(value, np.ndarray):
                     raise TypeError(
@@ -444,3 +541,74 @@ def emulate_cuda_kernel(
         for value, buffer, out in arrays:
             result = np.fromfile(out, dtype=buffer.dtype).reshape(buffer.shape)
             value[...] = result
+
+
+@contextmanager
+def emulated_launches(
+    *,
+    compiler: str | None = None,
+    options: Sequence[str] = (),
+) -> Generator[None, None, None]:
+    """Run every :class:`~cunumpy.kernels.CudaKernel` launch in the block on the CPU.
+
+    With the fake CuPy (:func:`cunumpy.kernel_testing.install_fake_cupy`)
+    CUDA kernels cannot run. Inside this block a launch is emulated instead
+    (:func:`emulate_cuda_kernel`), on the host buffers of the fake CuPy arrays
+    it is given, so code that launches kernels runs on a machine without a GPU
+    and its device arrays hold the results afterwards::
+
+        with emulated_launches():
+            propagator(dt)  # CuPy backend: the CUDA kernels run on the CPU
+
+    The launch arguments are those of :meth:`CudaKernel.__call__`
+    (`stream` is ignored). Argument objects are flattened like in a launch;
+    struct values and :class:`~cunumpy.arguments.CudaStructArguments` objects
+    stay one argument and are read through their fields. Arrays must be arrays
+    of the fake CuPy or NumPy arrays.
+
+    Launches are serial and slow (each one compiles the kernel as C++), so use it
+    on small problems. The limits of :func:`emulate_cuda_kernel` apply.
+
+    Parameters
+    ----------
+    compiler : str | None
+        C++ compiler; by default :func:`emulation_compiler`.
+    options : Sequence[str]
+        Additional compiler options for every launch, e.g.
+        ``("-ffp-contract=off",)``.
+    """
+    original = CudaKernel.__call__
+
+    def launch(
+        self: CudaKernel,
+        *args: Any,
+        n_threads: int | Sequence[int] | None = None,
+        grid: int | Sequence[int] | None = None,
+        block: int | Sequence[int] | None = None,
+        shared_mem: int = 0,
+        stream: Any = None,
+    ) -> None:
+        flat: list[Any] = []
+        for arg in args:
+            if isinstance(arg, (CudaStructValue, CudaStructArguments)):
+                flat.append(arg)
+            elif hasattr(arg, "__cuda_args__"):
+                flat.extend(arg.__cuda_args__())
+            else:
+                flat.append(arg)
+        emulate_cuda_kernel(
+            self,
+            *flat,
+            n_threads=n_threads,
+            grid=grid,
+            block=block,
+            compiler=compiler,
+            options=options,
+            shared_mem=shared_mem,
+        )
+
+    CudaKernel.__call__ = launch  # type: ignore[method-assign]
+    try:
+        yield
+    finally:
+        CudaKernel.__call__ = original  # type: ignore[method-assign]

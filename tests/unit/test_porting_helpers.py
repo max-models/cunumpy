@@ -532,7 +532,10 @@ with xp.profiling.count_transfers() as counter:
         assert isinstance(buf, np.ndarray) and buf.tolist() == [1.0, 2.0]
         buf[:] = [5.0, 6.0]
 assert xp.to_numpy(d).tolist() == [5.0, 6.0]
-assert sorted(e.kind for e in counter.events) == ["to_device", "to_host"]
+assert sorted(e.kind for e in counter.events if e.kind != "sync") == [
+    "to_device",
+    "to_host",
+]
 with xp.mpi.mpi_buffer(d, cuda_aware=True) as buf:
     assert buf is d
 producer = xp.cuda.create_stream()
@@ -550,6 +553,7 @@ print("fake cupy OK")
 def test_fake_cupy_in_subprocess():
     root = Path(__file__).resolve().parents[2]
     env = dict(os.environ, CUNUMPY_FAKE_CUPY="1", CUNUMPY_BACKEND="cupy")
+    env.pop("CUNUMPY_REQUIRE_CUDA", None)  # the fake CuPy skips by design
     env["PYTHONPATH"] = os.pathsep.join(
         p for p in (str(root / "src"), env.get("PYTHONPATH", "")) if p
     )

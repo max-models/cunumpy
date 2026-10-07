@@ -17,7 +17,9 @@ matters for finding host/device bugs:
   :class:`~cunumpy.kernels.CudaKernel` work;
 * CUDA kernels cannot run: ``RawKernel`` and friends raise
   ``NotImplementedError`` when called, and :func:`cunumpy.kernel_testing.requires_cupy`
-  skips tests while the fake is active.
+  skips tests while the fake is active. Inside
+  :func:`cunumpy.kernel_testing.emulated_launches` a ``CudaKernel`` launch runs
+  on the CPU instead, on the host buffers of the arrays (:func:`host_buffer`).
 
 Activate it before CuPy or cunumpy's backend is first used, either with the
 environment variable ``CUNUMPY_FAKE_CUPY=1`` (read when cunumpy is imported)
@@ -35,7 +37,7 @@ import sys
 import types
 from pathlib import Path
 
-__all__ = ["install", "is_active", "uninstall"]
+__all__ = ["host_buffer", "install", "is_active", "uninstall"]
 
 _IMPLEMENTATION = Path(__file__).with_name("_fake_cupy_impl.py")
 _SUBMODULES = ("cupy.cuda", "cupy.cuda.device", "cupy.cuda.runtime", "cupy.linalg")
@@ -45,6 +47,28 @@ def is_active() -> bool:
     """Whether the fake CuPy is the ``cupy`` module of this process."""
     module = sys.modules.get("cupy")
     return bool(getattr(module, "__cunumpy_fake__", False))
+
+
+def host_buffer(array: object) -> object:
+    """The NumPy array that holds the data of a fake ``cupy.ndarray``.
+
+    Not a copy: writing to the buffer changes the fake device array, so a
+    kernel emulation (:func:`cunumpy.kernel_testing.emulated_launches`) can
+    update the array in place. A test can also read results with it without a
+    ``.get()``, which is the point of a "device" array being visible in tests.
+
+    Raises
+    ------
+    TypeError
+        If `array` is not an array of the fake CuPy (including when the fake
+        is not active).
+    """
+    module = sys.modules.get("cupy")
+    if is_active() and isinstance(array, module.ndarray):
+        return array._a
+    raise TypeError(
+        f"host_buffer needs an array of the fake CuPy, got {type(array).__name__}",
+    )
 
 
 def install() -> types.ModuleType:

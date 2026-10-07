@@ -20,6 +20,7 @@ from cunumpy._transfers import (
     _is_device_copy,
     _nbytes,
     _record,
+    _record_sync,
 )
 
 if os.environ.get("CUNUMPY_FAKE_CUPY", "").strip().lower() in ("1", "true", "yes"):
@@ -248,6 +249,8 @@ def default_float_dtype() -> Any:
 def synchronize() -> None:
     """Wait for all kernels in all streams on current device to complete."""
     if array_backend.backend == "cupy":
+        if _COUNTERS:
+            _record_sync("synchronize()")
         try:
             import cupy as cp
 

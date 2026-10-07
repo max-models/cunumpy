@@ -423,7 +423,7 @@ def test_misdeclared_output_index_raises():
 def test_misdeclared_output_name_raises():
     wrapped = PyccelKernel(lambda out: None, use_cupy=True, outputs=("nope",))
 
-    with pytest.raises(KeyError, match="no such keyword argument"):
+    with pytest.raises(KeyError, match="no argument of that name"):
         wrapped(np.zeros(2))
 
 

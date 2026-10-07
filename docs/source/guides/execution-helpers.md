@@ -142,9 +142,22 @@ per device; catalog setup catches CUDA compiler failures before timesteps.
 checks actual block/grid, kernel thread, and static-plus-dynamic shared-memory
 limits. These execution checks are independent of scope-profiler.
 
-GPU CI requires a real CUDA device (`CUNUMPY_REQUIRE_CUDA=1`) and runs focused
+GPU CI requires a real CUDA device (`CUNUMPY_REQUIRE_CUDA=1`; the GPU markers of
+`cunumpy.kernel_testing` then fail instead of skipping) and runs focused
 `memcheck`, `racecheck`, and `synccheck` jobs with nonzero sanitizer error exits.
 Numerical parity tests are separate from performance comparisons.
+
+## Keep the live particles: `compact_by_mask`
+
+```python
+n = xp.algorithms.compact_by_mask(alive, markers, weights)
+markers, weights = markers[:n], weights[:n]
+```
+
+Moves the rows where the boolean mask is True to the front of every array, in
+place and in order, and returns their number. The rows after the first `n` are
+unspecified. The count is needed on the host, so on CuPy each call
+synchronizes once.
 
 ## Prepare cell ranges and segment reductions
 

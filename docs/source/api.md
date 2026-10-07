@@ -44,7 +44,7 @@ The submodules are named so that they do not hide a NumPy name (`rng`, not
 | `cunumpy.arguments` | CUDA only | `CudaArguments`, `CudaStruct`, `CudaStructArguments`, `CudaStructValue`, `write_cuda_header` |
 | `cunumpy.cuda` | CUDA only | device selection and memory, `stream`, streams/events, `pin_memory`, debug mode, CUDA headers and source tools (`cuda_include_dir`, `parse_cuda_signature`) |
 | `cunumpy.rng` | both | `random_streams`, `get_rng`, `philox_*` |
-| `cunumpy.algorithms` | both | `morton_*`, `sort_by_key`, `segment_sum` |
+| `cunumpy.algorithms` | both | `morton_*`, `sort_by_key`, `segment_sum`, `compact_by_mask` |
 | `cunumpy.mpi` | both | `mpi_buffer`, CUDA-aware MPI detection, `local_rank`, `synchronize_for_mpi` |
 | `cunumpy.profiling` | both | `timed_region`, `nvtx_range`, `count_transfers`, `assert_no_transfers` |
 | `cunumpy.memory` | both | `HostStaging`, `DeviceMirror` |
@@ -267,6 +267,21 @@ keys, order, positions, charges = xp.algorithms.sort_by_key(keys, positions, cha
 Returns `(keys[order], order, *(a[order] for a in arrays))`, `order` as
 `int64`. Equal keys keep their order, so the result is reproducible.
 
+### `algorithms.compact_by_mask(mask, *arrays)`
+
+Moves the rows where the boolean `mask` is True to the front of every array, in
+place and in their original order, and returns how many there are. Typical use:
+keep the live particles at the front of the marker arrays.
+
+```python
+n = xp.algorithms.compact_by_mask(alive, markers, weights)
+markers, weights = markers[:n], weights[:n]
+```
+
+The rows after the first `n` are unspecified. The count is needed on the host,
+so on CuPy each call synchronizes once. The mask and the arrays must be on the
+same backend.
+
 ## Count transfers
 
 A transfer inside a time loop is the classic performance bug of a GPU port:
@@ -286,7 +301,7 @@ with xp.profiling.count_transfers() as counter:
 assert counter.total == 0, counter.report()
 ```
 
-Five kinds of events are recorded:
+Six kinds of events are recorded:
 
 * `to_host`: an actual device-to-host copy through conversion, mirror, staging,
   serial MPI, or host kernel helpers;
@@ -298,7 +313,12 @@ Five kinds of events are recorded:
 * `fallback`: a `Kernel` without CUDA kernel calling its host kernel on the
   CuPy backend (`missing_cuda="fallback"`), one event per call, naming the
   kernel. Physical copies and a `kernel_conversion` marker are recorded separately;
-* `device_copy`: a device-only dtype/layout conversion through CuNumpy helpers.
+* `device_copy`: a device-only dtype/layout conversion through CuNumpy helpers;
+* `sync`: the host waited for the device: `xp.synchronize()`, the waits of the MPI
+  helpers (`synchronize_for_mpi()`, `mpi_buffer()` staging) and of the CUDA debug
+  mode, and, on the fake CuPy, a scalar read of a device array (`float(a)`,
+  `int(a)`, `bool(a)`, `a.item()`, `a.tolist()`). They are in `counter.syncs` and in
+  the report, but not in `total`.
 
 Only real transfers count: `to_numpy()` of a NumPy array or `to_cupy()` of a
 CuPy array records nothing. The counter has the attributes `to_host`,
@@ -327,16 +347,17 @@ not thread-safe.
 
 **Limitation:** only transfers made through CuNumpy are seen. Raw
 `cupy.ndarray.get()`, `cupy.asarray(numpy_array)`, `numpy.asarray(cupy_array)`,
-`float(device_array)`, forwarded backend calls such as `xp.asarray()`, and
-implicit conversions inside other libraries are
-not counted. Use `nsys` (or CuPy's profiling hooks) to find those.
+forwarded backend calls such as `xp.asarray()`, and implicit conversions inside
+other libraries are not counted. Neither is `float(device_array)` (an implicit
+sync) with the real CuPy, which cannot be observed from Python; the fake CuPy
+counts it. Use `nsys` (or CuPy's profiling hooks) to find those.
 
-### `profiling.assert_no_transfers()`
+### `profiling.assert_no_transfers(*, syncs=False)`
 
 Context manager that raises `AssertionError` with the counter's `report()` if
 the block makes a host/device transfer or host fallback through CuNumpy.
-Device-only dtype/layout conversions are allowed. It yields the `TransferCounter`
-too. An exception raised inside the block propagates as it is:
+Device-only dtype/layout conversions are allowed, and so are syncs unless
+`syncs=True`. It yields the `TransferCounter` too. An exception raised inside the block propagates as it is:
 
 ```python
 def test_time_step_stays_on_the_device():
@@ -808,8 +829,18 @@ CuPy arrays.
 * `is_array`: predicate for host array values to convert back to CuPy. The
   default is `isinstance(value, numpy.ndarray)`.
 * `outputs`: sequence of arguments the kernel may write to. Entries are
-  positional indices or keyword names. If omitted, every converted array is
+  indices or parameter names; a name also finds a positional argument, and an
+  index a keyword argument, when the parameter names are known (from the
+  Python signature, or `parameters`). If omitted, every converted array is
   copied back.
+* `parameters`: the names of the positional parameters, or a function that
+  returns them, for compiled kernels without a Python signature. A `Kernel`
+  supplies the names of its host function.
+
+`kernels.outputs_from_annotations(function)` returns the parameters a kernel may
+write to, read from its annotations: everything that is not `Final`, `const` or a
+scalar. Use it as `outputs=outputs_from_annotations(push)`, or pass
+`outputs="annotations"` to `Kernel.from_folder()` / `KernelCatalog.from_package()`.
 
 ### Example and output declarations
 

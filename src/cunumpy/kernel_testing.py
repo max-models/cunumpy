@@ -49,6 +49,7 @@ version::
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -67,7 +68,12 @@ from cunumpy._cuda_kernel import (
     _strip_comments,
 )
 from cunumpy._dispatch import Kernel
-from cunumpy._emulation import emulate_cuda_kernel, emulation_compiler
+from cunumpy._emulation import (
+    emulate_cuda_kernel,
+    emulated_launches,
+    emulation_compiler,
+)
+from cunumpy._fake_cupy import host_buffer
 from cunumpy.xp import cupy_available, get_backend, to_numpy, use_backend
 
 # the pytest objects are created on first access, see __getattr__
@@ -76,10 +82,13 @@ __all__ = [
     "assert_kernels_agree",
     "backend",  # noqa: F822
     "check_parity",
+    "cuda_required",
     "device_function_kernel",
     "emulate_cuda_kernel",
+    "emulated_launches",
     "emulation_compiler",
     "fake_cupy_active",
+    "host_buffer",
     "install_fake_cupy",
     "parity_cases",
     "requires_cupy",  # noqa: F822
@@ -109,6 +118,32 @@ def _can_launch() -> bool:
     return cupy_available() and not fake_cupy_active()
 
 
+def cuda_required() -> bool:
+    """Whether ``CUNUMPY_REQUIRE_CUDA`` demands a real GPU (the CI guard).
+
+    Then tests that need a GPU fail instead of being skipped where there is
+    none (:data:`requires_cupy`, :func:`assert_kernels_agree`, the ``cupy``
+    parameter of :func:`backend`), so that a CI job on a GPU machine cannot
+    pass silently because CuPy or the driver is broken.
+    """
+    return os.environ.get("CUNUMPY_REQUIRE_CUDA", "").lower() in {"1", "true", "yes"}
+
+
+def _skip_or_fail(reason: str) -> None:
+    """``pytest.skip``, or ``pytest.fail`` if a GPU is required."""
+    if cuda_required():
+        _pytest().fail(f"CUNUMPY_REQUIRE_CUDA is set, but {reason}", pytrace=False)
+    _pytest().skip(reason)
+
+
+def cuda_gate() -> bool:
+    """Condition of ``requires_cupy`` under ``CUNUMPY_REQUIRE_CUDA``: fail, or False."""
+    if not _can_launch():
+        reason = FAKE_SKIP_REASON if fake_cupy_active() else SKIP_REASON
+        _pytest().fail(f"CUNUMPY_REQUIRE_CUDA is set, but {reason}", pytrace=False)
+    return False
+
+
 # pytest objects, built on first use so that importing this module does not
 # import pytest (see __getattr__ below)
 _LAZY: dict[str, Any] = {}
@@ -126,16 +161,29 @@ def _pytest() -> Any:
 
 def _build_lazy() -> None:
     pytest = _pytest()
-    requires_cupy = pytest.mark.skipif(
-        not _can_launch(),
-        reason=FAKE_SKIP_REASON if fake_cupy_active() else SKIP_REASON,
-    )
+    if cuda_required() and not _can_launch():
+        # a string condition is evaluated when the test is set up; it fails the
+        # test (instead of skipping it) because there is no real GPU. With a
+        # working GPU the marker is the ordinary one below.
+        requires_cupy = pytest.mark.skipif(
+            "__import__('cunumpy.kernel_testing', fromlist=['_']).cuda_gate()",
+            reason=SKIP_REASON,
+        )
+    else:
+        requires_cupy = pytest.mark.skipif(
+            not _can_launch(),
+            reason=FAKE_SKIP_REASON if fake_cupy_active() else SKIP_REASON,
+        )
     backends = ["numpy", pytest.param("cupy", marks=requires_cupy)]
 
     @pytest.fixture(params=backends)
     def backend(request):
-        """Run the test once per backend, with that backend active."""
-        with use_backend(request.param):
+        """Run the test once per backend, with that backend active.
+
+        With ``CUNUMPY_REQUIRE_CUDA`` set, the ``cupy`` run fails if the CuPy
+        backend cannot be activated, instead of silently running on NumPy.
+        """
+        with use_backend(request.param, strict=cuda_required()):
             yield request.param
 
     _LAZY.update(requires_cupy=requires_cupy, BACKENDS=backends, backend=backend)
@@ -190,9 +238,43 @@ def _arrays_in(value: Any, name: str, found: dict[str, Any], depth: int) -> None
             _arrays_in(item, f"{name}.{attr}", found, depth - 1)
 
 
+def _resolve_output(
+    entry: Any,
+    n_args: int,
+    parameters: Sequence[str] | None,
+) -> tuple[int, str | None]:
+    """The argument index and the field filter (or None) of an `outputs` entry."""
+    if isinstance(entry, bool) or not isinstance(entry, (int, str)):
+        raise TypeError(
+            "outputs entries must be argument indices (int) or names (str, "
+            f"optionally 'name.field'), got {entry!r}",
+        )
+    field = None
+    if isinstance(entry, str):
+        head, _, field = entry.partition(".")
+        field = field or None
+        if head.lstrip("-").isdigit():
+            entry = int(head)
+        elif parameters is not None and head in parameters:
+            entry = list(parameters).index(head)
+        else:
+            known = "unknown" if parameters is None else sorted(parameters)
+            raise KeyError(
+                f"output {head!r} is not a parameter of the kernel (parameters: "
+                f"{known}); give an index if the names are unknown",
+            )
+    index = entry + n_args if entry < 0 else entry
+    if not 0 <= index < n_args:
+        raise IndexError(
+            f"output argument {entry} does not exist: there are {n_args} arguments",
+        )
+    return index, field
+
+
 def _collect_arrays(
     args: Sequence[Any],
-    outputs: Sequence[int] | None = None,
+    outputs: Sequence[int | str] | None = None,
+    parameters: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """The arrays among `args` (or among the arguments `outputs`), by name.
 
@@ -205,22 +287,29 @@ def _collect_arrays(
     through its struct fields, ``"argument <i>.<field>"``, so that its arrays
     get the names of the attributes of the host argument object it mirrors,
     also when the fields are properties.
+
+    An entry of `outputs` is an argument index, or the name of a parameter (in
+    `parameters`), optionally followed by ``.<field>`` to compare only that
+    field (attribute) of a struct or argument object, e.g. ``"markers.positions"``.
     """
-    indices = range(len(args)) if outputs is None else outputs
+    entries = range(len(args)) if outputs is None else outputs
     found: dict[str, Any] = {}
-    for entry in indices:
-        if not isinstance(entry, int) or isinstance(entry, bool):
-            raise TypeError(
-                "outputs must be positional argument indices (kernels take "
-                f"positional arguments only), got {entry!r}",
-            )
-        index = entry + len(args) if entry < 0 else entry
-        if not 0 <= index < len(args):
-            raise IndexError(
-                f"output argument {entry} does not exist: there are {len(args)} "
-                "arguments",
-            )
-        _arrays_in(args[index], f"argument {index}", found, depth=2)
+    for entry in entries:
+        index, field = _resolve_output(entry, len(args), parameters)
+        local: dict[str, Any] = {}
+        _arrays_in(args[index], f"argument {index}", local, depth=2)
+        if field is not None:
+            prefix = f"argument {index}.{field}"
+            local = {
+                name: array
+                for name, array in local.items()
+                if name == prefix or name.startswith((prefix + ".", prefix + "["))
+            }
+            if not local:
+                raise KeyError(
+                    f"output {entry!r}: argument {index} has no array field {field!r}",
+                )
+        found.update(local)
     return found
 
 
@@ -264,7 +353,7 @@ def assert_kernels_agree(
     rtol: float = 1e-12,
     atol: float = 0.0,
     n_calls: int = 1,
-    outputs: Sequence[int] | None = None,
+    outputs: Sequence[int | str] | None = None,
     seed: int = 0,
 ) -> dict[str, np.ndarray]:
     """Check that the host and CUDA versions of `kernel` compute the same.
@@ -301,9 +390,12 @@ def assert_kernels_agree(
     n_calls : int
         How many times the kernel is called on each backend (e.g. to test a
         kernel that accumulates).
-    outputs : Sequence[int] | None
-        Indices of the arguments to compare (negative indices count from the
-        end), like ``PyccelKernel(outputs=...)``. By default the ``outputs``
+    outputs : Sequence[int | str] | None
+        The arguments to compare, like ``PyccelKernel(outputs=...)``: indices
+        (negative indices count from the end) or parameter names. A name with
+        ``.<field>`` (``"markers.positions"``) compares only that field of a
+        struct or argument object, leaving the other fields (e.g. buffers the
+        two kernels fill differently) out. By default the ``outputs``
         declared by the host kernel are used, and if it declares none, every
         argument. An argument that is an array is compared; for a tuple, list,
         dict or object argument (e.g. a ``CudaArguments`` object), the arrays
@@ -328,7 +420,7 @@ def assert_kernels_agree(
     Notes
     -----
     The test is skipped with ``pytest.skip`` if CuPy or a GPU is not available,
-    or if the fake CuPy is active.
+    or if the fake CuPy is active; with ``CUNUMPY_REQUIRE_CUDA=1`` it fails instead.
     """
     if not isinstance(kernel, Kernel):
         raise TypeError(f"expected a Kernel, got {type(kernel).__name__}")
@@ -341,10 +433,11 @@ def assert_kernels_agree(
     if outputs is None:
         outputs = kernel.host_kernel.outputs
     if fake_cupy_active():
-        _pytest().skip(FAKE_SKIP_REASON)
+        _skip_or_fail(FAKE_SKIP_REASON)
     if not cupy_available():
-        _pytest().skip(SKIP_REASON)
+        _skip_or_fail(SKIP_REASON)
 
+    parameters = kernel.host_parameters()
     results = {}
     for backend in ("numpy", "cupy"):
         with use_backend(backend):
@@ -354,7 +447,7 @@ def assert_kernels_agree(
             launch = n_threads(args) if callable(n_threads) else n_threads
             for _ in range(n_calls):
                 kernel(*args, n_threads=launch, grid=grid, block=block)
-            results[backend] = _collect_arrays(args, outputs)
+            results[backend] = _collect_arrays(args, outputs, parameters)
 
     host = {name: to_numpy(a) for name, a in results["numpy"].items()}
     _compare_results(host, results["cupy"], rtol, atol, kernel.name)
