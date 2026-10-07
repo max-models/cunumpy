@@ -40,7 +40,7 @@ The submodules are named so that they do not hide a NumPy name (`rng`, not
 | Submodule | Backends | Contents |
 |---|---|---|
 | `cunumpy` | both | NumPy/CuPy namespace, backend selection, array inspection and conversion, `synchronize`, `host_call`, `evaluate_on_host`, `setup_on_host`, `scipy`, `require_version` |
-| `cunumpy.kernels` | both | `Kernel`, `KernelCatalog`, `PyccelKernel`, `CudaKernel`, `CudaKernelVariants`, host implementations, `as_kernel_array`, `kernel_output`, `fuse` |
+| `cunumpy.kernels` | both | `Kernel`, `KernelCatalog`, `PyccelKernel`, `CudaKernel`, `CudaKernelVariants`, `MetalKernel`, `metal_available`, host implementations, `as_kernel_array`, `kernel_output`, `fuse` |
 | `cunumpy.arguments` | CUDA only | `CudaArguments`, `CudaStruct`, `CudaStructArguments`, `CudaStructValue`, `write_cuda_header` |
 | `cunumpy.cuda` | CUDA only | device selection and memory, `stream`, streams/events, `pin_memory`, debug mode, CUDA headers and source tools (`cuda_include_dir`, `parse_cuda_signature`) |
 | `cunumpy.rng` | both | `random_streams`, `get_rng`, `philox_*` |
@@ -856,6 +856,51 @@ cycles terminate safely. Returned NumPy arrays (and arrays inside tuples or
 lists) are converted back using `is_array`; dictionaries in return values are
 not recursively converted. On the NumPy path, the original return value and
 normal Python mutation and exception behavior are preserved.
+
+## `kernels.MetalKernel`
+
+A Metal Shading Language kernel for the GPU of an Apple silicon Mac, run with
+[MLX](https://github.com/ml-explore/mlx) (`pip install 'cunumpy[metal]'`). It
+takes NumPy arrays and fills the output arrays you pass, so no backend switch
+is needed.
+
+```python
+import numpy as np
+import cunumpy as xp
+
+scale = xp.kernels.MetalKernel(
+    "uint i = thread_position_in_grid.x; y[i] = a[0] * x[i];",
+    inputs=["x", "a"],
+    outputs=["y"],
+)
+x = np.arange(8, dtype=np.float32)
+y = np.empty_like(x)
+scale(x, 2.0, out=y)
+```
+
+`MetalKernel(source, inputs, outputs, *, name="cunumpy_kernel", header="",
+threadgroup=256, float64="error", atomic_outputs=False, init_value=None)`
+
+- `source` is the body of the kernel function. MLX generates the signature: each
+  name in `inputs` and `outputs` is a pointer to the flat, row-major data of that
+  array, so `x[i]` is the flat index. `thread_position_in_grid` and the other
+  Metal attributes used in the body are added automatically. `header` goes before
+  the function (includes, defines, helper functions).
+- Calling the kernel: `kernel(*inputs, out=array_or_arrays, n_threads=None,
+  template=None)`. `n_threads` is the total thread count (default: first axis of
+  the first output). `template` gives compile-time constants, e.g.
+  `template={"NSTEPS": 200}`. It returns the output array, or a tuple of them.
+- Outputs are uninitialized: write every element, pass the old array as an input
+  too if the kernel reads it, or set `init_value`.
+- **float32 only.** The Apple GPU has no float64: a float64 input or output
+  raises `TypeError`. With `float64="cast"` float64 data is computed in float32
+  (a push over 200 steps agreed with float64 to about 3e-5).
+- Every call copies the inputs to MLX arrays and the results back, counted as
+  `to_device` and `to_host` transfers by `count_transfers()`. On a 4M-particle
+  push these copies were about 7 ms next to an 11.5 ms kernel.
+- `xp.kernels.metal_available()` is True if MLX is installed and a Metal GPU is
+  present. Without them, calling a `MetalKernel` raises `ImportError` or
+  `RuntimeError`.
 
 ## `kernels.CudaKernel`
 

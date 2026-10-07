@@ -63,6 +63,7 @@ array-api-compat
 kernels/overview
 kernels/pyccel-kernel
 kernels/cuda-kernel
+kernels/metal-kernel
 kernels/dispatch
 kernels/arguments
 kernels/accumulation
