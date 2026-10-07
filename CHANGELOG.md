@@ -18,8 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CudaStruct`, `CudaStructArguments`, `CudaStructValue` and
   `write_cuda_header` moved to the new `cunumpy.arguments`. `cunumpy.cuda`
   keeps the device runtime and the CUDA source tools. The old
-  `cunumpy.cuda.<name>` imports still work with a `DeprecationWarning` and
-  will be removed in cunumpy 0.6.
+  `cunumpy.cuda.<name>` names are removed.
+- **Removed** the deprecated names that were kept for one release after the
+  0.5 reorganisation, with no replacement other than the submodules:
+  the top-level helpers (`xp.CudaKernel`, `xp.mpi_buffer`, `xp.fuse` as cunumpy's,
+  ...; use `xp.kernels`, `xp.arguments`, `xp.cuda`, `xp.mpi`, `xp.rng`,
+  `xp.algorithms`, `xp.profiling`, `xp.memory` and `xp.petsc`), and the modules
+  `cunumpy.testing` (now `cunumpy.kernel_testing`), `cunumpy.kernel`,
+  `cunumpy.dispatch` and `cunumpy.cuda_kernel` (public names are in
+  `cunumpy.kernels` and `cunumpy.arguments`). Also removed the placeholder
+  `cunumpy.main`. `xp.fuse` is now CuPy's own `fuse`.
 - **Removed** `kernels.KernelArguments`, `kernels.resolve_host_args`,
   `kernels.PyccelStructArguments` and the `__host_args__()` protocol, with no
   replacement. Kernels receive argument objects as they are. Write the host

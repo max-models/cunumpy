@@ -29,7 +29,6 @@ def test_reexported_from_maybempi():
         assert getattr(xp.mpi, name) is getattr(maybempi, name), name
     assert xp.mpi.OVERRIDE_VARIABLE == "MAYBEMPI"
     assert xp.mpi.is_serial(MPI) and xp.mpi.is_serial(comm)
-    assert "get_mpi" not in xp._MOVED  # never was at the top level
 
 
 class _DeviceArray:

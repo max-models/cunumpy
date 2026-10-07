@@ -25,9 +25,6 @@ Importing this module makes ``xp.cuda`` refer to it instead of ``cupy.cuda``;
 use ``import cupy; cupy.cuda`` for CuPy's module.
 """
 
-import importlib as _importlib
-import warnings as _warnings
-
 from cunumpy._cuda_kernel import (
     DEBUG_OPTIONS,
     CudaParameter,
@@ -91,28 +88,3 @@ __all__ = [
     "stream",
     "wait_event",
 ]
-
-# Names that were in this module before they moved to cunumpy.kernels and
-# cunumpy.arguments. They still resolve (with a DeprecationWarning) until cunumpy 0.6.
-_MOVED = {
-    "CudaKernel": "kernels",
-    "CudaKernelVariants": "kernels",
-    "CudaArguments": "arguments",
-    "CudaStruct": "arguments",
-    "CudaStructArguments": "arguments",
-    "CudaStructValue": "arguments",
-    "write_cuda_header": "arguments",
-}
-
-
-def __getattr__(name: str):
-    submodule = _MOVED.get(name)
-    if submodule is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    _warnings.warn(
-        f"cunumpy.cuda.{name} moved to cunumpy.{submodule}.{name}; the old name "
-        "is deprecated and will be removed in cunumpy 0.6",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return getattr(_importlib.import_module(f"cunumpy.{submodule}"), name)

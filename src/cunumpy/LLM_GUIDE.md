@@ -58,10 +58,8 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
     `xp.rng.random_streams`,
     `xp.algorithms.morton_keys`, `xp.mpi.mpi_buffer`, `xp.profiling.timed_region`,
     `xp.memory.HostStaging`, `xp.petsc.petsc_vec`; kernel test helpers in
-    `cunumpy.kernel_testing`. The old top-level names (`xp.CudaKernel`) and
-    `cunumpy.testing`, and the kernel and argument classes in `xp.cuda`
-    (`xp.cuda.CudaKernel`), are deprecated (removed in 0.6); do not write new code
-    with them. Modules starting with `_` (`cunumpy._cuda_kernel`, ...) are
+    `cunumpy.kernel_testing`. There is no `xp.CudaKernel`, `xp.cuda.CudaKernel`
+    or `cunumpy.testing`; use the submodule names above. Modules starting with `_` (`cunumpy._cuda_kernel`, ...) are
     private; never import from them.
 
 ## Decision guide

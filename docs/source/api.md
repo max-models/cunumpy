@@ -54,9 +54,11 @@ The submodules are named so that they do not hide a NumPy name (`rng`, not
 "Both" means the functions work on NumPy and CuPy arrays; the functions of
 `cunumpy.cuda` do nothing (or return `None`/`0`) on the NumPy backend.
 
-Before cunumpy 0.5 these names were at the top level (`xp.CudaKernel`). The
-old names still work until cunumpy 0.6 and raise a `DeprecationWarning` that
-names the new place.
+Each name has one import path, through its submodule: `xp.kernels.CudaKernel`,
+`xp.arguments.CudaStruct`, `xp.mpi.mpi_buffer`, `xp.rng.random_streams`. The top
+level of `cunumpy` is the NumPy/CuPy namespace plus backend selection and array
+conversion, so it never hides a NumPy or CuPy name (`xp.fuse` is CuPy's `fuse`;
+cunumpy's is `xp.kernels.fuse`). Modules starting with `_` are private.
 
 ## Version
 
@@ -1713,9 +1715,8 @@ from cunumpy.kernel_testing import (
 `cunumpy.kernel_testing` holds helpers for testing kernels with pytest. It is
 not imported by `import cunumpy`, and it imports pytest only when one of its
 pytest objects is used, so `device_function_kernel` works without pytest.
-Before cunumpy 0.5 it was called `cunumpy.testing`, which replaced NumPy's
-`xp.testing` once imported; that name still works, with a
-`DeprecationWarning`, until cunumpy 0.6.
+It is not called `cunumpy.testing`, because a submodule of that name would
+replace NumPy's `xp.testing` once imported.
 
 ### `requires_cupy`, `BACKENDS`, `backend`
 
