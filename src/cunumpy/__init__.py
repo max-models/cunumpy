@@ -1,6 +1,5 @@
 # cunumpy/__init__.py
 import re as _re
-import warnings as _warnings
 from importlib.metadata import PackageNotFoundError, version
 
 from cunumpy import (
@@ -35,43 +34,6 @@ from cunumpy.xp import (
     to_numpy,
     use_backend,
 )
-
-# Names that were at the top level before cunumpy 0.5, and the submodule each
-# moved to. They still resolve (with a DeprecationWarning) until cunumpy 0.6.
-_MOVED = {
-    **dict.fromkeys(cuda.__all__, "cuda"),
-    **dict.fromkeys(arguments.__all__, "arguments"),
-    **dict.fromkeys(
-        (
-            name
-            for name in kernels.__all__
-            if not name.endswith(
-                ("_host_kernel_implementation", "_device_kernel_implementation")
-            )
-            and name != "DEVICE_IMPLEMENTATIONS"
-        ),
-        "kernels",
-    ),
-    **dict.fromkeys(rng.__all__, "rng"),
-    **dict.fromkeys(algorithms.__all__, "algorithms"),
-    # the names of cunumpy.mpi that were at the top level (not the later ones)
-    **dict.fromkeys(
-        (
-            "get_mpi_cuda_aware",
-            "local_rank",
-            "mpi_buffer",
-            "mpi_is_cuda_aware",
-            "require_cuda_aware_mpi",
-            "set_mpi_cuda_aware",
-            "synchronize_for_mpi",
-        ),
-        "mpi",
-    ),
-    **dict.fromkeys(profiling.__all__, "profiling"),
-    **dict.fromkeys(memory.__all__, "memory"),
-    "petsc_vec": "petsc",
-}
-_MOVED.pop("BIT_GENERATORS")  # never was at the top level
 
 try:
     __version__ = version("cunumpy")
@@ -147,31 +109,19 @@ def __getattr__(name: str):
 
     The public names of the active backend are copied into this namespace (see
     `_sync_backend_namespace`), so this only runs for names missing from the
-    backend's ``__all__``, for ``numpy_backend``/``cupy_backend``, and for the
-    names moved to a submodule in cunumpy 0.5 (see ``_MOVED``), which still
-    resolve with a ``DeprecationWarning``.
+    backend's ``__all__`` and for ``numpy_backend``/``cupy_backend``.
     """
     if name == "numpy_backend":
         return xp.numpy_backend
     if name == "cupy_backend":
         return xp.cupy_backend
-    submodule = _MOVED.get(name)
-    if submodule is not None:
-        _warnings.warn(
-            f"cunumpy.{name} moved to cunumpy.{submodule}.{name}; the top-level "
-            "name is deprecated and will be removed in cunumpy 0.6",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return getattr(globals()[submodule], name)
     return getattr(xp.xp, name)
 
 
 # `xp.zeros` must be as fast as `numpy.zeros`. A module-level __getattr__ runs
 # only after the normal lookup failed, which costs about 3 us per access, so the
 # public names of the active backend module are copied into this namespace, and
-# replaced whenever the backend changes. cunumpy's own names and the deprecated
-# names of _MOVED (e.g. `fuse`, which CuPy also has) are never overwritten.
+# replaced whenever the backend changes. cunumpy's own names are never overwritten.
 _OWN_NAMES = frozenset(globals())
 _backend_names: dict[int, dict[str, object]] = {}  # id(module) -> names to copy
 _switches: dict[tuple[int, int], tuple[tuple[str, ...], dict[str, object]]] = {}
@@ -186,7 +136,6 @@ def _names_of(module) -> dict[str, object]:
             for name in getattr(module, "__all__", ())
             if not name.startswith("_")
             and name not in _OWN_NAMES
-            and name not in _MOVED
             and hasattr(module, name)
         }
         _backend_names[id(module)] = names
