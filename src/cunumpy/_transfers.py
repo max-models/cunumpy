@@ -26,7 +26,13 @@ Counted are
   device arrays to the host (and back), one event per call;
 * ``fallback``: a :class:`~cunumpy.kernels.Kernel` without CUDA kernel calling its host
   kernel on the CuPy backend (``missing_cuda="fallback"``), one event per call;
-* ``device_copy``: device-only dtype/layout conversions in CuNumpy helpers.
+* ``device_copy``: device-only dtype/layout conversions in CuNumpy helpers;
+* ``sync``: the host waited for the device: :func:`~cunumpy.synchronize`, the
+  waits of the MPI helpers and of the CUDA debug mode, and, on the fake CuPy,
+  a scalar read of a device array (``float(a)``, ``int(a)``, ``bool(a)``,
+  ``a.item()``, ``a.tolist()``). Syncs are listed in :attr:`TransferCounter.syncs`
+  and the report but not in :attr:`~TransferCounter.total`, and
+  :func:`assert_no_transfers` accepts them unless called with ``syncs=True``.
 
 Mirror refreshes, argument conversions, staging, serial MPI and kernel output
 copy-back are also counted. Each physical host/device copy is recorded with its
@@ -37,7 +43,9 @@ copies and rejects host/device copies and host fallback/conversion markers.
 Limitations
 -----------
 Only transfers made *through cunumpy* are seen. Raw ``cupy.ndarray.get()``,
-``cupy.asarray(numpy_array)``, ``numpy.asarray(cupy_array)``, ``float(device_array)``,
+``cupy.asarray(numpy_array)``, ``numpy.asarray(cupy_array)``, ``float(device_array)``
+(an implicit sync of the real CuPy, which cannot be observed from Python; the fake
+CuPy reports it),
 forwarded backend operations such as ``xp.asarray`` and implicit conversions
 inside other libraries are not counted; use ``nsys``
 (or CuPy's own profiling hooks) to find those.
@@ -65,7 +73,14 @@ __all__ = [
 ]
 
 #: Event kinds, in the order they are reported.
-KINDS = ("to_host", "to_device", "kernel_conversion", "fallback", "device_copy")
+KINDS = (
+    "to_host",
+    "to_device",
+    "kernel_conversion",
+    "fallback",
+    "device_copy",
+    "sync",
+)
 
 # The currently active counters, innermost last. Instrumented code checks
 # ``if _ACTIVE:`` before doing any work, so the overhead of an inactive counter
@@ -152,9 +167,14 @@ class TransferCounter:
         return self.count("fallback")
 
     @property
+    def syncs(self) -> int:
+        """Number of times the host waited for the device (see the module documentation)."""
+        return self.count("sync")
+
+    @property
     def total(self) -> int:
-        """Number of observations, including conversion/fallback markers."""
-        return len(self.events)
+        """Number of observations, including conversion/fallback markers (not syncs)."""
+        return sum(1 for event in self.events if event.kind != "sync")
 
     def bytes(self, kind: str) -> int:
         """Known bytes copied for `kind`; markers and unknown sizes add zero."""
@@ -210,6 +230,11 @@ def _record(kind: str, description: str, *, nbytes: int | None = None) -> None:
     event = TransferEvent(kind, description, _caller(), nbytes)
     for counter in _ACTIVE:
         counter._add(event)
+
+
+def _record_sync(description: str) -> None:
+    """Record that the host waits for the device (call only ``if _ACTIVE:``)."""
+    _record("sync", description)
 
 
 def _describe(array: Any) -> str:
@@ -277,8 +302,14 @@ def count_transfers() -> Generator[TransferCounter, None, None]:
 
 
 @contextmanager
-def assert_no_transfers() -> Generator[TransferCounter, None, None]:
+def assert_no_transfers(
+    *, syncs: bool = False
+) -> Generator[TransferCounter, None, None]:
     """Raise ``AssertionError`` if the block makes a transfer through cunumpy.
+
+    Syncs (the host waiting for the device) are accepted unless `syncs` is
+    True, e.g. ``assert_no_transfers(syncs=True)`` for a time step that must
+    never stall on the device.
 
     A :func:`count_transfers` block that, on exit, raises with the counter's
     :meth:`~TransferCounter.report` if a host/device copy or host conversion/
@@ -292,7 +323,8 @@ def assert_no_transfers() -> Generator[TransferCounter, None, None]:
     """
     with count_transfers() as counter:
         yield counter
-    if any(event.kind != "device_copy" for event in counter.events):
+    ignored = ("device_copy",) if syncs else ("device_copy", "sync")
+    if any(event.kind not in ignored for event in counter.events):
         raise AssertionError(
             "host/device transfers inside a block that must not transfer:\n"
             + counter.report(),

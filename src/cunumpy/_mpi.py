@@ -13,7 +13,7 @@ import array_api_compat.numpy as np
 from maybempi import get_mpi
 
 from cunumpy._transfers import _ACTIVE as _COUNTERS
-from cunumpy._transfers import _describe, _nbytes, _record
+from cunumpy._transfers import _describe, _nbytes, _record, _record_sync
 from cunumpy.xp import array_backend, cupy_available, to_numpy
 
 _logger = logging.getLogger(__name__)
@@ -45,6 +45,8 @@ def synchronize_for_mpi(*arrays: Any, stream: Any = None, event: Any = None) -> 
 
     if isinstance(event, HostEvent) or isinstance(stream, HostStream):
         raise TypeError("device buffers require a CUDA producer stream or event")
+    if _COUNTERS:
+        _record_sync("synchronize_for_mpi()")
     if event is not None:
         event.synchronize()
         return
@@ -262,6 +264,8 @@ def mpi_buffer(
             # Ensure MPI's host buffer can be reused immediately on context exit.
             if transfer_array is not array:
                 array[...] = transfer_array
+            if _COUNTERS:
+                _record_sync("mpi_buffer() staging for recv")
             cp.cuda.get_current_stream().synchronize()
 
 

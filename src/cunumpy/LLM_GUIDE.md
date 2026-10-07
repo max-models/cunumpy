@@ -73,6 +73,10 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
 | call an existing NumPy-only kernel with GPU arrays (slow, correct) | `xp.kernels.PyccelKernel(fn, outputs=(...))` |
 | launch a hand-written CUDA C kernel | `xp.kernels.CudaKernel(source, "name")` / `CudaKernel.from_file(path)` |
 | run a Metal (MSL) kernel on an Apple silicon GPU, NumPy float32 in and out (float64 raises; `float64="cast"` computes in float32); not part of `Kernel` dispatch | `xp.kernels.MetalKernel(body, inputs=[...], outputs=[...])(*args, out=arrays, n_threads=n)`; check `xp.kernels.metal_available()` |
+| call host-only code (SciPy, file readers) with arguments of either backend | `xp.host_call(fun, *args)`; `@xp.evaluate_on_host` on a method; `@xp.setup_on_host` on `__init__` |
+| keep the live rows of particle arrays at the front | `n = xp.algorithms.compact_by_mask(alive, markers, weights)` |
+| run CUDA kernel launches on the CPU in a test (fake CuPy) | `with kernel_testing.emulated_launches(): ...`; `kernel_testing.host_buffer(a)` reads a fake array; struct arguments are read through their fields |
+| find the arguments a host kernel writes (copy only those back) | `PyccelKernel(fn, outputs=("out",))` (names work positionally); `xp.kernels.outputs_from_annotations(fn)`; `Kernel.from_folder(..., outputs="annotations")` |
 | host kernel + CUDA port, chosen by backend | `xp.kernels.Kernel(host_fn, cuda_kernel_or_None)` |
 | many kernels in a package, ported incrementally | `xp.kernels.KernelCatalog.from_package(__name__, missing_cuda="fallback")` |
 | host kernels compiled at first call (your compile function), NumPy fallback | `from_package(..., host_suffix="_pyccel", compile_host=my_compile, host_fallback={...})` -> `xp.kernels.CompiledHostKernel` |

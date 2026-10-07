@@ -15,6 +15,14 @@ __cunumpy_fake__ = True
 _HOST = _np.ndarray
 
 
+def _sync(what):
+    """Count a scalar read of a device array (an implicit sync of the real CuPy)."""
+    from cunumpy._transfers import _ACTIVE, _record_sync
+
+    if _ACTIVE:
+        _record_sync(what)
+
+
 def _err(obj, where=""):
     return TypeError(
         f"Unsupported type {type(obj)}{where} (fake CuPy: host arrays/lists are "
@@ -75,6 +83,8 @@ class ndarray:
         # no __array_interface__ etc.: NumPy must not see the host buffer
         if name.startswith("__"):
             raise AttributeError(name)
+        if name in ("item", "tolist"):
+            _sync(f"ndarray.{name}()")
         attr = getattr(self._a, name)
         if callable(attr):
             return _wrap_callable(attr, strict=True, name=f"ndarray.{name}")
@@ -101,18 +111,23 @@ class ndarray:
         return format(self._a.item() if self._a.ndim == 0 else self._a, spec)
 
     def __bool__(self):
+        _sync("bool(device array)")
         return bool(self._a)
 
     def __int__(self):
+        _sync("int(device array)")
         return int(self._a)
 
     def __float__(self):
+        _sync("float(device array)")
         return float(self._a)
 
     def __complex__(self):
+        _sync("complex(device array)")
         return complex(self._a)
 
     def __index__(self):
+        _sync("index of a device array")
         return operator.index(self._a.item() if self._a.ndim == 0 else self._a)
 
     __hash__ = None

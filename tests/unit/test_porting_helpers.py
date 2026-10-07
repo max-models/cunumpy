@@ -532,7 +532,10 @@ with xp.profiling.count_transfers() as counter:
         assert isinstance(buf, np.ndarray) and buf.tolist() == [1.0, 2.0]
         buf[:] = [5.0, 6.0]
 assert xp.to_numpy(d).tolist() == [5.0, 6.0]
-assert sorted(e.kind for e in counter.events) == ["to_device", "to_host"]
+assert sorted(e.kind for e in counter.events if e.kind != "sync") == [
+    "to_device",
+    "to_host",
+]
 with xp.mpi.mpi_buffer(d, cuda_aware=True) as buf:
     assert buf is d
 producer = xp.cuda.create_stream()

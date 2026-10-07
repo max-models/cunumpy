@@ -95,8 +95,11 @@ Things to know:
 * **Build random data on the host.** NumPy and CuPy generators produce
   different sequences from the same seed, so use `numpy.random.default_rng` and
   convert with `to_cunumpy()`, as above.
-* **Which arguments are compared**: `outputs=(2,)` selects them by index;
-  otherwise the host kernel's declared `outputs` are used, and if there are
+* **Which arguments are compared**: `outputs=(2,)` selects them by index and
+  `outputs=("markers",)` by parameter name (the names of the host function).
+  `"markers.positions"` compares only that field of a struct or argument
+  object, leaving out fields the two kernels fill differently (scratch buffers,
+  for instance); otherwise the host kernel's declared `outputs` are used, and if there are
   none, every array argument. Arrays held by argument objects (one level deep,
   e.g. a `CudaArguments` object or a list) are compared too. A
   `CudaStructArguments` object is read through its struct fields, so its
@@ -216,6 +219,40 @@ intrinsics; kernels using the latter are refused with `NotImplementedError`, so
 those still need a GPU run. The compiler may fuse multiply-adds as NVRTC does,
 so compare with a tolerance of a few ulp.
 
+### Struct parameters and `emulated_launches()`
+
+A kernel with struct parameters takes, for each struct, a dictionary of field
+names to values, a `CudaStructValue`, or any object with an attribute per field
+(a host argument class, a `CudaStructArguments`); the arrays in it are updated in
+place:
+
+```python
+emulate_cuda_kernel(
+    push,
+    {"markers": markers, "alive": alive, "n": 4},  # the struct Particles
+    0.5,
+    total,
+    n_threads=4,
+)
+```
+
+To test code that *launches* kernels (a `Kernel` on the CuPy backend, a
+propagator), wrap it in `emulated_launches()`. With the fake CuPy (below) every
+`CudaKernel` launch in the block then runs through the emulation on the host
+buffers of the fake arrays, so the device arrays hold the results:
+
+```python
+from cunumpy.kernel_testing import emulated_launches, host_buffer
+
+with emulated_launches():
+    propagator(dt)  # CuPy backend = the fake CuPy
+np.testing.assert_allclose(host_buffer(markers), expected)
+```
+
+`host_buffer(array)` is the NumPy array behind a fake CuPy array (not a copy).
+Launches are serial and compile the kernel as C++ every time, so use small
+problems.
+
 ## Test `__device__` helpers: `device_function_kernel`
 
 Helpers such as B-spline evaluation or coordinate maps are `__device__`
@@ -314,6 +351,13 @@ This catches `to_numpy()` calls, `PyccelKernel` conversions and `Kernel`
 fallbacks that crept into the step. It does not see copies made outside
 CuNumpy (see [Data movement](../guides/data-movement.md)).
 
+Syncs (the host waiting for the device) are recorded as well, in
+`counter.syncs`, and are accepted unless you ask for none:
+`assert_no_transfers(syncs=True)`. They include `xp.synchronize()` and the waits
+of the MPI helpers; on the fake CuPy also `float(a)`, `int(a)`, `bool(a)`,
+`a.item()` and `a.tolist()`, which stall the real CuPy too but cannot be
+observed there from Python.
+
 ## Test generated headers
 
 When struct headers are generated with `write_cuda_header()` and committed,
@@ -323,6 +367,12 @@ then fails CI instead of producing a kernel that reads fields at wrong
 offsets.
 
 ## CI setup
+
+* With `CUNUMPY_REQUIRE_CUDA=1` the GPU markers fail instead of skipping:
+  `requires_cupy` (as an error when the test is set up), the `cupy` run of the
+  `backend` fixture (which also activates CuPy strictly, never falling back to
+  NumPy) and `assert_kernels_agree`. Set it on the GPU CI job, so a broken CuPy
+  or driver cannot pass as a set of skipped tests.
 
 * Run the suite on a normal CPU runner: everything on NumPy runs, GPU cases
   are reported as skipped, and `emulate_cuda_kernel` tests check the CUDA

@@ -127,8 +127,10 @@ def test_collect_arrays():
 
     with pytest.raises(IndexError, match="output argument 6 does not exist"):
         _collect_arrays(args, outputs=(6,))
-    with pytest.raises(TypeError, match="positional argument indices"):
+    with pytest.raises(KeyError, match="not a parameter of the kernel"):
         _collect_arrays(args, outputs=("out",))
+    with pytest.raises(TypeError, match="indices \\(int\\) or names"):
+        _collect_arrays(args, outputs=(1.5,))
 
 
 def test_compare_results():
