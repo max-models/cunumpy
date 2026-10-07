@@ -44,7 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The former function names are removed without compatibility aliases.
 
 ### Added
-- C-contiguous array views `CArray1D<T>` to `CArray4D<T>` in
+- Strided and C-contiguous CUDA array views through 16 dimensions, including
+  `Array5D`/`Array6D` for matrix accumulations. Higher-dimensional views work
+  as kernel parameters, struct fields, annotations and in CPU emulation.
+- C-contiguous array views `CArray1D<T>` to `CArray16D<T>` in
   `cunumpy/array_view.cuh`. They hold a pointer and shape only, so `a(i, j)` is
   `data[i * shape[1] + j]`. As kernel parameters or struct fields, they reject
   non-contiguous arrays and never copy them. `CudaStruct.from_signature` and

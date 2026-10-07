@@ -394,7 +394,7 @@ kernel(particles.args_markers, dt)  # host or CUDA kernel
 Kernels ported from pyccel index arrays like `markers[ip, j]`, which needs
 shapes and strides rather than bare pointers. The shipped header
 `cunumpy/array_view.cuh` (found by every `CudaKernel`) provides the strided
-views `Array1D<T>` to `Array4D<T>`; a parameter or struct field of that type
+views `Array1D<T>` to `Array16D<T>`; a parameter or struct field of that type
 takes a CuPy array, contiguous or not, and indexes `a(i, j)`. The struct can be
 generated from the annotations of the pyccel argument class, so the Python
 class is the one definition, and written to a header that a test keeps in sync:
@@ -404,7 +404,9 @@ class MarkerArguments:
     def __init__(self, markers: "float[:, :]", n_markers: int, valid: "bool[:]"): ...
 
 
-MarkerArgs = xp.arguments.CudaStruct.from_signature(MarkerArguments.__init__, "MarkerArgs")
+MarkerArgs = xp.arguments.CudaStruct.from_signature(
+    MarkerArguments.__init__, "MarkerArgs"
+)
 MarkerArgs.to_header(
     "marker_args.cuh"
 )  # Array2D<double> markers; long long n_markers; ...

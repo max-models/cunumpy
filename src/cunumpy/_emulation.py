@@ -16,7 +16,7 @@ so the call looks like a launch::
     np.testing.assert_allclose(y, 2.0 * x)
 
 Arguments follow the kernel signature: NumPy arrays for pointer and array view
-parameters (``Array1D<T>`` to ``Array4D<T>``; any strides, they are passed as
+parameters (``Array1D<T>`` to ``Array16D<T>``; any strides, they are passed as
 contiguous copies), Python or NumPy scalars for scalar parameters (cast and
 checked like in a launch). Arrays are written back into the given arrays.
 
@@ -354,7 +354,7 @@ def emulate_cuda_kernel(
                 buffer.tofile(path)
                 ctype = param.ctype if param.dtype is not None else "unsigned char"
                 element = (
-                    re.match(r"C?Array\dD<(.*)>", ctype).group(1)
+                    re.match(r"C?Array\d+D<(.*)>", ctype).group(1)
                     if param.view_ndim is not None
                     else ctype
                 )

@@ -1117,8 +1117,8 @@ cunumpy ships CUDA headers that every `CudaKernel` finds automatically;
 (`-I<dir>`).
 
 `cunumpy/array_view.cuh` defines the strided views `Array1D<T>` to
-`Array4D<T>` (4D e.g. for a 3D grid of vector components `(nx, ny, nz,
-ncomp)`): `T* data`, `long long shape[ndim]`, `long long
+`Array16D<T>` (for example, a 4D view can describe a 3D grid of vector
+components `(nx, ny, nz, ncomp)`): `T* data`, `long long shape[ndim]`, `long long
 strides[ndim]` (in elements, not bytes), `operator()(i, j, ...)` returning a
 reference to the element, and `size()`. A kernel indexes `a(i, j)` like the
 pyccel kernel it is ported from indexes `a[i, j]`, without hand-passed sizes.
@@ -1261,7 +1261,7 @@ changes one definition instead of every kernel signature.
 
 `CudaStruct(name, fields)` takes the fields as `(name, C type)` pairs; scalar
 fields, pointers to the scalar types above (or `void*`), and array views
-`Array1D<T>` to `Array4D<T>` of those scalar types (see "CUDA headers and
+`Array1D<T>` to `Array16D<T>` of those scalar types (see "CUDA headers and
 array views") are supported.
 
 * `declaration`: the C definition of the struct, to put in the CUDA source
@@ -1300,7 +1300,9 @@ class MarkerArguments:  # the pyccel argument class, e.g. in struphy
     def __init__(self, markers: "float[:, :]", n_markers: int, valid: "bool[:]"): ...
 
 
-MarkerArgs = xp.arguments.CudaStruct.from_signature(MarkerArguments.__init__, "MarkerArgs")
+MarkerArgs = xp.arguments.CudaStruct.from_signature(
+    MarkerArguments.__init__, "MarkerArgs"
+)
 print(MarkerArgs.declaration)
 # struct MarkerArgs {
 #     Array2D<double> markers;
@@ -1897,7 +1899,7 @@ and the kernel's include directories and `-D` options apply. Then the kernel is
 called once per thread, for every block and thread index of the launch shape.
 
 Arguments follow the signature, with NumPy arrays in place of CuPy arrays:
-pointer and view parameters (`Array1D<T>` to `Array4D<T>`) take arrays of the
+pointer and view parameters (`Array1D<T>` to `Array16D<T>`) take arrays of the
 declared dtype (and ndim), passed as contiguous copies, so any strides work,
 and written back into the given arrays; scalars are checked and cast like in a
 launch. Like NVRTC by default, the compiler may fuse `a * b + c` into an FMA,
