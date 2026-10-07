@@ -2306,6 +2306,7 @@ class RecordingRawKernel:
 
     def __call__(self, grid, block, args, shared_mem=0):
         self.launches.append((grid, block, shared_mem))
+        self.args = args
 
 
 @pytest.fixture
@@ -2331,6 +2332,28 @@ def recorded(monkeypatch):
     monkeypatch.setattr(kernel, "compile", lambda: raw)
     monkeypatch.setattr(kernel, "debug_active", lambda: False)
     return kernel, raw
+
+
+def test_launch_passes_structs_as_size_one_numpy_arrays(recorded, monkeypatch):
+    kernel, raw = recorded
+    packed = np.zeros((), dtype=[("data", np.uintp), ("shape", np.int64, (1,))])
+    packed["data"] = 0x1000
+    packed["shape"] = (7,)
+    scalar = np.float64(2.0)
+    device_array = FakeDeviceArray(np.float64, shape=(7,))
+    monkeypatch.setattr(
+        kernel, "prepare_args", lambda *args: (packed[()], scalar, device_array)
+    )
+
+    kernel(n_threads=1)
+
+    struct_arg, scalar_arg, pointer_arg = raw.args
+    assert isinstance(struct_arg, np.ndarray)
+    assert struct_arg.size == 1
+    assert struct_arg.dtype == packed.dtype
+    assert struct_arg.tobytes() == packed.tobytes()
+    assert scalar_arg is scalar
+    assert pointer_arg is device_array
 
 
 def test_n_threads_from_first_array(recorded):
