@@ -151,7 +151,9 @@ Keeping CUDA source in `.cu` files gives editor support and lets kernels share
 headers:
 
 ```python
-push = xp.kernels.CudaKernel.from_file("kernels/push/push_cuda.cu")  # kernel name "push"
+push = xp.kernels.CudaKernel.from_file(
+    "kernels/push/push_cuda.cu"
+)  # kernel name "push"
 ```
 
 `from_file` derives the kernel name from the file name minus the `_cuda.cu`
@@ -257,7 +259,9 @@ on first use and caches it:
 
 ```python
 def make_matvec(ndim, dtype):
-    return xp.kernels.CudaKernel(generate_source(ndim, xp.cuda.ctype_of(dtype)), "matvec")
+    return xp.kernels.CudaKernel(
+        generate_source(ndim, xp.cuda.ctype_of(dtype)), "matvec"
+    )
 
 
 matvec = xp.kernels.CudaKernelVariants(make_matvec)

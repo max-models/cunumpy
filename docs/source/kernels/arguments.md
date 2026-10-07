@@ -191,7 +191,9 @@ class MarkerArguments:
     def __init__(self, markers: "float[:, :]", n_markers: int, valid: "bool[:]"): ...
 
 
-MarkerArgs = xp.arguments.CudaStruct.from_signature(MarkerArguments.__init__, "MarkerArgs")
+MarkerArgs = xp.arguments.CudaStruct.from_signature(
+    MarkerArguments.__init__, "MarkerArgs"
+)
 print(MarkerArgs.declaration)
 ```
 
