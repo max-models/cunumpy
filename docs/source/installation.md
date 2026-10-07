@@ -39,10 +39,26 @@ print("active backend:", xp.get_backend())  # 'cupy' if the GPU works
 If `cupy_available()` is `False`, CuNumpy quietly falls back to NumPy when CuPy
 is requested. See [Troubleshooting](troubleshooting.md) for the usual causes.
 
+## Apple silicon GPUs
+
+CuPy does not run on Macs. The GPU of an Apple silicon Mac can run
+[Metal kernels](kernels/metal-kernel.md) on NumPy float32 arrays through MLX:
+
+```bash
+python -m pip install 'cunumpy[metal]'
+```
+
+```python
+import cunumpy as xp
+
+print("Metal usable:", xp.kernels.metal_available())
+```
+
 ## Optional extras
 
 | Extra | Installs | Use it for |
 | --- | --- | --- |
+| `cunumpy[metal]` | `mlx` (Apple silicon Macs only) | [`MetalKernel`](kernels/metal-kernel.md) on the Mac GPU |
 | `cunumpy[test]` | `pytest`, `coverage` | running the test suite, using `cunumpy.kernel_testing` |
 | `cunumpy[test-compiled]` | the above plus `pyccel` | tests that compile host kernels with Pyccel |
 | `cunumpy[docs]` | Sphinx, MyST, the book theme | building this documentation |

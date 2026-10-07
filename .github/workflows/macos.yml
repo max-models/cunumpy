@@ -33,6 +33,13 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
+      # Pyccel is built from source here (no wheel for macOS arm64) and needs a
+      # Fortran compiler, which the macOS runners do not have.
+      - name: Install gfortran
+        run: |
+          brew install gcc
+          gfortran --version
+
       - name: Install project
         run: |
           pip install --upgrade pip

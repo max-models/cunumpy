@@ -24,7 +24,7 @@ never hide a NumPy name:
 
 | Submodule | Contents |
 |---|---|
-| `xp.kernels` | `Kernel`, `KernelCatalog`, `PyccelKernel`, `CudaKernel`, host implementations, `fuse` |
+| `xp.kernels` | `Kernel`, `KernelCatalog`, `PyccelKernel`, `CudaKernel`, `MetalKernel`, host implementations, `fuse` |
 | `xp.arguments` | CUDA only: `CudaStruct`, `CudaStructArguments`, `CudaArguments` |
 | `xp.cuda` | CUDA only: devices, streams, debug mode, CUDA headers |
 | `xp.rng` | `random_streams`, `get_rng`, `philox_*` |
@@ -36,6 +36,8 @@ never hide a NumPy name:
 | `cunumpy.kernel_testing` | pytest helpers for host/CUDA kernel pairs |
 
 Everything except `xp.cuda`, `xp.arguments` and `CudaKernel` works on both backends.
+`MetalKernel` runs Metal kernels on the GPU of an Apple silicon Mac (MLX, float32, NumPy arrays;
+`pip install 'cunumpy[metal]'`, see [the guide](docs/source/kernels/metal-kernel.md)).
 
 ## Install
 

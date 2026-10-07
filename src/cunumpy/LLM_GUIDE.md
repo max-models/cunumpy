@@ -72,6 +72,7 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
 | hand data to SciPy/matplotlib/h5py | `xp.to_numpy(a)` |
 | call an existing NumPy-only kernel with GPU arrays (slow, correct) | `xp.kernels.PyccelKernel(fn, outputs=(...))` |
 | launch a hand-written CUDA C kernel | `xp.kernels.CudaKernel(source, "name")` / `CudaKernel.from_file(path)` |
+| run a Metal (MSL) kernel on an Apple silicon GPU, NumPy float32 in and out (float64 raises; `float64="cast"` computes in float32); not part of `Kernel` dispatch | `xp.kernels.MetalKernel(body, inputs=[...], outputs=[...])(*args, out=arrays, n_threads=n)`; check `xp.kernels.metal_available()` |
 | host kernel + CUDA port, chosen by backend | `xp.kernels.Kernel(host_fn, cuda_kernel_or_None)` |
 | many kernels in a package, ported incrementally | `xp.kernels.KernelCatalog.from_package(__name__, missing_cuda="fallback")` |
 | host kernels compiled at first call (your compile function), NumPy fallback | `from_package(..., host_suffix="_pyccel", compile_host=my_compile, host_fallback={...})` -> `xp.kernels.CompiledHostKernel` |
