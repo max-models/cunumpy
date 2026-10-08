@@ -37,6 +37,11 @@ with xp.use_backend("cupy"):
     smooth_kernel(field, out)  # out is updated on the device
 ```
 
+Device-to-host conversion preserves F-contiguous arrays. The host kernel must
+accept that order: the wrapper does not adapt arrays to a compiled signature.
+See [Array ordering and strides](../guides/array-ordering.md) for Pyccel signatures
+and the operations that can change layout.
+
 ## Declare the outputs
 
 The wrapper cannot know which arguments the function writes. By default it
