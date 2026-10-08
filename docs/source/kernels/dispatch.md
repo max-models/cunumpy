@@ -279,6 +279,11 @@ with xp.kernels.kernel_output(result, like=field, dtype=float) as buffer:
     catalog["gather"](convert(positions), convert(field), buffer, n_threads=n)
 ```
 
+Pyccel host kernels also take arrays in C order with gaps, such as the stored
+markers `storage[:, :n]` of a component-major buffer with spare capacity. Pass
+`strided=True` to both helpers to hand those over without a copy on the host
+(see [Array ordering and strides](../guides/array-ordering.md)).
+
 ## Same parameters on both sides
 
 The call site is the same for both kernels only if they take the same

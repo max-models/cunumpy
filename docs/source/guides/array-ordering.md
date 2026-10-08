@@ -84,6 +84,12 @@ markers[...] = markers.copy()  # C-ordered temporary, F-ordered destination
 assert markers.flags.f_contiguous
 ```
 
+Component-major arrays, `(ncomp, N)` with the markers along the last axis, keep
+a C-ordered buffer and a contiguous `positions[d]` per component without any
+order flag; `compact_by_mask(alive, positions, weights, axis=-1)` compacts them
+in place, and the prefix `positions[:, :n]` is C order with gaps, which Pyccel
+kernels take as it is (`as_kernel_array(..., strided=True)`).
+
 Likewise, `xp.algorithms.compact_by_mask(alive, markers)` gathers selected rows
 and writes them into the front of the original buffer, preserving that
 buffer's layout. Only the returned count of leading rows is valid. However,
@@ -120,8 +126,14 @@ Some convenience helpers deliberately require C order:
 | Helper | Contract |
 | --- | --- |
 | `xp.as_device_array` | Returns a C-contiguous device array, copying if needed. |
-| `xp.kernels.as_kernel_array` | Returns a C-contiguous array on the side of `like`. |
-| `xp.kernels.kernel_output` | Yields a C-contiguous working buffer and copies updates back into the original output when needed. |
+| `xp.kernels.as_kernel_array` | Returns a C-contiguous array on the side of `like`; with `strided=True`, also a NumPy array in C order with gaps, unchanged. |
+| `xp.kernels.kernel_output` | Yields a C-contiguous working buffer (with `strided=True`, also a NumPy output in C order with gaps) and copies updates back into the original output when needed. |
+
+"C order with gaps" means positive strides, each at least the extent of the next
+axis: `a[:, :n]`, `a[::2]` or `a[:, ::2]` of a C-contiguous `a`. Pyccel's
+wrappers take such arrays without a copy. They refuse F-ordered arrays with a
+`TypeError` and abort the process on negative strides, so `strided=True` still
+copies those.
 
 For an F-order kernel, allocate or normalize its arguments explicitly instead
 of using these helpers to prepare F-ordered inputs.

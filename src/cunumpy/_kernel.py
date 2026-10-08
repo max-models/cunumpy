@@ -789,7 +789,26 @@ class CompiledHostKernel:
         return kernel(*args, **kwargs)
 
 
-def as_kernel_array(value: Any, like: Any, dtype: Any = None) -> Any:
+def _c_ordered_with_gaps(array: np.ndarray) -> bool:
+    """Whether `array` is laid out in C order, possibly with gaps between entries.
+
+    Every stride is positive and at least the extent of the next axis, e.g. the
+    first ``n`` columns ``a[:, :n]`` of a C-contiguous ``a`` or every other
+    entry ``a[::2]``. Axes of length 1 are ignored, as their stride is never used.
+    """
+    extent = array.itemsize
+    for length, stride in reversed(list(zip(array.shape, array.strides, strict=True))):
+        if length == 1:
+            continue
+        if stride < extent:
+            return False
+        extent = stride * length
+    return True
+
+
+def as_kernel_array(
+    value: Any, like: Any, dtype: Any = None, *, strided: bool = False
+) -> Any:
     """`value` as an array the kernel chosen for `like` takes.
 
     On the device of `like` (a CuPy array if `like` is one, a NumPy array
@@ -805,6 +824,15 @@ def as_kernel_array(value: Any, like: Any, dtype: Any = None) -> Any:
 
     For an array the kernel writes, use :func:`kernel_output`, which copies a
     converted array back.
+
+    With ``strided=True`` a NumPy array for a host kernel is also taken
+    unchanged when it is in C order with gaps: positive strides, each at least
+    the extent of the next axis, such as the first ``n`` columns
+    ``storage[:, :n]`` of a component-major marker buffer, which C-contiguity
+    would copy on every call. Pyccel's wrappers take such arrays without a copy
+    (they refuse F order and abort on negative strides, which are still copied);
+    a host kernel that needs contiguous memory, e.g. one using raw pointers,
+    must not use it. CuPy arrays are made C-contiguous either way.
     """
     if is_gpu(like):
         import cupy
@@ -819,11 +847,21 @@ def as_kernel_array(value: Any, like: Any, dtype: Any = None) -> Any:
                 nbytes=_nbytes(result),
             )
         return result
-    return np.ascontiguousarray(to_numpy(value), dtype=dtype)
+    value = to_numpy(value)
+    if (
+        strided
+        and value.ndim > 0
+        and (dtype is None or value.dtype == np.dtype(dtype))
+        and _c_ordered_with_gaps(value)
+    ):
+        return value
+    return np.ascontiguousarray(value, dtype=dtype)
 
 
 @contextmanager
-def kernel_output(out: Any, like: Any, dtype: Any = None) -> Generator[Any]:
+def kernel_output(
+    out: Any, like: Any, dtype: Any = None, *, strided: bool = False
+) -> Generator[Any]:
     """The buffer a kernel chosen for `like` writes, copied back into `out` after it.
 
     Yields `out` itself if :func:`as_kernel_array` takes it unchanged (then the
@@ -833,8 +871,11 @@ def kernel_output(out: Any, like: Any, dtype: Any = None) -> Generator[Any]:
 
         with xp.kernels.kernel_output(result, like=grid, dtype=float) as buffer:
             gather(convert(positions), grid, buffer, ...)
+
+    `strided` is passed on to :func:`as_kernel_array`: with True, a host kernel
+    writes directly into a NumPy `out` in C order with gaps.
     """
-    buffer = as_kernel_array(out, like, dtype)
+    buffer = as_kernel_array(out, like, dtype, strided=strided)
     yield buffer
     if buffer is not out:
         if is_gpu(out) and not is_gpu(buffer):

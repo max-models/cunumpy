@@ -60,6 +60,17 @@ def test_callbacks_and_explicit_opt_out():
     assert kernel.launch_shape(args=(np.empty((300, 7)),)) == ((3,), (128,))
 
 
+def test_last_axis_launches_one_thread_per_marker_of_component_major_arrays():
+    kernel = CudaKernel(SOURCE, "work", n_threads_from="last_axis")
+    # (ncomp, N) positions first: N threads, not ncomp
+    assert kernel.n_threads_from((2.0, np.empty((3, 1000)), np.empty(5))) == 1000
+    assert kernel.launch_shape(args=(np.empty((3, 1000)),)) == ((8,), (128,))
+    # a 1D per-marker array, and a 0D array before it is skipped
+    assert kernel.n_threads_from((np.array(1.0), np.empty(300))) == 300
+    with pytest.raises(TypeError, match="needs an array argument"):
+        kernel.launch_shape(args=(2.0,))
+
+
 def test_invalid_setting_preserves_auto_inference():
     kernel = CudaKernel(SOURCE, "work")
     with pytest.raises(TypeError, match="n_threads_from"):

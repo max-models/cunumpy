@@ -594,6 +594,53 @@ def test_as_kernel_array_on_the_host():
     assert ints.dtype == np.float64 and isinstance(ints, np.ndarray)
 
 
+@pytest.mark.parametrize(
+    ("name", "make"),
+    [
+        ("column prefix", lambda: np.zeros((3, 10))[:, :6]),
+        ("every other entry", lambda: np.zeros(12)[::2]),
+        ("every other row", lambda: np.zeros((6, 4))[::2]),
+        ("every other column", lambda: np.zeros((3, 8))[:, ::2]),
+        ("one row of a prefix", lambda: np.zeros((3, 10))[1:2, :6]),
+    ],
+)
+def test_strided_takes_c_ordered_arrays_with_gaps(name, make):
+    grid = np.zeros(3)
+    view = make()
+    assert not view.flags.c_contiguous or name == "one row of a prefix"
+    assert (
+        xp.kernels.as_kernel_array(view, like=grid, dtype=float, strided=True) is view
+    )
+    converted = xp.kernels.as_kernel_array(view, like=grid, dtype=float)
+    assert converted.flags.c_contiguous  # the default still copies
+    with xp.kernels.kernel_output(view, like=grid, dtype=float, strided=True) as out:
+        assert out is view
+
+
+@pytest.mark.parametrize(
+    ("name", "make"),
+    [
+        ("F order", lambda: np.asfortranarray(np.zeros((3, 4)))),
+        ("transposed", lambda: np.zeros((4, 3)).T),
+        ("negative stride", lambda: np.zeros(5)[::-1]),
+        ("negative row stride", lambda: np.zeros((3, 4))[::-1]),
+        ("other dtype", lambda: np.zeros((3, 10), dtype=np.float32)[:, :6]),
+    ],
+)
+def test_strided_still_copies_other_layouts(name, make):
+    grid = np.zeros(3)
+    value = make()
+    converted = xp.kernels.as_kernel_array(value, like=grid, dtype=float, strided=True)
+    assert converted is not value
+    assert converted.flags.c_contiguous and converted.dtype == np.float64
+    np.testing.assert_array_equal(converted, value)
+
+
+def test_strided_without_dtype_keeps_any_dtype():
+    view = np.zeros((2, 8), dtype=np.int32)[:, :5]
+    assert xp.kernels.as_kernel_array(view, like=np.zeros(1), strided=True) is view
+
+
 def test_kernel_output_writes_into_its_target():
     grid = np.zeros(3)
     out = np.zeros(4)
