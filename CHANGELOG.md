@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-10-08
+
 ### Fixed
 - The emulation of kernels with `__syncthreads` compiles with GCC on macOS.
 - Preserve Fortran order when copying CuPy arrays to the host through
