@@ -57,15 +57,17 @@ thread.
 
 from __future__ import annotations
 
+import functools
 import math
 import os
 import sys
-from collections.abc import Generator
+from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
 __all__ = [
+    "TransferBudget",
     "TransferCounter",
     "TransferEvent",
     "assert_no_transfers",
@@ -107,15 +109,31 @@ class TransferEvent:
         The call site outside cunumpy, as ``"file:line"``.
     nbytes : int | None
         Payload bytes of a physical copy. None for markers or unknown sizes.
+    blocking : bool
+        Whether the host waited for the copy. False for the copies started by
+        :func:`~cunumpy.to_host_async`.
+    implicit : bool
+        Whether the event was not asked for explicitly: a scalar read of a
+        device array (``float(a)``) on the fake CuPy, recorded as a ``sync``.
     """
 
     kind: str
     description: str
     where: str
     nbytes: int | None = None
+    blocking: bool = True
+    implicit: bool = False
+
+    @property
+    def label(self) -> str:
+        """The description, marked ``[async]`` or ``[implicit]`` where it applies."""
+        marks = ("" if self.blocking else " [async]") + (
+            " [implicit]" if self.implicit else ""
+        )
+        return self.description + marks
 
     def __str__(self) -> str:
-        return f"{self.where}: {self.kind}: {self.description}"
+        return f"{self.where}: {self.kind}: {self.label}"
 
 
 class TransferCounter:
@@ -206,7 +224,7 @@ class TransferCounter:
             lines.append(f"  {kind} ({len(events)}):")
             grouped: dict[tuple[str, str], int] = {}
             for event in events:
-                key = (event.where, event.description)
+                key = (event.where, event.label)
                 grouped[key] = grouped.get(key, 0) + 1
             for (where, description), n in grouped.items():
                 times = f" (x{n})" if n > 1 else ""
@@ -225,16 +243,23 @@ def _caller() -> str:
     return "<unknown>"
 
 
-def _record(kind: str, description: str, *, nbytes: int | None = None) -> None:
+def _record(
+    kind: str,
+    description: str,
+    *,
+    nbytes: int | None = None,
+    blocking: bool = True,
+    implicit: bool = False,
+) -> None:
     """Record a transfer in every active counter (call only ``if _ACTIVE:``)."""
-    event = TransferEvent(kind, description, _caller(), nbytes)
+    event = TransferEvent(kind, description, _caller(), nbytes, blocking, implicit)
     for counter in _ACTIVE:
         counter._add(event)
 
 
-def _record_sync(description: str) -> None:
+def _record_sync(description: str, *, implicit: bool = False) -> None:
     """Record that the host waits for the device (call only ``if _ACTIVE:``)."""
-    _record("sync", description)
+    _record("sync", description, implicit=implicit)
 
 
 def _describe(array: Any) -> str:
@@ -272,7 +297,9 @@ def _is_device_copy(source: Any, result: Any) -> bool:
 
 
 @contextmanager
-def count_transfers() -> Generator[TransferCounter, None, None]:
+def count_transfers(
+    into: TransferCounter | None = None,
+) -> Generator[TransferCounter, None, None]:
     """Count the host/device transfers made through cunumpy in the block.
 
     Yields a :class:`TransferCounter` that records every ``to_numpy``,
@@ -283,7 +310,11 @@ def count_transfers() -> Generator[TransferCounter, None, None]:
     NumPy array.
 
     Blocks can be nested; each active counter sees the transfers made inside
-    it. Transfers that bypass cunumpy (raw ``cupy.ndarray.get()``,
+    it. With `into`, the events are added to that counter (e.g. to accumulate
+    over several calls); a counter that is already active is not added again,
+    so nested blocks with the same counter count each event once. Like any
+    context manager made with :func:`contextlib.contextmanager`, it is also a
+    decorator: ``@count_transfers(counter)``. Transfers that bypass cunumpy (raw ``cupy.ndarray.get()``,
     ``cupy.asarray(numpy_array)``, conversions inside other libraries) are not
     seen; see the module documentation.
 
@@ -293,7 +324,10 @@ def count_transfers() -> Generator[TransferCounter, None, None]:
     ...     propagator(dt)
     >>> assert counter.total == 0, counter.report()
     """
-    counter = TransferCounter()
+    counter = TransferCounter() if into is None else into
+    if any(active is counter for active in _ACTIVE):
+        yield counter
+        return
     _ACTIVE.append(counter)
     try:
         yield counter
@@ -329,3 +363,205 @@ def assert_no_transfers(
             "host/device transfers inside a block that must not transfer:\n"
             + counter.report(),
         )
+
+
+class _PhaseRouter(TransferCounter):
+    """The counter a :class:`TransferBudget` keeps active: it adds every event
+    to the innermost phase of the budget only."""
+
+    def __init__(self, budget: TransferBudget) -> None:
+        super().__init__()
+        self._budget = budget
+
+    def _add(self, event: TransferEvent) -> None:
+        self._budget[self._budget._stack[-1]]._add(event)
+
+
+_LIMITS = ("max_nbytes", "max_count", "max_total_bytes", "blocking", "implicit")
+
+
+@dataclass
+class _Rule:
+    allow: dict[str, dict[str, Any]]
+    ignore: tuple[str, ...]
+    calls: int | None
+
+
+class TransferBudget:
+    """Transfers counted per phase of a program, checked against rules per phase.
+
+    A time loop typically has phases with different budgets: the time step must
+    not copy arrays between host and device at all, the diagnostics may copy a
+    few scalars to the host, the output each saved array once. A budget counts
+    the transfers of each phase (with :func:`count_transfers`) and checks them::
+
+        budget = TransferBudget(started=False)
+        model.integrate = budget.count("integrate")(model.integrate)
+        ...                       # setup: not counted
+        budget.start()
+        for step in range(n_steps):
+            model.integrate(dt)
+            with budget.phase("output"):
+                save(model)
+        budget.require("integrate", allow={"to_host": dict(max_nbytes=8)}, calls=n_steps)
+        budget.require("output", allow={"to_host": dict(max_count=n, max_total_bytes=b)})
+        budget.check()            # AssertionError with report() if a rule is broken
+
+    Phases nest: an event is counted in the innermost phase only, and a phase
+    entered again inside itself (recursion) counts each event and call once.
+
+    Parameters
+    ----------
+    started : bool
+        Whether to count from the start; otherwise phases run uncounted until
+        :meth:`start`.
+
+    Attributes
+    ----------
+    phases : dict[str, TransferCounter]
+        The events of each phase, accumulated over its calls.
+    calls : dict[str, int]
+        How many times each phase was entered while counting.
+    """
+
+    def __init__(self, *, started: bool = True) -> None:
+        self.phases: dict[str, TransferCounter] = {}
+        self.calls: dict[str, int] = {}
+        self.started = started
+        self._rules: dict[str, _Rule] = {}
+        self._stack: list[str] = []
+        self._router = _PhaseRouter(self)
+
+    def __getitem__(self, phase: str) -> TransferCounter:
+        """The counter of `phase` (empty if it has not run)."""
+        return self.phases.setdefault(phase, TransferCounter())
+
+    def start(self) -> None:
+        """Count the phases from now on."""
+        self.started = True
+
+    def stop(self) -> None:
+        """Stop counting; phases run uncounted until :meth:`start`."""
+        self.started = False
+
+    @contextmanager
+    def phase(self, name: str) -> Generator[TransferCounter, None, None]:
+        """Count the transfers of the block in phase `name` (accumulated)."""
+        counter = self[name]
+        if not self.started:
+            yield counter
+            return
+        if name not in self._stack:
+            self.calls[name] = self.calls.get(name, 0) + 1
+        self._stack.append(name)
+        try:
+            with count_transfers(into=self._router):
+                yield counter
+        finally:
+            self._stack.pop()
+
+    def count(self, name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        """A decorator: every call of the function is counted in phase `name`."""
+
+        def decorate(function: Callable[..., Any]) -> Callable[..., Any]:
+            @functools.wraps(function)
+            def counted(*args: Any, **kwargs: Any) -> Any:
+                with self.phase(name):
+                    return function(*args, **kwargs)
+
+            return counted
+
+        return decorate
+
+    def require(
+        self,
+        phase: str,
+        allow: Mapping[str, Mapping[str, Any] | None] | None = None,
+        *,
+        ignore: Sequence[str] = ("device_copy", "sync"),
+        calls: int | None = None,
+    ) -> None:
+        """Set the rule of `phase`, checked by :meth:`check`.
+
+        Parameters
+        ----------
+        phase : str
+            The phase.
+        allow : Mapping[str, Mapping | None] | None
+            The event kinds the phase may have, each with its limits (None or
+            ``{}``: any number). Every other kind is forbidden, except those in
+            `ignore`. Limits: ``max_nbytes`` (of each event; events of unknown
+            size break it), ``max_count`` and ``max_total_bytes`` (over the
+            whole phase), ``blocking`` and ``implicit`` (the events must have
+            this value of :attr:`TransferEvent.blocking` / ``implicit``), e.g.
+            ``{"to_host": dict(max_nbytes=8, blocking=False)}``.
+        ignore : Sequence[str]
+            Kinds that are not checked unless they are in `allow`: by default
+            device-only copies and syncs (the host waiting for the device).
+        calls : int | None
+            The number of times the phase must have been entered.
+        """
+        allow = {kind: dict(limits or {}) for kind, limits in (allow or {}).items()}
+        for kind, limits in allow.items():
+            if kind not in KINDS:
+                raise ValueError(f"unknown transfer kind {kind!r}; kinds: {KINDS}")
+            unknown = set(limits) - set(_LIMITS)
+            if unknown:
+                raise ValueError(
+                    f"unknown limits {sorted(unknown)} for {kind!r}; limits: {_LIMITS}"
+                )
+        self._rules[phase] = _Rule(allow, tuple(ignore), calls)
+
+    def violations(self) -> list[str]:
+        """The broken rules, one line each, with the offending events."""
+        found = []
+        for name, rule in self._rules.items():
+            events = self[name].events
+            n_calls = self.calls.get(name, 0)
+            if rule.calls is not None and n_calls != rule.calls:
+                found.append(f"{name}: {n_calls} call(s), expected {rule.calls}")
+            for event in events:
+                if event.kind not in rule.allow:
+                    if event.kind not in rule.ignore:
+                        found.append(f"{name}: not allowed: {event}")
+                    continue
+                limits = rule.allow[event.kind]
+                limit = limits.get("max_nbytes")
+                if limit is not None and (event.nbytes is None or event.nbytes > limit):
+                    found.append(
+                        f"{name}: {event.nbytes} bytes > max_nbytes={limit}: {event}"
+                    )
+                for flag in ("blocking", "implicit"):
+                    if flag in limits and getattr(event, flag) != limits[flag]:
+                        found.append(
+                            f"{name}: {flag}={getattr(event, flag)} not allowed: {event}"
+                        )
+            for kind, limits in rule.allow.items():
+                of_kind = [e for e in events if e.kind == kind]
+                limit = limits.get("max_count")
+                if limit is not None and len(of_kind) > limit:
+                    found.append(f"{name}: {len(of_kind)} {kind} > max_count={limit}")
+                limit = limits.get("max_total_bytes")
+                total = sum(e.nbytes or 0 for e in of_kind)
+                if limit is not None and total > limit:
+                    found.append(
+                        f"{name}: {total} bytes of {kind} > max_total_bytes={limit}"
+                    )
+        return found
+
+    def report(self) -> str:
+        """The events of every phase (see :meth:`TransferCounter.report`) and the broken rules."""
+        lines = []
+        for name, counter in self.phases.items():
+            lines.append(f"{name} ({self.calls.get(name, 0)} call(s)):")
+            lines += [f"  {line}" for line in counter.report().splitlines()]
+        found = self.violations()
+        if found:
+            lines.append("broken rules:")
+            lines += [f"  {line}" for line in found]
+        return "\n".join(lines)
+
+    def check(self) -> None:
+        """Raise ``AssertionError`` with :meth:`report` if a rule is broken."""
+        if self.violations():
+            raise AssertionError("transfer budget exceeded:\n" + self.report())

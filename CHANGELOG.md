@@ -7,11 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-10-08
+
 ### Fixed
+- The emulation of kernels with `__syncthreads` compiles with GCC on macOS.
 - Preserve Fortran order when copying CuPy arrays to the host through
   `to_numpy`, `host_call`, `evaluate_on_host`, and `PyccelKernel` conversions.
 
 ### Added
+- `emulate_cuda_kernel` compiles each kernel once, into a shared library that
+  takes the arguments at run time and runs in the process (ctypes), on the arrays
+  themselves; later launches with any values and sizes reuse it. Libraries are
+  cached per process and on disk (`kernel_testing.emulation_cache_dir()`,
+  `CUNUMPY_EMULATION_CACHE`, default `~/.cache/cunumpy/emulation`).
+  `kernel_testing.compile_for_emulation(kernel)` builds one without a launch.
+  `__trap()` (a failed bounds check) still raises `RuntimeError`, but a
+  segmentation fault now ends the process.
+- Inside `emulated_launches()`, `CudaKernel.compile()` (and so `recompile()`,
+  `CudaKernelVariants.compile_all()` and `KernelCatalog.compile_all()`) builds the
+  emulation library instead of compiling CUDA, and returns None. Code that compiles
+  its kernels before the time loop runs on the fake CuPy and still reports compile
+  errors there; patching `CudaKernel.compile` is no longer needed.
+- The emulation compiles inline PTX (`asm(...)`, `asm volatile(...)`) as a trap, so
+  a kernel with an `asm("trap;")` branch needs no `-Dasm(x)=__trap()` option.
+- `kernel_testing.fake_cupy_session()` runs a CuPy-backend program on the CPU
+  (CuPy backend on the fake CuPy, launches and compilation emulated);
+  `kernel_testing.device_backend_available()` and the marker
+  `requires_device_backend` (a GPU or the fake CuPy);
+  `kernel_testing.run_in_fake_cupy_subprocess(code)` runs code in a serial child
+  process on the fake CuPy (rank 0 only under MPI) and fails the test with the
+  signal or exit code and the end of the child's output.
+- `profiling.TransferBudget` counts transfers per phase of a program
+  (`budget.phase(name)`, the decorator `budget.count(name)`, `start()`/`stop()`)
+  and checks a rule per phase (`require(phase, allow={"to_host": {"max_nbytes": 8}},
+  calls=n)`, `check()`, `report()`). `count_transfers(into=counter)` adds to an
+  existing counter (counted once when nested).
+- `TransferEvent` has `blocking` (False for `to_host_async()` and
+  `HostStaging.copy()`) and `implicit` (True for the scalar reads of the fake CuPy).
+- `xp.to_host_async(a)` copies a device scalar or small array to the host on a
+  separate stream without waiting; the returned `memory.HostCopy` has `ready()`
+  (never waits) and `result()`.
 - `kernel_testing.emulated_launches()` runs every `CudaKernel` launch in a block
   on the CPU, on the host buffers of the fake CuPy arrays, so code that launches
   kernels can be tested without a GPU. `emulate_cuda_kernel` now accepts struct

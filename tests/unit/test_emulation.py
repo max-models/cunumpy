@@ -1,5 +1,7 @@
 """Tests for `cunumpy.kernel_testing.emulate_cuda_kernel`: CUDA kernels run on the CPU."""
 
+import weakref
+
 import numpy as np
 import pytest
 
@@ -456,3 +458,174 @@ def test_high_dimensional_bounds_check(contiguous):
             n_threads=1,
             options=("-DCUNUMPY_BOUNDS_CHECK",),
         )
+
+
+@pytest.fixture
+def fresh_cache(tmp_path, monkeypatch):
+    """An empty disk cache and no libraries loaded; yields the list of compiler calls."""
+    import subprocess
+
+    from cunumpy import _emulation
+
+    monkeypatch.setenv("CUNUMPY_EMULATION_CACHE", str(tmp_path / "cache"))
+    monkeypatch.setattr(_emulation, "_LIBRARIES", {})
+    monkeypatch.setattr(_emulation, "_PREPARED", weakref.WeakKeyDictionary())
+    calls = []
+    run = subprocess.run
+
+    def counting_run(command, *args, **kwargs):
+        calls.append(command)
+        return run(command, *args, **kwargs)
+
+    monkeypatch.setattr(_emulation.subprocess, "run", counting_run)
+    return calls
+
+
+def test_a_kernel_is_compiled_once_for_all_launches(fresh_cache):
+    kernel = CudaKernel(AXPY, "axpy")
+    for n, a in [(10, 2.0), (1000, -0.5), (3, 7.0)]:
+        x, y = np.arange(float(n)), np.ones(n)
+        emulate_cuda_kernel(kernel, a, x, y, n, options=("-ffp-contract=off",))
+        np.testing.assert_array_equal(y, 1.0 + a * np.arange(float(n)))
+    # an equal kernel object shares the library
+    emulate_cuda_kernel(
+        CudaKernel(AXPY, "axpy"), 1.0, x, y, 3, options=("-ffp-contract=off",)
+    )
+    assert len(fresh_cache) == 1
+
+
+def test_options_and_template_arguments_rebuild(fresh_cache):
+    x = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+    for k in (2, 3, 2):
+        emulate_cuda_kernel(
+            CudaKernel(TEMPLATE, "power", template_args=(np.float32, k)), x, 3
+        )
+    assert x.tolist() == [1.0, 2.0**12, 3.0**12]
+    assert len(fresh_cache) == 2
+    emulate_cuda_kernel(
+        CudaKernel(TEMPLATE, "power", template_args=(np.float32, 2)),
+        x,
+        3,
+        options=("-DUNUSED=1",),
+    )
+    assert len(fresh_cache) == 3
+
+
+def test_libraries_are_reused_from_the_disk_cache(fresh_cache, monkeypatch):
+    from cunumpy import _emulation
+
+    kernel = CudaKernel(AXPY, "axpy")
+    y = np.zeros(4)
+    emulate_cuda_kernel(kernel, 1.0, np.ones(4), y, 4)
+    # a new process
+    monkeypatch.setattr(_emulation, "_LIBRARIES", {})
+    monkeypatch.setattr(_emulation, "_PREPARED", weakref.WeakKeyDictionary())
+    emulate_cuda_kernel(kernel, 1.0, np.ones(4), y, 4)
+    assert len(fresh_cache) == 1
+    np.testing.assert_array_equal(y, 2.0)
+    assert len(list(_emulation.emulation_cache_dir().glob("*.so"))) == 1
+
+
+def test_without_disk_cache(fresh_cache, monkeypatch):
+    from cunumpy import _emulation
+
+    monkeypatch.setenv("CUNUMPY_EMULATION_CACHE", "0")
+    assert _emulation.emulation_cache_dir() is None
+    y = np.zeros(4)
+    emulate_cuda_kernel(CudaKernel(AXPY, "axpy"), 1.0, np.ones(4), y, 4)
+    np.testing.assert_array_equal(y, 1.0)
+
+
+def test_compile_for_emulation_builds_without_a_launch(fresh_cache):
+    from cunumpy.kernel_testing import compile_for_emulation
+
+    compile_for_emulation(CudaKernel(AXPY, "axpy"))
+    y = np.zeros(2)
+    emulate_cuda_kernel(CudaKernel(AXPY, "axpy"), 1.0, np.ones(2), y, 2)
+    assert len(fresh_cache) == 1
+    with pytest.raises(RuntimeError, match="does not compile"):
+        compile_for_emulation(
+            CudaKernel('extern "C" __global__ void k(int n) { n = ; }', "k")
+        )
+    unparsed = CudaKernel(AXPY, "axpy", check_signature=False)
+    compile_for_emulation(unparsed)  # a syntax check only
+
+
+def test_arrays_are_used_in_place_and_aliases_see_each_other():
+    source = r"""
+    extern "C" __global__ void shift(const double* a, double* b, int n) {
+        if (blockIdx.x == 0 && threadIdx.x == 0)
+            for (int i = 1; i < n; ++i) b[i] = a[i - 1];
+    }"""
+    x = np.arange(5.0)
+    emulate_cuda_kernel(CudaKernel(source, "shift"), x, x, 5, n_threads=1)
+    np.testing.assert_array_equal(x, 0.0)  # serial: each write is read next
+    readonly = np.arange(5.0)
+    readonly.flags.writeable = False
+    out = np.zeros(5)
+    emulate_cuda_kernel(CudaKernel(source, "shift"), readonly, out, 5, n_threads=1)
+    np.testing.assert_array_equal(out, [0, 0, 1, 2, 3])
+
+
+def test_trap_in_a_kernel_with_barriers_is_reported():
+    source = r"""
+    extern "C" __global__ void k(double* x, int bad) {
+        __shared__ double s[4];
+        s[threadIdx.x] = x[threadIdx.x];
+        __syncthreads();
+        if (bad && threadIdx.x == 2) __trap();
+        x[threadIdx.x] = s[3 - threadIdx.x];
+    }"""
+    kernel = CudaKernel(source, "k")
+    with pytest.raises(RuntimeError, match="crashed"):
+        emulate_cuda_kernel(kernel, np.arange(4.0), 1, grid=1, block=4)
+    x = np.arange(4.0)
+    emulate_cuda_kernel(kernel, x, 0, grid=1, block=4)  # still usable
+    np.testing.assert_array_equal(x, [3, 2, 1, 0])
+
+
+INLINE_ASM = r"""
+extern "C" __global__ void map(double* x, int kind) {
+    if (kind == 0) {
+        x[0] = 1.0;
+    } else if (kind == 1) {
+        asm volatile("trap;");
+    } else {
+        asm("trap;");  // unknown kind
+    }
+}
+"""
+
+
+def test_inline_asm_is_trapped():
+    kernel = CudaKernel(INLINE_ASM, "map")
+    x = np.zeros(1)
+    emulate_cuda_kernel(kernel, x, 0, n_threads=1)  # no extra options needed
+    assert x[0] == 1.0
+    for kind in (1, 2):
+        with pytest.raises(RuntimeError, match="__trap"):
+            emulate_cuda_kernel(kernel, x, kind, n_threads=1)
+    # the option struphy used before still works
+    emulate_cuda_kernel(kernel, x, 0, n_threads=1, options=("-Dasm(x)=__trap()",))
+
+
+def test_compile_for_emulation_sees_changed_headers(fresh_cache, tmp_path):
+    from cunumpy.kernel_testing import compile_for_emulation
+
+    header = tmp_path / "factor.cuh"
+    header.write_text("#define FACTOR 2.0\n")
+    source = r"""
+    #include "factor.cuh"
+    extern "C" __global__ void k(double* x) {
+        if (blockIdx.x == 0 && threadIdx.x == 0) x[0] *= FACTOR;
+    }"""
+    kernel = CudaKernel(source, "k", include_dirs=[tmp_path])
+    x = np.ones(1)
+    emulate_cuda_kernel(kernel, x, n_threads=1)
+    header.write_text("#define FACTOR 3.0\n")
+    emulate_cuda_kernel(kernel, x, n_threads=1)  # launches reuse the library
+    assert x[0] == 4.0
+    compile_for_emulation(kernel)  # as kernel.recompile() in emulated_launches
+    emulate_cuda_kernel(kernel, x, n_threads=1)
+    assert x[0] == 12.0
+    assert len(fresh_cache) == 2

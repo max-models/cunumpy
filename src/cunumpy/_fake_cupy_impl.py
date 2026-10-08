@@ -20,7 +20,7 @@ def _sync(what):
     from cunumpy._transfers import _ACTIVE, _record_sync
 
     if _ACTIVE:
-        _record_sync(what)
+        _record_sync(what, implicit=True)
 
 
 def _err(obj, where=""):

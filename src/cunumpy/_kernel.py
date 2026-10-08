@@ -806,6 +806,32 @@ def _c_ordered_with_gaps(array: np.ndarray) -> bool:
     return True
 
 
+def _with_unit_axis_strides(array: np.ndarray) -> np.ndarray:
+    """`array`, or a view of it, whose axes of length 1 have strides in C order.
+
+    NumPy never steps along an axis of length 1, so it leaves any stride there:
+    ``a[:, order]`` of a ``(1, n)`` array has strides ``(8, 8)`` and still counts
+    as C-contiguous. Pyccel's wrappers do use that stride to check the array
+    against its shape, and abort the process when it is smaller than the
+    extent of the next axes, so give such an axis the stride a fresh C-ordered
+    array would have (a view, no copy).
+    """
+    if array.size == 0:
+        return array
+    strides = list(array.strides)
+    extent = array.itemsize
+    for axis in reversed(range(array.ndim)):
+        if array.shape[axis] == 1:
+            strides[axis] = max(strides[axis], extent)
+        else:
+            extent = strides[axis] * array.shape[axis]
+    if tuple(strides) == array.strides:
+        return array
+    return np.lib.stride_tricks.as_strided(
+        array, strides=strides, writeable=array.flags.writeable
+    )
+
+
 def as_kernel_array(
     value: Any, like: Any, dtype: Any = None, *, strided: bool = False
 ) -> Any:
@@ -854,8 +880,25 @@ def as_kernel_array(
         and (dtype is None or value.dtype == np.dtype(dtype))
         and _c_ordered_with_gaps(value)
     ):
-        return value
-    return np.ascontiguousarray(value, dtype=dtype)
+        return _with_unit_axis_strides(value)
+    return _with_unit_axis_strides(np.ascontiguousarray(value, dtype=dtype))
+
+
+def _same_memory(buffer: Any, out: Any) -> bool:
+    """Whether `buffer` is `out` or a view of exactly its entries (no copy back needed)."""
+    if buffer is out:
+        return True
+    return (
+        isinstance(buffer, np.ndarray)
+        and isinstance(out, np.ndarray)
+        and buffer.shape == out.shape
+        and buffer.dtype == out.dtype
+        and buffer.ctypes.data == out.ctypes.data
+        and all(
+            length == 1 or a == b
+            for length, a, b in zip(out.shape, buffer.strides, out.strides, strict=True)
+        )
+    )
 
 
 @contextmanager
@@ -877,7 +920,7 @@ def kernel_output(
     """
     buffer = as_kernel_array(out, like, dtype, strided=strided)
     yield buffer
-    if buffer is not out:
+    if not _same_memory(buffer, out):
         if is_gpu(out) and not is_gpu(buffer):
             out[...] = to_cupy(buffer)
         elif not is_gpu(out) and is_gpu(buffer):

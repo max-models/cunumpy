@@ -37,9 +37,9 @@ import array_api_compat
 import numpy as np
 
 from cunumpy._transfers import _ACTIVE as _COUNTERS
-from cunumpy._transfers import _nbytes, _record
+from cunumpy._transfers import _describe, _nbytes, _record, _record_sync
 
-__all__ = ["HostStaging", "StagedCopy"]
+__all__ = ["HostCopy", "HostStaging", "StagedCopy", "to_host_async"]
 
 # substituted in tests that have no GPU
 _is_device_array = array_api_compat.is_cupy_array
@@ -278,6 +278,7 @@ class HostStaging:
                     "to_host",
                     f"HostStaging.copy({self.shape} {self.dtype})",
                     nbytes=_nbytes(array),
+                    blocking=False,
                 )
         finally:
             # Retain completion even if a copy failed after enqueuing work.
@@ -290,3 +291,93 @@ class HostStaging:
             if slot.event is not None:
                 with slot.context():
                     slot.event.synchronize()
+
+
+class HostCopy:
+    """A device-to-host copy started by :func:`~cunumpy.to_host_async`."""
+
+    def __init__(self, host: np.ndarray, event: Any = None, source: Any = None) -> None:
+        self._host = host
+        self._event = event
+        self._source = source  # the device array stays alive until the copy is done
+
+    def ready(self) -> bool:
+        """Whether the copy has finished (never waits)."""
+        return self._event is None or bool(self._event.done)
+
+    def result(self) -> Any:
+        """The value on the host; waits for the copy only if it has not finished.
+
+        A NumPy scalar for a 0-d array, else a NumPy array (in page-locked memory
+        on the GPU). A wait is counted as a ``sync`` by
+        :func:`~cunumpy.profiling.count_transfers`.
+        """
+        if self._event is not None:
+            if not self._event.done:
+                if _COUNTERS:
+                    _record_sync("to_host_async(...).result()")
+                self._event.synchronize()
+            self._event = self._source = None
+        return self._host[()] if self._host.ndim == 0 else self._host
+
+
+# one copy stream per device
+_COPY_STREAMS: dict[int, Any] = {}
+
+
+def to_host_async(array: Any) -> HostCopy:
+    """Start copying `array` (a device scalar or small array) to the host; do not wait.
+
+    The copy runs on a separate stream into page-locked memory, after the work
+    queued so far on the current stream, so the host can queue more kernels
+    while it is in flight. :meth:`HostCopy.ready` tells whether it has
+    finished (never waits), :meth:`HostCopy.result` returns the value::
+
+        pending = xp.to_host_async(residual_norm)
+        ...  # queue the next iteration
+        if pending.ready() and pending.result() < tol:
+            break
+
+    The value is that of the array when the queued work is done: later kernels
+    may overwrite the array. For large arrays copied repeatedly, use
+    :class:`~cunumpy.memory.HostStaging`, which reuses its buffers.
+
+    On the NumPy backend (a host array) the value is copied at once and
+    ``ready()`` is always True. On the fake CuPy too, and the copy is counted.
+    :func:`~cunumpy.profiling.count_transfers` records a ``to_host`` event with
+    ``blocking=False``.
+    """
+    if not _is_device_array(array):
+        return HostCopy(np.array(array))
+    from cunumpy import _fake_cupy
+
+    nbytes = _nbytes(array)
+    if _fake_cupy.is_active():
+        host = array.get()
+        event = None
+        source = None
+    else:
+        cp = _cupy()
+        with cp.cuda.Device(array.device.id):
+            source = cp.ascontiguousarray(array)  # on the current stream
+            host = _empty_pinned(source.shape, source.dtype)
+            queued = cp.cuda.get_current_stream().record()
+            stream = _COPY_STREAMS.get(array.device.id)
+            if stream is None:
+                stream = cp.cuda.Stream(non_blocking=True)
+                _COPY_STREAMS[array.device.id] = stream
+            stream.wait_event(queued)
+            try:
+                # blocking=False (CuPy >= 13): return once the copy is enqueued
+                source.get(stream=stream, out=host, blocking=False)
+            except TypeError:  # older CuPy
+                source.get(stream=stream, out=host)
+            event = stream.record()
+    if _COUNTERS:
+        _record(
+            "to_host",
+            f"to_host_async({_describe(array)})",
+            nbytes=nbytes,
+            blocking=False,
+        )
+    return HostCopy(host, event, source)

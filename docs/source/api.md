@@ -46,8 +46,8 @@ The submodules are named so that they do not hide a NumPy name (`rng`, not
 | `cunumpy.rng` | both | `random_streams`, `get_rng`, `philox_*` |
 | `cunumpy.algorithms` | both | `morton_*`, `sort_by_key`, `segment_sum`, `compact_by_mask` |
 | `cunumpy.mpi` | both | `mpi_buffer`, CUDA-aware MPI detection, `local_rank`, `synchronize_for_mpi` |
-| `cunumpy.profiling` | both | `timed_region`, `nvtx_range`, `count_transfers`, `assert_no_transfers` |
-| `cunumpy.memory` | both | `HostStaging`, `DeviceMirror` |
+| `cunumpy.profiling` | both | `timed_region`, `nvtx_range`, `count_transfers`, `assert_no_transfers`, `TransferBudget` |
+| `cunumpy.memory` | both | `HostStaging`, `HostCopy`, `DeviceMirror` |
 | `cunumpy.petsc` | both | `petsc_vec` |
 | `cunumpy.kernel_testing` | both | pytest helpers for host/CUDA kernel pairs (not imported by `import cunumpy`) |
 
@@ -228,6 +228,28 @@ assert xp.get_array_backend(normalized) == xp.get_backend()
 Each conversion returns a suitable array; it does not change the active
 backend or mutate the source.
 
+### `to_host_async(array)`
+
+```python
+pending = xp.to_host_async(residual_norm)  # a device scalar; returns at once
+...                                         # queue the next iteration's kernels
+if pending.ready() and pending.result() < tol:
+    break
+```
+
+Starts copying a device scalar or small array to the host without waiting for
+it, so that the host can keep queueing kernels (e.g. a convergence test read one
+iteration late, without a sync per iteration). The copy runs on a separate
+stream into page-locked memory, after the work queued so far on the current
+stream. The returned `memory.HostCopy` has `ready()` (never waits) and
+`result()` (waits only if the copy has not finished; a NumPy scalar for a 0-d
+array, else a NumPy array). `count_transfers()` records a `to_host` event with
+`blocking=False`, and a wait in `result()` as a `sync`.
+
+On the NumPy backend the value is copied at once and `ready()` is always True;
+on the fake CuPy too, and the copy is counted. For large arrays copied
+repeatedly, use `memory.HostStaging`, which reuses its buffers.
+
 ### `algorithms.segment_sum(values, keys, n_segments, *, out=None)`
 
 `out[k] = sum(values[i] for keys[i] == k)` on the backend of `keys`, with
@@ -259,17 +281,25 @@ sparse, negative, and uint64 Morton keys. Starts/stops are int64 half-open indic
 Empty input returns three empty arrays. Validation and variable-length GPU
 output may synchronize; prepare boundaries outside repeated operations.
 
-### `algorithms.sort_by_key(keys, *arrays)`
+### `algorithms.sort_by_key(keys, *arrays, axis=0)`
 
 Stable argsort of the 1D `keys` (CuPy's radix sort on the device), applied to
-every array along axis 0, in one call:
+every array along `axis`, in one call:
 
 ```python
 keys, order, positions, charges = xp.algorithms.sort_by_key(keys, positions, charges)
+# component-major (ncomp, N) markers: sort along the last axis of each array
+keys, order, positions, weights = xp.algorithms.sort_by_key(
+    keys, positions, weights, axis=-1
+)
 ```
 
-Returns `(keys[order], order, *(a[order] for a in arrays))`, `order` as
-`int64`. Equal keys keep their order, so the result is reproducible.
+Returns `(keys[order], order, *(take(a, order, axis) for a in arrays))`,
+`order` as `int64`. Equal keys keep their order, so the result is reproducible.
+On NumPy, integer keys of more than 4096 entries are sorted by an LSD radix
+sort on 16-bit digits (one stable `argsort` of `uint16` per digit, as many as
+the key range needs), about ten times faster than the stable sort of 64-bit
+integers.
 
 ### `algorithms.compact_by_mask(mask, *arrays, axis=0)`
 
@@ -299,7 +329,7 @@ A transfer inside a time loop is the classic performance bug of a GPU port:
 every step then waits for the device and copies an array. These helpers let a
 test verify that a block of code does not transfer at all.
 
-### `profiling.count_transfers()`
+### `profiling.count_transfers(into=None)`
 
 Context manager yielding a `TransferCounter` that records every host/device
 transfer made through CuNumpy while the block runs, with the call site of
@@ -337,8 +367,12 @@ CuPy array records nothing. The counter has the attributes `to_host`,
 `device_copies`, `bytes_to_host`, `bytes_to_device`, and `bytes(kind)`.
 `total` includes physical copies and conversion/fallback markers. Byte totals
 include only physical copies, so markers do not double-count bytes.
-`events` is a list of `TransferEvent(kind, description, where, nbytes=None)`;
-`where` is the caller's `file:line` and `nbytes` is None for markers/unknown sizes.
+`events` is a list of `TransferEvent(kind, description, where, nbytes=None,
+blocking=True, implicit=False)`; `where` is the caller's `file:line` and `nbytes`
+is None for markers/unknown sizes. `blocking` is False for the copies that the host
+does not wait for (`to_host_async()`, `HostStaging.copy()`), and `implicit` is True
+for the scalar reads of the fake CuPy (`float(a)`), which are `sync` events; the
+report marks them `[async]` and `[implicit]`.
 `kernel_conversion_calls` selects the conversion markers. `report()` returns
 a multi-line string with the events grouped by kind and call site, with
 counts:
@@ -352,6 +386,10 @@ counts:
 ```
 
 Blocks can be nested; every active counter sees the transfers made inside it.
+`count_transfers(counter)` adds the events to an existing counter instead, e.g. to
+accumulate over several calls; a counter that is already active is not added
+again, so each event is counted once. Like every `contextlib.contextmanager`, it
+is also a decorator: `@count_transfers(counter)`.
 When no counter is active, the instrumentation costs a single check per call.
 Like the backend selection, the active counters are process-wide state and
 not thread-safe.
@@ -375,6 +413,47 @@ def test_time_step_stays_on_the_device():
     with xp.profiling.assert_no_transfers():
         propagator(dt)
 ```
+
+### `profiling.TransferBudget(*, started=True)`
+
+Counts the transfers per phase of a program (the time step, the diagnostics,
+the output) and checks a rule for each phase:
+
+```python
+budget = xp.profiling.TransferBudget(started=False)
+model.integrate = budget.count("integrate")(model.integrate)  # a decorator
+...                                    # setup: not counted
+budget.start()
+for step in range(n_steps):
+    model.integrate(dt)
+    with budget.phase("output"):       # or a context
+        save(model)
+
+budget.require("integrate", allow={"to_host": {"max_nbytes": 8}}, calls=n_steps)
+budget.require("output", allow={"to_host": {"max_count": n, "max_total_bytes": b}})
+budget.check()  # AssertionError with budget.report() if a rule is broken
+```
+
+`phase(name)` counts its block in phase `name` and yields the phase's
+`TransferCounter`; `count(name)` is a decorator that does the same for every
+call. The events of a phase accumulate over its calls (`budget[name]`,
+`budget.phases`), and `budget.calls[name]` counts the calls. Phases nest: an
+event is counted in the innermost phase only, and a phase entered again inside
+itself (recursion) counts each event and call once. Until `start()` (with
+`started=False`), and after `stop()`, phases run uncounted.
+
+`require(phase, allow=None, *, ignore=("device_copy", "sync"), calls=None)`
+sets the rule of a phase: the event kinds in `allow` are allowed, each with
+optional limits, every other kind is forbidden except those in `ignore` (unless
+they are in `allow`). The limits are `max_nbytes` (each event; an event of
+unknown size breaks it), `max_count` and `max_total_bytes` (the whole phase),
+and `blocking` and `implicit` (the events must have this value), e.g.
+`{"to_host": {"max_nbytes": 8, "blocking": False}}` to allow only non-blocking
+scalar copies, or `{"sync": {"implicit": False}}` with `ignore=("device_copy",)`
+to reject the scalar reads of the fake CuPy. `calls` is the number of calls the
+phase must have had. `violations()` lists the broken rules, with the offending
+events and where they happened; `report()` shows every phase's events and the
+broken rules; `check()` raises `AssertionError` with the report.
 
 ### `as_device_array(value, dtype=None, ndim=None, *, name=None)`
 
@@ -1805,7 +1884,11 @@ from cunumpy.kernel_testing import (
     assert_kernels_agree,
     device_function_kernel,
     emulate_cuda_kernel,
+    emulated_launches,
+    fake_cupy_session,
     requires_cupy,
+    requires_device_backend,
+    run_in_fake_cupy_subprocess,
 )
 ```
 
@@ -1832,6 +1915,15 @@ def test_norm(backend):
 The `backend` fixture does the same and activates the backend for the test;
 import it into a `conftest.py` (`from cunumpy.kernel_testing import backend`) or the
 test module, then take `backend` as a test argument.
+
+### `requires_device_backend`, `device_backend_available()`
+
+`device_backend_available()` tells whether a CuPy-backend program can run: a
+GPU, or the fake CuPy. That is more than `requires_cupy` allows (CUDA kernels
+can be launched): on the fake CuPy, launches only run inside
+`emulated_launches()` (or `fake_cupy_session()`). `requires_device_backend`
+skips tests without either; with `CUNUMPY_REQUIRE_CUDA` set it fails them
+instead.
 
 ### `assert_kernels_agree(kernel, make_args, ...)`
 
@@ -1989,17 +2081,28 @@ so that CI without a GPU can compare a kernel with its host version. The
 kernel source is compiled as C++ (C++17, `CXX` or `c++`; see
 `emulation_compiler()`) with the CUDA built-ins replaced: `threadIdx`,
 `blockIdx`, `blockDim`, `gridDim`, atomics (`atomicAdd`, `atomicMin`, ...,
-plain operations), `__ldg`, `rsqrt`, `__trap` (aborts). The shipped headers
-and the kernel's include directories and `-D` options apply. Then the kernel is
-called once per thread, for every block and thread index of the launch shape.
+plain operations), `__ldg`, `rsqrt`, `__trap`. The shipped headers and the
+kernel's include directories and `-D` options apply. Then the kernel is called
+once per thread, for every block and thread index of the launch shape.
+
+Each kernel is compiled once (for each compiler, options and template
+arguments) into a shared library that takes the arguments at run time, so all
+later launches, with any values and array sizes, reuse it. Libraries are cached
+in the process and on disk, like CuPy's kernel cache: in
+`emulation_cache_dir()`, which is `CUNUMPY_EMULATION_CACHE` (`0`: no disk
+cache), else `$XDG_CACHE_HOME/cunumpy/emulation` or `~/.cache/cunumpy/emulation`.
+The library runs in the Python process, on the arrays themselves.
 
 Arguments follow the signature, with NumPy arrays in place of CuPy arrays:
 pointer and view parameters (`Array1D<T>` to `Array16D<T>`) take arrays of the
-declared dtype (and ndim), passed as contiguous copies, so any strides work,
-and written back into the given arrays; scalars are checked and cast like in a
-launch. Like NVRTC by default, the compiler may fuse `a * b + c` into an FMA,
-so compare with NumPy using a tolerance of a few ulp, or pass
-`options=("-ffp-contract=off",)` for NumPy's rounding.
+declared dtype (and ndim); the kernel writes into them directly (an array that
+is not writeable, or whose layout a parameter cannot take, is passed as a
+copy and written back), so any strides work and aliased arguments see each
+other's writes. Struct parameters take a mapping of field names to values, a
+`CudaStructValue`, or an object with an attribute per field. Scalars are
+checked and cast like in a launch. Like NVRTC by default, the compiler may fuse
+`a * b + c` into an FMA, so compare with NumPy using a tolerance of a few ulp,
+or pass `options=("-ffp-contract=off",)` for NumPy's rounding.
 
 Block shared memory and `__syncthreads` are emulated: `__shared__` variables
 are one copy per block (blocks run one after another), `extern __shared__`
@@ -2010,12 +2113,74 @@ thread continues past it. Per-block deposits, shared-memory reductions and
 tiled kernels work.
 
 Not emulated: concurrency between barriers (races and atomic ordering never
-show), warp intrinsics, struct parameters and complex scalars. A kernel, or a
-header it includes, using `__syncwarp`, warp shuffles or votes raises
-`NotImplementedError` (serial threads would give wrong results); a kernel that
-does not compile, or crashes (an out-of-bounds
-index with `-DCUNUMPY_BOUNDS_CHECK`, `__trap()`), raises `RuntimeError` with
-the compiler or program output.
+show), warp intrinsics, complex scalars and inline PTX. Inline `asm(...)` and
+`asm volatile(...)` statements compile, but trap when reached, so a kernel with
+a PTX branch that a test never takes (e.g. `asm("trap;")` for an unknown case)
+runs without extra options. A kernel, or a header it includes, using
+`__syncwarp`, warp shuffles or votes raises `NotImplementedError` (serial
+threads would give wrong results). A kernel that does not compile, or traps (an
+out-of-bounds index with `-DCUNUMPY_BOUNDS_CHECK`, `__trap()`, inline `asm`),
+raises `RuntimeError`. Other crashes, such as a segmentation fault from an
+unchecked out-of-bounds index, end the process; run such code in a child
+process (`run_in_fake_cupy_subprocess()`, which prints the traceback with
+`faulthandler`).
+
+### `compile_for_emulation(kernel, *, compiler=None, options=())`, `emulation_cache_dir()`
+
+`compile_for_emulation()` builds (or fetches from the cache) the emulation
+library of a kernel without launching it, so compile errors show up early;
+it raises `RuntimeError` with the compiler output. A kernel without a parsed
+signature is only checked for syntax and type errors (`-fsyntax-only`).
+`emulation_cache_dir()` is the disk cache, or None.
+
+### `emulated_launches(*, compiler=None, options=())`
+
+```python
+with emulated_launches():
+    propagator(dt)  # CuPy backend = the fake CuPy: the kernels run on the CPU
+np.testing.assert_allclose(host_buffer(markers), expected)
+```
+
+Inside the block every `CudaKernel` launch runs through `emulate_cuda_kernel`,
+on the host buffers of the fake CuPy arrays (`host_buffer(array)` is the NumPy
+array behind one), with the `compiler` and `options` of the block. Argument
+objects are flattened like in a launch. No CUDA is compiled in the block
+either: `CudaKernel.compile()` (and so `recompile()`,
+`CudaKernelVariants.compile_all()` and `KernelCatalog.compile_all()`) calls
+`compile_for_emulation()` and returns None instead of a `cupy.RawKernel`, so a
+program that compiles its kernels up front still reports compile errors there.
+Kernels the emulation cannot run (warp intrinsics) are skipped by `compile()`.
+This holds on a GPU too: the block means "no CUDA here". The original methods
+are restored when the block exits, also by an exception.
+
+### `fake_cupy_session(*, compiler=None, options=())`
+
+```python
+with fake_cupy_session():
+    sim.run()  # CuPy backend; kernels compiled up front and launched on the CPU
+```
+
+Everything a CuPy-backend program needs to run on the CPU: activates the CuPy
+backend (the fake CuPy) and `emulated_launches(compiler=..., options=...)`.
+Raises `RuntimeError` if the fake CuPy is not active.
+
+### `run_in_fake_cupy_subprocess(code, *, env=None, timeout=None)`
+
+```python
+def test_domain_on_the_fake_cupy():
+    run_in_fake_cupy_subprocess("from my_sim.tests import check_domain; check_domain()")
+```
+
+The fake CuPy must be installed before anything imports cunumpy, so a test
+process that already uses cunumpy cannot switch to it. This runs
+`python -X faulthandler -c code` in a child process with `CUNUMPY_FAKE_CUPY=1`
+and `OMP_NUM_THREADS=1`, without the environment variables of an MPI launcher
+and with `MAYBEMPI=0`, so the child runs serially and does not join the
+parent's MPI job; `env` adds variables. Under MPI only rank 0 starts the child,
+the other ranks skip the test. If the child fails (or runs longer than
+`timeout` seconds), the test fails with the exit code or the signal (e.g.
+`SIGSEGV`) and the last 50 lines of its stdout and stderr. Returns the
+`subprocess.CompletedProcess` otherwise.
 
 ## `memory.HostStaging`
 

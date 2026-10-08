@@ -16,6 +16,7 @@ from cunumpy import (
 )
 from cunumpy._host import evaluate_on_host, host_call, setup_on_host
 from cunumpy._scipy_backend import scipy
+from cunumpy._staging import to_host_async
 from cunumpy.xp import (
     as_device_array,
     assert_same_backend,
@@ -102,6 +103,7 @@ __all__ = [
     "synchronize",
     "to_cunumpy",
     "to_cupy",
+    "to_host_async",
     "to_numpy",
     "use_backend",
     "xp",
