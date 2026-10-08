@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Preserve Fortran order when copying CuPy arrays to the host through
+  `to_numpy`, `host_call`, `evaluate_on_host`, and `PyccelKernel` conversions.
+
 ### Added
 - `kernel_testing.emulated_launches()` runs every `CudaKernel` launch in a block
   on the CPU, on the host buffers of the fake CuPy arrays, so code that launches

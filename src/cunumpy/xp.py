@@ -269,7 +269,7 @@ def synchronize() -> None:
 def _to_numpy(array: Any) -> np.ndarray:
     """`to_numpy` without transfer counting, for internal use."""
     if get_array_backend(array) == "cupy":
-        return array.get()
+        return array.get(order="A")
 
     return np.asarray(array)
 
@@ -289,6 +289,7 @@ def to_numpy(array: Any) -> np.ndarray:
 
     A CuPy array is copied to the host, which `count_transfers()` counts as a
     ``to_host`` transfer; anything else is passed through `numpy.asarray`.
+    Fortran-contiguous CuPy arrays keep F order; other CuPy arrays use C order.
     """
     result = _to_numpy(array)
     if _COUNTERS and get_array_backend(array) == "cupy":

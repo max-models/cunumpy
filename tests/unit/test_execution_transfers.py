@@ -31,10 +31,10 @@ def device(monkeypatch):
             cp.copies.append("set")
             np.copyto(self.array, host)
 
-        def get(self, out=None, stream=None):
+        def get(self, out=None, stream=None, order="C"):
             cp.copies.append(("get", stream))
             if out is None:
-                return self.array.copy()
+                return self.array.copy(order=order)
             np.copyto(out, self.array)
             return out
 

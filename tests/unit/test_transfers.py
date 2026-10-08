@@ -42,8 +42,8 @@ class _FakeDeviceArray:
     def dtype(self):
         return self.data.dtype
 
-    def get(self):
-        return self.data.copy()
+    def get(self, order="C"):
+        return self.data.copy(order=order)
 
     def __setitem__(self, key, value):
         self.data[key] = value.data if isinstance(value, _FakeDeviceArray) else value
