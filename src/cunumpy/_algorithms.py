@@ -253,30 +253,40 @@ def sort_by_key(keys: Any, *arrays: Any) -> tuple[Any, ...]:
     return (keys[order], order, *(array[order] for array in arrays))
 
 
-def compact_by_mask(mask: Any, *arrays: Any) -> int:
-    """Move the rows where `mask` is True to the front of every array, in place.
+def compact_by_mask(mask: Any, *arrays: Any, axis: int = 0) -> int:
+    """Move the entries where `mask` is True to the front of every array, in place.
 
     The usual step after particles left the domain or were absorbed: keep the
     live ones at the front of the marker array (and of the arrays that go with
-    it) and continue with ``markers[:n]``. The order of the kept rows is
+    it) and continue with ``markers[:n]``. The order of the kept entries is
     preserved, so the result is reproducible::
 
         n = xp.algorithms.compact_by_mask(alive, markers, weights)
         markers, weights = markers[:n], weights[:n]
 
+    Component-major marker arrays, ``(ncomp, N)`` next to ``(N,)`` scalars, keep
+    the markers along the last axis of each, so compact that one::
+
+        n = xp.algorithms.compact_by_mask(alive, positions, weights, axis=-1)
+        positions, weights = positions[:, :n], weights[:n]
+
     Parameters
     ----------
     mask : array of bool, shape (n,)
-        True for the rows to keep.
+        True for the entries to keep.
     *arrays : arrays
-        Arrays with ``n`` rows (any further axes), on the backend of `mask`.
-        Rows ``[:count]`` hold the kept rows afterwards; the rows after them
-        are unspecified, so ignore them (or overwrite them).
+        Arrays with ``n`` entries along `axis` (any other axes), on the backend
+        of `mask`. Entries ``[:count]`` along `axis` hold the kept ones
+        afterwards; the entries after them are unspecified, so ignore them (or
+        overwrite them).
+    axis : int
+        The axis of every array that `mask` indexes, the first by default;
+        ``-1`` is the last axis of each array, whatever its number of axes.
 
     Returns
     -------
     int
-        The number of kept rows. Its value is needed on the host, so on CuPy
+        The number of kept entries. Its value is needed on the host, so on CuPy
         the call synchronizes once per call (counted by
         :func:`~cunumpy.profiling.count_transfers` where it can be seen).
     """
@@ -287,13 +297,23 @@ def compact_by_mask(mask: Any, *arrays: Any) -> int:
         raise TypeError(
             f"mask must be a 1D boolean array, got dtype {mask.dtype}, {mask.ndim}D",
         )
+    axes = []
     for i, array in enumerate(arrays):
-        if array.ndim < 1 or array.shape[0] != mask.shape[0]:
+        if not -array.ndim <= axis < array.ndim:
             raise ValueError(
-                f"array {i} has shape {array.shape}, expected {mask.shape[0]} rows",
+                f"array {i} has {array.ndim} axes, so it has no axis {axis}",
             )
+        array_axis = axis % array.ndim
+        if array.shape[array_axis] != mask.shape[0]:
+            raise ValueError(
+                f"array {i} has shape {array.shape}, expected {mask.shape[0]} "
+                f"entries along axis {axis}",
+            )
+        axes.append(array_axis)
     rows = xpm.nonzero(mask)[0]
     n_kept = int(rows.size)
-    for array in arrays:
-        array[:n_kept] = array[rows]  # the right side is a copy: no overlap problem
+    for array, array_axis in zip(arrays, axes, strict=True):
+        front = (slice(None),) * array_axis + (slice(0, n_kept),)
+        # the right side is a copy: no overlap problem
+        array[front] = xpm.take(array, rows, axis=array_axis)
     return n_kept

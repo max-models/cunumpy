@@ -99,7 +99,8 @@ axpy(2.0, x, y, x.size)  # infer n_threads = x.shape[0]
 Explicit sizes override inference. Set `n_threads_from=lambda args: args[0].size`
 for a flattened element kernel, or another callback for a different axis order
 or logical work count. `n_threads_from=None` requires explicit sizes;
-`"first_array"` always selects only the first axis. `launch_shape(args=(...))`
+`"first_array"` always selects only the first axis, `"last_axis"` only the last
+one (one thread per marker of component-major `(ncomp, N)` arrays). `launch_shape(args=(...))`
 inspects the inferred grid/block without compilation or a launch. CPU emulation
 and host/CUDA parity tests use the same defaults.
 

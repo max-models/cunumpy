@@ -26,8 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on the fake CuPy, scalar reads of device arrays. They are in `counter.syncs`
   and the report but not in `total`; `assert_no_transfers(syncs=True)` rejects them.
   The real CuPy's own `float(a)` cannot be observed from Python and is not counted.
-- `xp.algorithms.compact_by_mask(mask, *arrays)` moves the masked rows of arrays to
-  the front, in place and in order, and returns their number.
+- `xp.algorithms.compact_by_mask(mask, *arrays, axis=0)` moves the masked entries
+  of arrays to the front along `axis`, in place and in order, and returns their
+  number; `axis=-1` compacts component-major `(ncomp, N)` and `(N,)` arrays together.
+- `as_kernel_array(..., strided=True)` and `kernel_output(..., strided=True)` take a
+  NumPy array in C order with gaps (positive strides, each at least the extent of
+  the next axis, e.g. `storage[:, :n]`) unchanged for host kernels, instead of
+  copying it to a C-contiguous array; Pyccel's wrappers take such arrays.
+- `CudaKernel(n_threads_from="last_axis")`: one thread per entry of the last axis of
+  the first array argument, for component-major `(ncomp, N)` marker arrays.
 - Kernel outputs: a name in `PyccelKernel(outputs=...)` also finds a positional
   argument and an index a keyword argument, using the parameter names of the
   function (or the new `parameters=`); a `Kernel` supplies those of its host

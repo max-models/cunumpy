@@ -271,7 +271,7 @@ keys, order, positions, charges = xp.algorithms.sort_by_key(keys, positions, cha
 Returns `(keys[order], order, *(a[order] for a in arrays))`, `order` as
 `int64`. Equal keys keep their order, so the result is reproducible.
 
-### `algorithms.compact_by_mask(mask, *arrays)`
+### `algorithms.compact_by_mask(mask, *arrays, axis=0)`
 
 Moves the rows where the boolean `mask` is True to the front of every array, in
 place and in their original order, and returns how many there are. Typical use:
@@ -284,7 +284,14 @@ markers, weights = markers[:n], weights[:n]
 
 The rows after the first `n` are unspecified. The count is needed on the host,
 so on CuPy each call synchronizes once. The mask and the arrays must be on the
-same backend.
+same backend. `axis` is the axis of every array that the mask indexes; `-1`
+compacts component-major arrays, `(ncomp, N)` next to `(N,)`, along their
+marker axis:
+
+```python
+n = xp.algorithms.compact_by_mask(alive, positions, weights, axis=-1)
+positions, weights = positions[:, :n], weights[:n]
+```
 
 ## Count transfers
 
@@ -400,7 +407,7 @@ class DeviceParticles(xp.arguments.CudaArguments):
         super().__init__(self.markers, self.degree, self.markers.shape[0])
 ```
 
-### `kernels.as_kernel_array(value, like, dtype=None)`, `kernels.kernel_output(out, like, dtype=None)`
+### `kernels.as_kernel_array(value, like, dtype=None, *, strided=False)`, `kernels.kernel_output(out, like, dtype=None, *, strided=False)`
 
 For the arguments of a `Kernel` with `dispatch="arrays"`, whose choice follows
 the arrays. `as_kernel_array` returns `value` on the side of `like` (a CuPy
@@ -411,6 +418,13 @@ context manager yielding the buffer for an array the kernel writes: `out`
 itself if `as_kernel_array` takes it unchanged, else a converted copy whose
 contents are written into `out` (on its own side) when the block ends without
 an error.
+
+With `strided=True` a NumPy array for a host kernel is also taken unchanged
+when it is in C order with gaps (positive strides, each at least the extent of
+the next axis), e.g. the first `n` columns `storage[:, :n]` of a marker buffer.
+Pyccel's wrappers take such arrays without a copy; a host kernel that needs
+contiguous memory must not use it. F-ordered, transposed and negative-stride
+arrays are still copied, and CuPy arrays are always made C-contiguous.
 
 ```python
 with xp.kernels.kernel_output(result, like=field, dtype=float) as buffer:
@@ -1096,7 +1110,8 @@ Explicit `n_threads` or `grid` always takes precedence. Set `n_threads_from`
 (constructor argument or settable property) to a callable such as
 `lambda args: args[0].size` for flattened element kernels, or
 `lambda args: args[0].shape[::-1]` for kernels whose x index follows columns.
-`"first_array"` always uses the first axis; None disables inference and requires
+`"first_array"` always uses the first axis and `"last_axis"` the last one (one
+thread per entry of a component-major `(ncomp, N)` or `(N,)` array); None disables inference and requires
 explicit launch sizes. The same defaults apply through `kernels.Kernel` and
 `kernel_testing.assert_kernels_agree`, and in CPU emulation.
 

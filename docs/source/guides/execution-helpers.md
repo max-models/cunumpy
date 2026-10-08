@@ -157,7 +157,8 @@ markers, weights = markers[:n], weights[:n]
 Moves the rows where the boolean mask is True to the front of every array, in
 place and in order, and returns their number. The rows after the first `n` are
 unspecified. The count is needed on the host, so on CuPy each call
-synchronizes once.
+synchronizes once. For component-major arrays, `(ncomp, N)` next to `(N,)`,
+pass `axis=-1` and continue with `positions[:, :n]`.
 
 ## Prepare cell ranges and segment reductions
 

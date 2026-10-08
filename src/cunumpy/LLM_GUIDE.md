@@ -74,7 +74,7 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
 | launch a hand-written CUDA C kernel | `xp.kernels.CudaKernel(source, "name")` / `CudaKernel.from_file(path)` |
 | run a Metal (MSL) kernel on an Apple silicon GPU, NumPy float32 in and out (float64 raises; `float64="cast"` computes in float32); not part of `Kernel` dispatch | `xp.kernels.MetalKernel(body, inputs=[...], outputs=[...])(*args, out=arrays, n_threads=n)`; check `xp.kernels.metal_available()` |
 | call host-only code (SciPy, file readers) with arguments of either backend | `xp.host_call(fun, *args)`; `@xp.evaluate_on_host` on a method; `@xp.setup_on_host` on `__init__` |
-| keep the live rows of particle arrays at the front | `n = xp.algorithms.compact_by_mask(alive, markers, weights)` |
+| keep the live rows of particle arrays at the front | `n = xp.algorithms.compact_by_mask(alive, markers, weights)`; component-major `(ncomp, N)`: `axis=-1` |
 | run CUDA kernel launches on the CPU in a test (fake CuPy) | `with kernel_testing.emulated_launches(): ...`; `kernel_testing.host_buffer(a)` reads a fake array; struct arguments are read through their fields |
 | find the arguments a host kernel writes (copy only those back) | `PyccelKernel(fn, outputs=("out",))` (names work positionally); `xp.kernels.outputs_from_annotations(fn)`; `Kernel.from_folder(..., outputs="annotations")` |
 | host kernel + CUDA port, chosen by backend | `xp.kernels.Kernel(host_fn, cuda_kernel_or_None)` |
@@ -82,7 +82,7 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
 | host kernels compiled at first call (your compile function), NumPy fallback | `from_package(..., host_suffix="_pyccel", compile_host=my_compile, host_fallback={...})` -> `xp.kernels.CompiledHostKernel` |
 | host arrays reach kernels while CuPy is active | `Kernel(..., dispatch="arrays")` / `from_package(..., dispatch="arrays")`: CUDA only for device arguments |
 | one kernel folder declares its kernel in its own `__init__.py` | `kernel = xp.kernels.Kernel.from_folder(__name__, host_suffix="_pyccel", compile_host=..., dispatch="arrays")`; `<name>_numba.py`, `<name>_numpy.py` in the folder are further host implementations |
-| bring a `dispatch="arrays"` kernel's arguments to the side of the main array | `xp.kernels.as_kernel_array(a, like=grid, dtype=float)`; outputs: `with xp.kernels.kernel_output(out, like=grid, dtype=float) as buf:` |
+| bring a `dispatch="arrays"` kernel's arguments to the side of the main array | `xp.kernels.as_kernel_array(a, like=grid, dtype=float)`; outputs: `with xp.kernels.kernel_output(out, like=grid, dtype=float) as buf:`; `strided=True` passes NumPy views in C order with gaps (`a[:, :n]`) to Pyccel hosts without a copy |
 | choose the host implementation (pyccel/numba/numpy/python) | `xp.kernels.set_host_kernel_implementation("numpy")`, `with xp.kernels.use_host_kernel_implementation(...)`, `CUNUMPY_HOST_KERNEL_IMPLEMENTATION=numpy`; default: first available of pyccel, numba, numpy; `kernel.selected()` |
 | require CUDA for device kernel dispatch | `xp.kernels.set_device_kernel_implementation("cuda")`, `get_device_kernel_implementation()`, `with xp.kernels.use_device_kernel_implementation(...)`, `CUNUMPY_DEVICE_KERNEL_IMPLEMENTATION=cuda`; default `None` preserves `missing_cuda` policy; explicit CUDA rejects host fallback |
 | check host and CUDA kernels take the same parameters | `catalog.check_signatures()` (in a unit test) |
@@ -305,8 +305,10 @@ xp.cuda.cuda_include_dir()
 * Default `n_threads_from="auto"` infers from the first array, including arrays
   in supported argument objects: 1D block -> shape[0], 2D -> shape[:2], 3D ->
   shape[:3] (x, y, z). Per-call block overrides apply. Explicit n_threads/grid
-  wins; use a callback for flattened `.size`, reversed axes or another work
-  count, or None to require explicit sizes. Missing arrays/axes raise.
+  wins; `"last_axis"` uses the first array's last axis (component-major
+  `(ncomp, N)` marker arrays); use a callback for flattened `.size`, reversed
+  axes or another work count, or None to require explicit sizes. Missing
+  arrays/axes raise.
 
 Shipped CUDA headers (always on the include path):
 

@@ -1797,6 +1797,20 @@ def _first_array_length(args: tuple[Any, ...]) -> int:
     return typing.cast(int, _first_array_shape(args, 1))
 
 
+def _last_axis_length(args: tuple[Any, ...]) -> int:
+    """``n_threads_from="last_axis"``: the last axis of the first array argument.
+
+    One thread per entry of a component-major array, ``(ncomp, N)`` or ``(N,)``.
+    """
+    shape = next(_array_shapes_in(args), None)
+    if shape is None:
+        raise TypeError(
+            "inferring n_threads needs an array argument; pass n_threads or grid, "
+            "or set n_threads_from to a callable",
+        )
+    return int(shape[-1])
+
+
 def _as_shape(value: int | Sequence[int], what: str) -> tuple[int, ...]:
     shape = (value,) if isinstance(value, (int, np.integer)) else tuple(value)
     if not 1 <= len(shape) <= 3:
@@ -1876,11 +1890,12 @@ class CudaKernel:
         (:func:`cunumpy.cuda.set_cuda_debug`, ``CUNUMPY_CUDA_DEBUG``) at every
         launch; True or False fix it for this kernel. The compile options are
         fixed when the kernel is compiled.
-    n_threads_from : {"auto", "first_array"} | callable | None
+    n_threads_from : {"auto", "first_array", "last_axis"} | callable | None
         Default "auto" infers thread counts from the first array's leading
         shape axes, matching the block dimensionality (1D: one thread per row).
         Arrays in supported argument objects are included. "first_array"
-        always uses the first axis. A callable receives the positional argument
+        always uses the first axis, "last_axis" the last one (one thread per
+        entry of a component-major ``(ncomp, N)`` or ``(N,)`` array). A callable receives the positional argument
         tuple; None requires an explicit launch size. Explicit `n_threads` or
         `grid` overrides inference.
 
@@ -2160,7 +2175,9 @@ class CudaKernel:
         Default ``"auto"`` uses the first array's leading axes, matching the
         launch block dimensions; 1D launches use its first axis, one thread per
         row. Supported argument objects are searched in field/argument order.
-        ``"first_array"`` always uses its first axis. None disables inference.
+        ``"first_array"`` always uses its first axis, ``"last_axis"`` its last
+        one (one thread per entry of a component-major ``(ncomp, N)`` or
+        ``(N,)`` array). None disables inference.
         Settable, also on the ``cuda_kernel`` of a :class:`~cunumpy.kernels.Kernel`.
         """
         return self._n_threads_from
@@ -2175,9 +2192,12 @@ class CudaKernel:
             value = self._default_n_threads
         elif isinstance(value, str) and value == "first_array":
             value = _first_array_length
+        elif isinstance(value, str) and value == "last_axis":
+            value = _last_axis_length
         if value is not None and not callable(value):
             raise TypeError(
-                "n_threads_from must be callable, 'auto', 'first_array' or None"
+                "n_threads_from must be callable, 'auto', 'first_array', "
+                "'last_axis' or None"
             )
         self._automatic_threads = automatic
         self._n_threads_from = value
