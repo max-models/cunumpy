@@ -209,14 +209,19 @@ def test_gather_cuda_arithmetic():
     np.testing.assert_allclose(result, expected, rtol=1e-12, atol=1e-14)
 ```
 
-Arrays are passed as NumPy arrays (any strides) and written back; scalars are
-checked like in a launch. It catches wrong indices, clamping, periodic wrapping
+Arrays are passed as NumPy arrays (any strides) and the kernel writes into
+them; scalars are checked like in a launch. Each kernel is compiled once into a
+shared library and cached (in the process and in `~/.cache/cunumpy/emulation`,
+see `emulation_cache_dir()`), so further launches with other values and sizes
+cost no compilation. It catches wrong indices, clamping, periodic wrapping
 and weights, i.e. most porting bugs of gather, scatter and push kernels. Block
 shared memory and `__syncthreads` are emulated (pass `shared_mem=` for
 `extern __shared__` arrays), so per-block deposits and shared-memory reductions
 are covered too. It does not emulate concurrency between barriers or warp
 intrinsics; kernels using the latter are refused with `NotImplementedError`, so
-those still need a GPU run. The compiler may fuse multiply-adds as NVRTC does,
+those still need a GPU run. Inline PTX is not emulated either: `asm(...)` and
+`asm volatile(...)` compile but trap when reached, so a PTX branch a test never
+takes needs no extra options, and reaching it raises `RuntimeError`. The compiler may fuse multiply-adds as NVRTC does,
 so compare with a tolerance of a few ulp.
 
 ### Struct parameters and `emulated_launches()`
@@ -250,8 +255,30 @@ np.testing.assert_allclose(host_buffer(markers), expected)
 ```
 
 `host_buffer(array)` is the NumPy array behind a fake CuPy array (not a copy).
-Launches are serial and compile the kernel as C++ every time, so use small
-problems.
+Launches are serial, so use small problems.
+
+No CUDA is compiled inside the block either: `kernel.compile()`,
+`recompile()` and the `compile_all()` methods build the emulation library
+instead (and return None), so a program that compiles its kernels before the
+time loop runs unchanged and still reports compile errors there.
+`fake_cupy_session()` does all of it for a whole program, activating the CuPy
+backend too:
+
+```python
+from cunumpy.kernel_testing import fake_cupy_session, requires_device_backend
+
+
+@requires_device_backend  # a GPU, or the fake CuPy
+def test_simulation_on_the_cupy_backend():
+    with fake_cupy_session():  # only with the fake CuPy
+        sim.run()
+```
+
+The fake CuPy must be installed before cunumpy is used, so a test process
+that runs on NumPy cannot switch to it. `run_in_fake_cupy_subprocess(code)`
+runs the code in a serial child process on the fake CuPy (outside the MPI
+job, only on rank 0 under MPI) and fails the test with the signal or exit code
+and the end of the child's output if it fails.
 
 ## Test `__device__` helpers: `device_function_kernel`
 

@@ -75,7 +75,8 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
 | run a Metal (MSL) kernel on an Apple silicon GPU, NumPy float32 in and out (float64 raises; `float64="cast"` computes in float32); not part of `Kernel` dispatch | `xp.kernels.MetalKernel(body, inputs=[...], outputs=[...])(*args, out=arrays, n_threads=n)`; check `xp.kernels.metal_available()` |
 | call host-only code (SciPy, file readers) with arguments of either backend | `xp.host_call(fun, *args)`; `@xp.evaluate_on_host` on a method; `@xp.setup_on_host` on `__init__` |
 | keep the live rows of particle arrays at the front | `n = xp.algorithms.compact_by_mask(alive, markers, weights)`; component-major `(ncomp, N)`: `axis=-1` |
-| run CUDA kernel launches on the CPU in a test (fake CuPy) | `with kernel_testing.emulated_launches(): ...`; `kernel_testing.host_buffer(a)` reads a fake array; struct arguments are read through their fields |
+| run CUDA kernel launches on the CPU in a test (fake CuPy) | `with kernel_testing.emulated_launches(): ...` (also makes `kernel.compile()`/`compile_all()` build the emulation instead of CUDA); `with kernel_testing.fake_cupy_session(): ...` adds the CuPy backend; `kernel_testing.host_buffer(a)` reads a fake array; struct arguments are read through their fields |
+| run a test on the fake CuPy from a NumPy test process | `kernel_testing.run_in_fake_cupy_subprocess(code)` (serial child, rank 0 only under MPI); `@kernel_testing.requires_device_backend` = a GPU or the fake CuPy |
 | find the arguments a host kernel writes (copy only those back) | `PyccelKernel(fn, outputs=("out",))` (names work positionally); `xp.kernels.outputs_from_annotations(fn)`; `Kernel.from_folder(..., outputs="annotations")` |
 | host kernel + CUDA port, chosen by backend | `xp.kernels.Kernel(host_fn, cuda_kernel_or_None)` |
 | many kernels in a package, ported incrementally | `xp.kernels.KernelCatalog.from_package(__name__, missing_cuda="fallback")` |
@@ -86,12 +87,13 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
 | choose the host implementation (pyccel/numba/numpy/python) | `xp.kernels.set_host_kernel_implementation("numpy")`, `with xp.kernels.use_host_kernel_implementation(...)`, `CUNUMPY_HOST_KERNEL_IMPLEMENTATION=numpy`; default: first available of pyccel, numba, numpy; `kernel.selected()` |
 | require CUDA for device kernel dispatch | `xp.kernels.set_device_kernel_implementation("cuda")`, `get_device_kernel_implementation()`, `with xp.kernels.use_device_kernel_implementation(...)`, `CUNUMPY_DEVICE_KERNEL_IMPLEMENTATION=cuda`; default `None` preserves `missing_cuda` policy; explicit CUDA rejects host fallback |
 | check host and CUDA kernels take the same parameters | `catalog.check_signatures()` (in a unit test) |
-| test a CUDA kernel's arithmetic without a GPU | `cunumpy.kernel_testing.emulate_cuda_kernel(kernel, *numpy_args, n_threads=n)` (C++ compiler; shared memory and __syncthreads ok, no warp ops; `shared_mem=` for extern shared) |
+| test a CUDA kernel's arithmetic without a GPU | `cunumpy.kernel_testing.emulate_cuda_kernel(kernel, *numpy_args, n_threads=n)` (C++ compiler; shared memory and __syncthreads ok, no warp ops; inline asm traps; compiled once per kernel and cached; `shared_mem=` for extern shared) |
 | shared-memory budget of a block | `xp.cuda.max_shared_memory_per_block()` (48 KiB without a GPU) |
 | random numbers inside a kernel, equal on the host | `#include <cunumpy/random.cuh>`: `cunumpy_uniform(seed, particle_id, step)`; host: `xp.rng.philox_uniform(seed, ids, step)` |
 | sort points along a Z-curve / quadtree or octree nodes as contiguous ranges | `keys = xp.algorithms.morton_keys(pos, lower, upper, levels)`, `keys, order, pos = xp.algorithms.sort_by_key(keys, pos)`; in a kernel `#include <cunumpy/morton.cuh>`: `cunumpy_morton_key2(x, y, x0, y0, sx, sy, levels)` with `xp.algorithms.morton_scales(...)` |
 | one thread per marker without passing n_threads | default: `CudaKernel(...)` uses the first array's row count for 1D launches |
 | copy device arrays to the host for output without stalling | `xp.memory.HostStaging(shape, dtype)`: `c = staging.copy(a)` ... `c.result()` |
+| read a device scalar without a sync (e.g. a convergence test one iteration late) | `h = xp.to_host_async(x)`; `h.ready()` never waits, `h.result()` |
 | PIC recipes (compaction, sort by cell, MPI exchange, graphs) | docs guide "Particle codes" |
 | reproducible random numbers per MPI rank | `xp.rng.random_streams.seed(seed, rank=rank)`, then `xp.rng.random_streams.normal(...)` / `.generator()` |
 | group arrays/scalars into one kernel argument | `xp.arguments.CudaArguments` (flattened), `xp.arguments.CudaStruct` (C struct), `xp.arguments.CudaStructArguments` (C struct as a class); host kernels take their own argument objects, the caller picks one per backend |
@@ -106,6 +108,7 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
 | timing GPU code | `with xp.profiling.timed_region("name") as t:` → `t.elapsed` |
 | profiler markers | `xp.profiling.nvtx_range("name")` (context manager or decorator) |
 | find transfers | `with xp.profiling.count_transfers() as c: ...; print(c.report())` |
+| check transfers per phase of a time loop | `b = xp.profiling.TransferBudget()`; `b.count("step")(fn)` or `with b.phase("output"):`; `b.require("step", allow={"to_host": {"max_nbytes": 8}})`; `b.check()` |
 | debug an illegal memory access | `CUNUMPY_CUDA_DEBUG=1`, then `compute-sanitizer` |
 | test on both backends | `cunumpy.kernel_testing.BACKENDS`, `backend` fixture, `requires_cupy` |
 | test CUDA vs host kernel | `cunumpy.kernel_testing.assert_kernels_agree(kernel, make_args, n_threads=...)` |
@@ -142,6 +145,9 @@ xp.as_device_array(value, dtype=None, ndim=None, *, name=None)
 with xp.profiling.count_transfers() as c: ...   # c.total, c.to_host, c.to_device,
                                       # c.kernel_conversions, c.fallbacks, c.events, c.report()
 with xp.profiling.assert_no_transfers(): ...    # rejects host/device copies and host fallback
+h = xp.to_host_async(a)  # non-blocking copy of a device scalar: h.ready(), h.result()
+budget = xp.profiling.TransferBudget()          # per-phase counts: budget.phase(name),
+                                      # budget.count(name)(fn), budget.require(...), budget.check()
 ```
 
 Mirror refreshes, MPI/output staging, argument conversion and kernel output

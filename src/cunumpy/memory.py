@@ -17,6 +17,6 @@ both backends. Page-locked host memory (:func:`cunumpy.cuda.pin_memory`) is in
 """
 
 from cunumpy._mirror import DeviceMirror
-from cunumpy._staging import HostStaging, StagedCopy
+from cunumpy._staging import HostCopy, HostStaging, StagedCopy
 
-__all__ = ["DeviceMirror", "HostStaging", "StagedCopy"]
+__all__ = ["DeviceMirror", "HostCopy", "HostStaging", "StagedCopy"]

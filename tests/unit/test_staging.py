@@ -320,3 +320,46 @@ def test_staged_result_restores_callers_device_on_gpu():
         assert cp.cuda.runtime.getDevice() == 1
         with pytest.raises(ValueError, match="bound to another"):
             staging.copy(cp.zeros(3))
+
+
+def test_to_host_async_of_a_host_array_is_ready_at_once():
+    a = np.array(2.5)
+    copy = xp.to_host_async(a)
+    a[...] = 0.0
+    assert copy.ready()
+    assert copy.result() == 2.5
+    assert isinstance(copy.result(), np.floating)
+    with xp.profiling.count_transfers() as counter:
+        xp.to_host_async(np.zeros(3))
+    assert counter.events == []
+
+
+def test_to_host_async_copies_on_its_own_stream_without_waiting(
+    fake_device, monkeypatch
+):
+    from cunumpy import _fake_cupy
+
+    log = fake_device
+    monkeypatch.setattr(_fake_cupy, "is_active", lambda: False)
+    monkeypatch.setattr(staging_module, "_COPY_STREAMS", {})
+    staging_module._cupy().ascontiguousarray = lambda a: a
+    norm = np.array(4.0).view(DeviceArray)
+    with xp.profiling.count_transfers() as counter:
+        copy = xp.to_host_async(norm)
+        assert log == [
+            ("record", "compute#1"),  # after the kernels queued so far
+            ("wait", "staging", "compute#1"),
+            ("get", "staging"),
+            ("record", "staging#1"),
+        ]
+        assert not copy.ready()
+        assert counter.syncs == 0
+        assert copy.result() == 4.0  # waits: counted as a sync
+        assert copy.ready()
+        assert copy.result() == 4.0
+    (to_host,) = [e for e in counter.events if e.kind == "to_host"]
+    assert to_host.nbytes == 8 and not to_host.blocking
+    assert "[async]" in counter.report()
+    assert counter.syncs == 1
+    xp.to_host_async(norm)
+    assert log.count(("wait", "staging", "compute#2")) == 1  # the stream is reused

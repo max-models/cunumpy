@@ -15,6 +15,11 @@ code paths of a program (argument objects, conversions, backend branches) can
 still run on the fake CuPy of :mod:`cunumpy._fake_cupy` (:func:`install_fake_cupy`,
 or ``CUNUMPY_FAKE_CUPY=1``); :func:`fake_cupy_active` tells whether it is in
 use, and ``requires_cupy`` skips the tests that launch kernels then.
+:func:`fake_cupy_session` runs a whole CuPy-backend program on it (launches and
+compilation emulated, see :func:`emulated_launches`), :data:`requires_device_backend`
+skips tests that need a GPU or the fake CuPy, and :func:`run_in_fake_cupy_subprocess`
+runs code in a child process on the fake CuPy from a test process that cannot
+switch to it.
 
 A catalog's parity tests need no code per kernel when each kernel folder
 holds ``<name>_test_args.py`` with ``make_args(backend, seed)`` (and
@@ -49,9 +54,13 @@ version::
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
-from collections.abc import Callable, Sequence
+import signal
+import subprocess
+import sys
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any
 
 import array_api_compat
@@ -69,8 +78,10 @@ from cunumpy._cuda_kernel import (
 )
 from cunumpy._dispatch import Kernel
 from cunumpy._emulation import (
+    compile_for_emulation,
     emulate_cuda_kernel,
     emulated_launches,
+    emulation_cache_dir,
     emulation_compiler,
 )
 from cunumpy._fake_cupy import host_buffer
@@ -82,19 +93,28 @@ __all__ = [
     "assert_kernels_agree",
     "backend",  # noqa: F822
     "check_parity",
+    "compile_for_emulation",
     "cuda_required",
+    "device_backend_available",
     "device_function_kernel",
     "emulate_cuda_kernel",
     "emulated_launches",
+    "emulation_cache_dir",
     "emulation_compiler",
     "fake_cupy_active",
+    "fake_cupy_session",
     "host_buffer",
     "install_fake_cupy",
     "parity_cases",
     "requires_cupy",  # noqa: F822
+    "requires_device_backend",  # noqa: F822
+    "run_in_fake_cupy_subprocess",
 ]
 
 SKIP_REASON = "CuPy/GPU not available"
+DEVICE_SKIP_REASON = (
+    "neither a GPU nor the fake CuPy (CUNUMPY_FAKE_CUPY=1) is available"
+)
 FAKE_SKIP_REASON = "the fake CuPy cannot run CUDA kernels"
 
 
@@ -144,6 +164,159 @@ def cuda_gate() -> bool:
     return False
 
 
+def device_backend_available() -> bool:
+    """Whether a CuPy-backend program can run here: a GPU, or the fake CuPy.
+
+    Unlike :data:`requires_cupy` (CUDA kernels can be launched), this is also
+    True on the fake CuPy, where launches only work inside
+    :func:`emulated_launches` (see :func:`fake_cupy_session`). The marker
+    :data:`requires_device_backend` skips tests that need it.
+    """
+    return fake_cupy_active() or cupy_available()
+
+
+def device_backend_gate() -> bool:
+    """Condition of ``requires_device_backend`` under ``CUNUMPY_REQUIRE_CUDA``."""
+    if not device_backend_available():
+        _pytest().fail(
+            f"CUNUMPY_REQUIRE_CUDA is set, but {DEVICE_SKIP_REASON}", pytrace=False
+        )
+    return False
+
+
+@contextlib.contextmanager
+def fake_cupy_session(
+    *,
+    compiler: str | None = None,
+    options: Sequence[str] = (),
+) -> Iterator[None]:
+    """Run a CuPy-backend program on the CPU, on the fake CuPy.
+
+    Activates the CuPy backend (the fake CuPy) and emulates every CUDA launch
+    and compilation in the block (:func:`emulated_launches`, which takes
+    `compiler` and `options`)::
+
+        with fake_cupy_session():
+            sim.run()  # kernels compiled up front and launched, all on the CPU
+
+    Raises
+    ------
+    RuntimeError
+        If the fake CuPy is not active (:func:`install_fake_cupy`,
+        ``CUNUMPY_FAKE_CUPY=1``; or use :func:`run_in_fake_cupy_subprocess`).
+    """
+    if not fake_cupy_active():
+        raise RuntimeError(
+            "fake_cupy_session() needs the fake CuPy: set CUNUMPY_FAKE_CUPY=1 or call "
+            "install_fake_cupy() before cunumpy is used, or use "
+            "run_in_fake_cupy_subprocess()",
+        )
+    with (
+        use_backend("cupy", strict=True),
+        emulated_launches(compiler=compiler, options=options),
+    ):
+        yield
+
+
+#: Prefixes of the environment variables through which an MPI launcher (Open
+#: MPI, MPICH/Hydra, Intel MPI, Slurm, ...) hands a process its place in the job.
+MPI_LAUNCHER_PREFIXES = (
+    "OMPI_",
+    "PMIX_",
+    "PMI_",
+    "HYDRA_",
+    "MPIR_",
+    "I_MPI_",
+    "SLURM_",
+    "MV2_",
+    "MPI_LOCALRANKID",
+    "ALPS_APP_PE",
+    "PALS_",
+)
+
+
+def _tail(text: str, lines: int = 50) -> str:
+    return "\n".join(text.splitlines()[-lines:])
+
+
+def run_in_fake_cupy_subprocess(
+    code: str,
+    *,
+    env: Mapping[str, str] | None = None,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess:
+    """Run `code` in a serial child Python process on the fake CuPy; fail the test if it fails.
+
+    The fake CuPy must be installed before anything imports cunumpy, so a test
+    process that already uses cunumpy cannot switch to it; the child starts
+    with ``CUNUMPY_FAKE_CUPY=1``. It runs ``python -X faulthandler -c code``
+    (a crash prints the Python traceback) with ``OMP_NUM_THREADS=1`` and
+    without the variables of an MPI launcher, so it does not join the MPI job
+    of the parent (``MAYBEMPI=0``). Under MPI only rank 0 starts the child and
+    the other ranks skip the test: concurrent children are not needed for a
+    serial check, and have crashed external libraries.
+
+    Parameters
+    ----------
+    code : str
+        Python source to run.
+    env : Mapping[str, str] | None
+        Additional environment variables for the child (e.g. ``PYTHONPATH``).
+    timeout : float | None
+        Seconds after which the child is killed and the test fails.
+
+    Returns
+    -------
+    subprocess.CompletedProcess
+        The finished child (exit code 0), with its stdout and stderr.
+    """
+    pytest = _pytest()
+    from cunumpy.mpi import get_mpi
+
+    if get_mpi().COMM_WORLD.Get_rank() != 0:
+        pytest.skip("serial check in a child process, runs on MPI rank 0")
+    child_env = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith(MPI_LAUNCHER_PREFIXES)
+    }
+    child_env.update(CUNUMPY_FAKE_CUPY="1", OMP_NUM_THREADS="1", MAYBEMPI="0")
+    child_env.update(env or {})
+    command = [sys.executable, "-X", "faulthandler", "-c", code]
+    try:
+        result = subprocess.run(
+            command,
+            env=child_env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        out, err = (
+            t.decode(errors="replace") if isinstance(t, bytes) else (t or "")
+            for t in (error.stdout, error.stderr)
+        )
+        pytest.fail(
+            f"child process timed out after {timeout} s\n"
+            f"--- stdout (end) ---\n{_tail(out)}\n--- stderr (end) ---\n{_tail(err)}",
+            pytrace=False,
+        )
+    if result.returncode != 0:
+        rc = result.returncode
+        try:
+            how = f"signal {signal.Signals(-rc).name}" if rc < 0 else f"exit code {rc}"
+        except ValueError:
+            how = f"signal {-rc}"
+        pytest.fail(
+            f"child process failed with {how}\n"
+            f"--- stdout (end) ---\n{_tail(result.stdout)}\n"
+            f"--- stderr (end) ---\n{_tail(result.stderr)}",
+            pytrace=False,
+        )
+    return result
+
+
 # pytest objects, built on first use so that importing this module does not
 # import pytest (see __getattr__ below)
 _LAZY: dict[str, Any] = {}
@@ -174,6 +347,15 @@ def _build_lazy() -> None:
             not _can_launch(),
             reason=FAKE_SKIP_REASON if fake_cupy_active() else SKIP_REASON,
         )
+    if cuda_required() and not device_backend_available():
+        requires_device_backend = pytest.mark.skipif(
+            "__import__('cunumpy.kernel_testing', fromlist=['_']).device_backend_gate()",
+            reason=DEVICE_SKIP_REASON,
+        )
+    else:
+        requires_device_backend = pytest.mark.skipif(
+            not device_backend_available(), reason=DEVICE_SKIP_REASON
+        )
     backends = ["numpy", pytest.param("cupy", marks=requires_cupy)]
 
     @pytest.fixture(params=backends)
@@ -186,11 +368,16 @@ def _build_lazy() -> None:
         with use_backend(request.param, strict=cuda_required()):
             yield request.param
 
-    _LAZY.update(requires_cupy=requires_cupy, BACKENDS=backends, backend=backend)
+    _LAZY.update(
+        requires_cupy=requires_cupy,
+        requires_device_backend=requires_device_backend,
+        BACKENDS=backends,
+        backend=backend,
+    )
 
 
 def __getattr__(name: str) -> Any:
-    if name in ("requires_cupy", "BACKENDS", "backend"):
+    if name in ("requires_cupy", "requires_device_backend", "BACKENDS", "backend"):
         if not _LAZY:
             _build_lazy()
         return _LAZY[name]

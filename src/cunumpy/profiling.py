@@ -3,7 +3,8 @@
 :func:`timed_region` times a block (synchronizing the device first and last),
 :class:`nvtx_range` marks it for Nsight (a no-op without NVTX), and
 :func:`count_transfers` / :func:`assert_no_transfers` count the copies between
-host and device that cunumpy makes inside a block::
+host and device that cunumpy makes inside a block, and :class:`TransferBudget`
+counts them per phase of a program and checks a rule for each phase::
 
     import cunumpy as xp
 
@@ -15,6 +16,7 @@ host and device that cunumpy makes inside a block::
 
 from cunumpy._profiling import Timing, nvtx_range, timed_region
 from cunumpy._transfers import (
+    TransferBudget,
     TransferCounter,
     TransferEvent,
     assert_no_transfers,
@@ -23,6 +25,7 @@ from cunumpy._transfers import (
 
 __all__ = [
     "Timing",
+    "TransferBudget",
     "TransferCounter",
     "TransferEvent",
     "assert_no_transfers",
