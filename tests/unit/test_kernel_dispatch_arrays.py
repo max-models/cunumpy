@@ -636,6 +636,23 @@ def test_strided_still_copies_other_layouts(name, make):
     np.testing.assert_array_equal(converted, value)
 
 
+@pytest.mark.parametrize("strided", [False, True])
+def test_single_row_from_fancy_indexing_gets_c_order_strides(strided):
+    """``a[:, order]`` of a ``(1, n)`` array has strides (8, 8), which Pyccel aborts on."""
+    grid = np.zeros(3)
+    row = np.arange(5.0)[None, :][:, [4, 3, 2, 1, 0]]
+    assert row.strides == (8, 8) and row.flags.c_contiguous
+    converted = xp.kernels.as_kernel_array(row, like=grid, dtype=float, strided=strided)
+    assert converted.strides == (40, 8)
+    assert np.shares_memory(converted, row)  # a view, not a copy
+    with xp.kernels.kernel_output(
+        row, like=grid, dtype=float, strided=strided
+    ) as buffer:
+        assert buffer.strides == (40, 8)
+        buffer[0, 0] = -1.0
+    assert row[0, 0] == -1.0
+
+
 def test_strided_without_dtype_keeps_any_dtype():
     view = np.zeros((2, 8), dtype=np.int32)[:, :5]
     assert xp.kernels.as_kernel_array(view, like=np.zeros(1), strided=True) is view

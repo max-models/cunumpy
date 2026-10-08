@@ -259,17 +259,25 @@ sparse, negative, and uint64 Morton keys. Starts/stops are int64 half-open indic
 Empty input returns three empty arrays. Validation and variable-length GPU
 output may synchronize; prepare boundaries outside repeated operations.
 
-### `algorithms.sort_by_key(keys, *arrays)`
+### `algorithms.sort_by_key(keys, *arrays, axis=0)`
 
 Stable argsort of the 1D `keys` (CuPy's radix sort on the device), applied to
-every array along axis 0, in one call:
+every array along `axis`, in one call:
 
 ```python
 keys, order, positions, charges = xp.algorithms.sort_by_key(keys, positions, charges)
+# component-major (ncomp, N) markers: sort along the last axis of each array
+keys, order, positions, weights = xp.algorithms.sort_by_key(
+    keys, positions, weights, axis=-1
+)
 ```
 
-Returns `(keys[order], order, *(a[order] for a in arrays))`, `order` as
-`int64`. Equal keys keep their order, so the result is reproducible.
+Returns `(keys[order], order, *(take(a, order, axis) for a in arrays))`,
+`order` as `int64`. Equal keys keep their order, so the result is reproducible.
+On NumPy, integer keys of more than 4096 entries are sorted by an LSD radix
+sort on 16-bit digits (one stable `argsort` of `uint16` per digit, as many as
+the key range needs), about ten times faster than the stable sort of 64-bit
+integers.
 
 ### `algorithms.compact_by_mask(mask, *arrays, axis=0)`
 

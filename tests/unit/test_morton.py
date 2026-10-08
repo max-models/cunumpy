@@ -131,8 +131,44 @@ def test_sort_by_key_is_stable_and_reorders_all_arrays():
 def test_sort_by_key_validates_shapes():
     with pytest.raises(ValueError, match="1D"):
         xp.algorithms.sort_by_key(np.zeros((2, 2)))
-    with pytest.raises(ValueError, match="3 rows"):
+    with pytest.raises(ValueError, match="expected 3 entries"):
         xp.algorithms.sort_by_key(np.zeros(3), np.zeros(4))
+    with pytest.raises(ValueError, match="no axis 1"):
+        xp.algorithms.sort_by_key(np.zeros(3), np.zeros(3), axis=1)
+
+
+@pytest.mark.parametrize(
+    ("dtype", "low", "high"),
+    [
+        (np.int64, 0, 300),  # one 16-bit pass, many equal keys
+        (np.int64, 0, 400_000),  # two passes: cells of a 3D grid
+        (np.int64, -(2**40), 2**40),  # negative keys, three passes
+        (np.int32, -5, 70_000),
+        (np.uint64, 0, 2**63),  # Morton keys, four passes
+    ],
+)
+def test_radix_sort_of_integer_keys_matches_the_stable_argsort(dtype, low, high):
+    keys = np.random.default_rng(5).integers(low, high, 50_000, dtype=dtype)
+    _, order, sorted_ids = xp.algorithms.sort_by_key(keys, np.arange(keys.size))
+    expected = np.argsort(keys, kind="stable")
+    assert order.dtype == np.int64
+    np.testing.assert_array_equal(order, expected)
+    np.testing.assert_array_equal(sorted_ids, expected)
+
+
+def test_sort_by_key_along_the_last_axis_of_component_major_arrays():
+    keys = np.array([2, 0, 1, 0], dtype=np.int64)
+    positions = np.arange(12.0).reshape(3, 4)
+    weights = np.array([10.0, 11.0, 12.0, 13.0])
+    _, order, sorted_positions, sorted_weights = xp.algorithms.sort_by_key(
+        keys,
+        positions,
+        weights,
+        axis=-1,
+    )
+    assert order.tolist() == [1, 3, 2, 0]
+    np.testing.assert_array_equal(sorted_positions, positions[:, order])
+    np.testing.assert_array_equal(sorted_weights, weights[order])
 
 
 def test_header_is_shipped():

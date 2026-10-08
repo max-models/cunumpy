@@ -212,7 +212,42 @@ def segment_sum(values: Any, keys: Any, n_segments: int, *, out: Any = None) -> 
     return SegmentPlan(keys, n_segments).sum(values, out=out)
 
 
-def sort_by_key(keys: Any, *arrays: Any) -> tuple[Any, ...]:
+#: Integer keys of more entries than this are sorted by :func:`_radix_argsort` on NumPy.
+_RADIX_MIN_SIZE = 4096
+
+
+def _radix_argsort(keys: np.ndarray) -> np.ndarray:
+    """Stable argsort of integer `keys`: least significant 16 bits first.
+
+    NumPy's stable argsort is a radix sort for 16-bit integers only; wider
+    integers get a timsort, about ten times slower on a million random keys.
+    Sorting the 16-bit digits of ``keys - keys.min()`` one after the other,
+    each pass stable, gives the same order (an LSD radix sort), in as many
+    passes as the range of the keys needs (two for up to 2**32 cells).
+    """
+    low = keys.min()
+    span = int(keys.max()) - int(low)
+    if keys.dtype.kind == "i":
+        # the span of int64 keys fits uint64; shift them to start at zero
+        shifted = keys.astype(np.int64, copy=False).view(np.uint64) - np.uint64(
+            np.int64(low).view(np.uint64)
+        )
+    else:
+        shifted = keys.astype(np.uint64, copy=False) - np.uint64(low)
+    order = None
+    shift = 0
+    while True:
+        digits = shifted if order is None else shifted[order]
+        digits = (digits >> np.uint64(shift)).astype(np.uint16)
+        step = np.argsort(digits, kind="stable")
+        order = step if order is None else order[step]
+        shift += 16
+        if span >> shift == 0:
+            break
+    return order.astype(np.int64, copy=False)
+
+
+def sort_by_key(keys: Any, *arrays: Any, axis: int = 0) -> tuple[Any, ...]:
     """Sort `keys` and reorder every array the same way, in one stable argsort.
 
     The usual first step of a particle code on the GPU: sort the particles by
@@ -222,20 +257,35 @@ def sort_by_key(keys: Any, *arrays: Any) -> tuple[Any, ...]:
 
         keys, order, positions, charges = xp.algorithms.sort_by_key(keys, positions, charges)
 
+    Component-major marker arrays, ``(ncomp, N)`` next to ``(N,)`` scalars, keep
+    the markers along the last axis of each, so sort along that one::
+
+        keys, order, positions, weights = xp.algorithms.sort_by_key(
+            keys, positions, weights, axis=-1
+        )
+
+    On NumPy, integer keys (cell indices, Morton keys) are sorted by a radix
+    sort on their 16-bit digits, as on CuPy: two passes for up to ``2**32``
+    distinct cells, about ten times faster than NumPy's stable sort of 64-bit
+    integers.
+
     Parameters
     ----------
     keys : array, shape (n,)
         The sort keys.
     *arrays : arrays
-        Arrays with ``n`` rows, on the backend of `keys`, reordered along
-        axis 0.
+        Arrays with ``n`` entries along `axis` (any other axes), on the backend
+        of `keys`.
+    axis : int
+        The axis of every array that `keys` indexes, the first by default;
+        ``-1`` is the last axis of each array, whatever its number of axes.
 
     Returns
     -------
     tuple
         ``(sorted_keys, order, *sorted_arrays)``: ``order`` (int64) is the
         permutation, ``sorted_keys = keys[order]``, and each sorted array is
-        ``array[order]`` (a new array).
+        ``take(array, order, axis=axis)`` (a new array).
     """
     if get_array_backend(keys) == "cupy":
         import cupy as xpm  # its argsort is a stable radix sort
@@ -244,13 +294,31 @@ def sort_by_key(keys: Any, *arrays: Any) -> tuple[Any, ...]:
     keys = xpm.asarray(keys)
     if keys.ndim != 1:
         raise ValueError(f"keys must be 1D, got shape {keys.shape}")
-    for array in arrays:
-        if array.shape[:1] != keys.shape:
+    axes = []
+    for i, array in enumerate(arrays):
+        if not -array.ndim <= axis < array.ndim:
             raise ValueError(
-                f"every array needs {keys.shape[0]} rows, got shape {array.shape}",
+                f"array {i} has {array.ndim} axes, so it has no axis {axis}",
             )
-    order = xpm.argsort(keys, kind="stable").astype(xpm.int64, copy=False)
-    return (keys[order], order, *(array[order] for array in arrays))
+        array_axis = axis % array.ndim
+        if array.shape[array_axis] != keys.shape[0]:
+            raise ValueError(
+                f"array {i} has shape {array.shape}, expected {keys.shape[0]} "
+                f"entries along axis {axis}",
+            )
+        axes.append(array_axis)
+    if xpm is np and keys.dtype.kind in "iu" and keys.size > _RADIX_MIN_SIZE:
+        order = _radix_argsort(keys)
+    else:
+        order = xpm.argsort(keys, kind="stable").astype(xpm.int64, copy=False)
+    return (
+        keys[order],
+        order,
+        *(
+            xpm.take(array, order, axis=array_axis)
+            for array, array_axis in zip(arrays, axes, strict=True)
+        ),
+    )
 
 
 def compact_by_mask(mask: Any, *arrays: Any, axis: int = 0) -> int:
