@@ -206,6 +206,10 @@ Converts to a host-side NumPy array. CuPy arrays are copied from device to
 host. Other array-like inputs are passed through `numpy.asarray`; NumPy arrays
 may therefore be returned as-is rather than copied.
 
+F-contiguous CuPy inputs keep F order on the host; other CuPy inputs become
+C-contiguous. Arbitrary device strides are not preserved. See
+[Array ordering and strides](guides/array-ordering.md).
+
 ### `to_cupy(array)`
 
 Converts an array-like input to a CuPy array. Raises `ImportError` if CuPy or

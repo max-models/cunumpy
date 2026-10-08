@@ -47,6 +47,7 @@ quickstart
 guides/backends
 guides/portable-code
 guides/data-movement
+guides/array-ordering
 guides/gpu-devices
 guides/execution-helpers
 guides/mpi

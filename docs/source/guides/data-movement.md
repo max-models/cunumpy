@@ -21,6 +21,10 @@ implicitly: every transfer is a visible function call.
   `to_numpy()`, on CuPy like `to_cupy()`.
 * None of them modify the source array or change the active backend.
 
+CuPy-to-host conversions preserve F-contiguous layout; other device inputs
+become C-contiguous host arrays. See [Array ordering and strides](array-ordering.md)
+for conversion rules, copies, and compiled kernel requirements.
+
 ## Transfer at boundaries, not in loops
 
 Load or generate data, move it to the device once, run the whole computation
