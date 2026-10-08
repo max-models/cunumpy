@@ -47,6 +47,7 @@ quickstart
 guides/backends
 guides/portable-code
 guides/data-movement
+guides/array-ordering
 guides/gpu-devices
 guides/execution-helpers
 guides/mpi
@@ -63,6 +64,7 @@ array-api-compat
 kernels/overview
 kernels/pyccel-kernel
 kernels/cuda-kernel
+kernels/metal-kernel
 kernels/dispatch
 kernels/arguments
 kernels/accumulation

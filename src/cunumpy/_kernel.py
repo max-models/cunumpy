@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import copy
 import importlib
+import inspect
 import os
 import warnings
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
@@ -73,11 +74,21 @@ class PyccelKernel:
             interpolate = PyccelKernel(some_interpolation_kernel, outputs=(5,))
             interpolate(x, y, z, basis, coeffs, out)  # `out` is argument 5
 
-        Pyccel-compiled kernels are builtins with no introspectable signature,
-        so an index and a name are *not* interchangeable: declare the form you
-        actually call with. An empty sequence declares that the kernel writes to
-        none of its arguments. By default (``None``) every converted array is
-        copied back, which is always correct but does more work.
+        A name also finds the argument when it is passed positionally, and an
+        index also finds a keyword argument, if the parameter names of the
+        kernel are known: from its Python signature, or from `parameters`
+        (Pyccel-compiled kernels are builtins with no introspectable
+        signature; a :class:`~cunumpy.kernels.Kernel` supplies the names of
+        its host function). Without parameter names an index and a name are
+        *not* interchangeable: declare the form you actually call with. An
+        empty sequence declares that the kernel writes to none of its
+        arguments. By default (``None``) every converted array is copied back,
+        which is always correct but does more work.
+    parameters : sequence of str or callable, optional
+        The names of the positional parameters of `kernel`, or a function that
+        returns them (or None if they are unknown), for resolving `outputs`
+        names and indices. By default they are read from the signature of
+        `kernel`, where it has one.
 
     Examples
     --------
@@ -93,8 +104,10 @@ class PyccelKernel:
         object_modules: Sequence[str] = (),
         is_array: Callable[[Any], bool] | None = None,
         outputs: Sequence[int | str] | None = None,
+        parameters: Sequence[str] | Callable[[], Sequence[str] | None] | None = None,
     ) -> None:
         self._kernel = kernel
+        self._parameters = parameters
         self._use_cupy = use_cupy
         self._object_modules = tuple(object_modules)
         self._is_array = is_array or (lambda value: isinstance(value, np.ndarray))
@@ -121,6 +134,23 @@ class PyccelKernel:
             f"PyccelKernel(kernel={self.name!r}, use_cupy={self.use_cupy!r}, "
             f"outputs={self._outputs!r})"
         )
+
+    def _parameter_names(self) -> Sequence[str] | None:
+        """The names of the positional parameters, or None if they are unknown."""
+        source = self._parameters
+        if source is not None:
+            return source() if callable(source) else tuple(source)
+        function = getattr(self._kernel, "python", self._kernel)
+        try:
+            signature = inspect.signature(function)
+        except (TypeError, ValueError):
+            return None
+        positional = (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+        names = [p.name for p in signature.parameters.values() if p.kind in positional]
+        return names or None
 
     def _convert_to_numpy(
         self,
@@ -261,31 +291,61 @@ class PyccelKernel:
         IndexError, KeyError
             If a declared output does not correspond to an argument of this
             call -- typically because an argument declared by index was passed
-            as a keyword, or vice versa.
+            as a keyword, or vice versa, and the parameter names are unknown.
         """
         found: set[int] = set()
         seen: set[int] = set()
 
+        names = self._parameter_names() if self._outputs else None
         for entry in self._outputs or ():
             if isinstance(entry, int):
                 index = entry + len(args_np) if entry < 0 else entry
-                if not 0 <= index < len(args_np):
-                    raise IndexError(
-                        f"{self.name}() was declared with output argument "
-                        f"{entry}, but was called with {len(args_np)} "
-                        "positional argument(s). Note that an output passed as "
-                        "a keyword must be declared by name, not by index.",
-                    )
-                self._collect_host_arrays(args_np[index], found, seen)
-            else:
-                if entry not in kwargs_np:
-                    raise KeyError(
-                        f"{self.name}() was declared with output argument "
-                        f"{entry!r}, but no such keyword argument was passed. "
-                        "Note that an output passed positionally must be "
-                        "declared by index, not by name.",
-                    )
+                if 0 <= index < len(args_np):
+                    self._collect_host_arrays(args_np[index], found, seen)
+                    continue
+                if (
+                    names is not None
+                    and 0 <= entry < len(names)
+                    and names[entry] in kwargs_np
+                ):
+                    self._collect_host_arrays(kwargs_np[names[entry]], found, seen)
+                    continue
+                raise IndexError(
+                    f"{self.name}() was declared with output argument "
+                    f"{entry}, but was called with {len(args_np)} "
+                    "positional argument(s)"
+                    + (
+                        ""
+                        if names is not None
+                        else ". Note that an output passed as a keyword must "
+                        "be declared by name, not by index (the parameter "
+                        "names of the kernel are unknown)."
+                    ),
+                )
+            if entry in kwargs_np:
                 self._collect_host_arrays(kwargs_np[entry], found, seen)
+                continue
+            if (
+                names is not None
+                and entry in names
+                and names.index(entry)
+                < len(
+                    args_np,
+                )
+            ):
+                self._collect_host_arrays(args_np[names.index(entry)], found, seen)
+                continue
+            raise KeyError(
+                f"{self.name}() was declared with output argument "
+                f"{entry!r}, but "
+                + (
+                    "no argument of that name was passed"
+                    if names is not None
+                    else "no such keyword argument was passed. Note that an "
+                    "output passed positionally must be declared by index, not "
+                    "by name (the parameter names of the kernel are unknown)."
+                ),
+            )
 
         return found
 
@@ -783,3 +843,51 @@ def kernel_output(out: Any, like: Any, dtype: Any = None) -> Generator[Any]:
             out[...] = to_numpy(buffer)
         else:
             out[...] = buffer
+
+
+_SCALAR_ANNOTATIONS = {"int", "float", "bool", "complex", "str"}
+
+
+def outputs_from_annotations(function: Callable[..., Any]) -> tuple[str, ...] | None:
+    """The names of the parameters a kernel may write to, read from its annotations.
+
+    Pyccel kernels mark what they only read with ``Final``: ``x: "Final[float[:]]"``.
+    A parameter is an output unless it is annotated ``Final`` (or ``const``) or
+    has the annotation of a scalar (``int``, ``float``, ``bool``, ``complex``,
+    ``str``); an annotated array or an argument object may be written to. Use the
+    result as the `outputs` of a :class:`PyccelKernel` so that only those arrays
+    are copied back to the device::
+
+        PyccelKernel(push, outputs=outputs_from_annotations(push))
+
+    Returns
+    -------
+    tuple[str, ...] | None
+        The parameter names, in order, or None if `function` has no signature or
+        none of its parameters is annotated (so nothing can be said).
+    """
+    try:
+        parameters = inspect.signature(function).parameters.values()
+    except (TypeError, ValueError):
+        return None
+    if all(p.annotation is inspect.Parameter.empty for p in parameters):
+        return None
+    outputs = []
+    for p in parameters:
+        if isinstance(p.annotation, str):
+            text = p.annotation
+        elif isinstance(p.annotation, type):
+            text = p.annotation.__name__
+        else:
+            text = str(p.annotation)
+        text = text.replace("typing.", "").strip().strip("'\"")
+        if p.annotation is inspect.Parameter.empty:
+            outputs.append(p.name)  # nothing is known: assume it may be written
+        elif (
+            text.startswith(("Final[", "const ", "Final "))
+            or text in _SCALAR_ANNOTATIONS
+        ):
+            continue
+        else:
+            outputs.append(p.name)
+    return tuple(outputs)

@@ -39,12 +39,12 @@ The submodules are named so that they do not hide a NumPy name (`rng`, not
 
 | Submodule | Backends | Contents |
 |---|---|---|
-| `cunumpy` | both | NumPy/CuPy namespace, backend selection, array inspection and conversion, `synchronize`, `scipy`, `require_version` |
-| `cunumpy.kernels` | both | `Kernel`, `KernelCatalog`, `PyccelKernel`, `CudaKernel`, `CudaKernelVariants`, host implementations, `as_kernel_array`, `kernel_output`, `fuse` |
+| `cunumpy` | both | NumPy/CuPy namespace, backend selection, array inspection and conversion, `synchronize`, `host_call`, `evaluate_on_host`, `setup_on_host`, `scipy`, `require_version` |
+| `cunumpy.kernels` | both | `Kernel`, `KernelCatalog`, `PyccelKernel`, `CudaKernel`, `CudaKernelVariants`, `MetalKernel`, `metal_available`, host implementations, `as_kernel_array`, `kernel_output`, `fuse` |
 | `cunumpy.arguments` | CUDA only | `CudaArguments`, `CudaStruct`, `CudaStructArguments`, `CudaStructValue`, `write_cuda_header` |
 | `cunumpy.cuda` | CUDA only | device selection and memory, `stream`, streams/events, `pin_memory`, debug mode, CUDA headers and source tools (`cuda_include_dir`, `parse_cuda_signature`) |
 | `cunumpy.rng` | both | `random_streams`, `get_rng`, `philox_*` |
-| `cunumpy.algorithms` | both | `morton_*`, `sort_by_key`, `segment_sum` |
+| `cunumpy.algorithms` | both | `morton_*`, `sort_by_key`, `segment_sum`, `compact_by_mask` |
 | `cunumpy.mpi` | both | `mpi_buffer`, CUDA-aware MPI detection, `local_rank`, `synchronize_for_mpi` |
 | `cunumpy.profiling` | both | `timed_region`, `nvtx_range`, `count_transfers`, `assert_no_transfers` |
 | `cunumpy.memory` | both | `HostStaging`, `DeviceMirror` |
@@ -206,6 +206,10 @@ Converts to a host-side NumPy array. CuPy arrays are copied from device to
 host. Other array-like inputs are passed through `numpy.asarray`; NumPy arrays
 may therefore be returned as-is rather than copied.
 
+F-contiguous CuPy inputs keep F order on the host; other CuPy inputs become
+C-contiguous. Arbitrary device strides are not preserved. See
+[Array ordering and strides](guides/array-ordering.md).
+
 ### `to_cupy(array)`
 
 Converts an array-like input to a CuPy array. Raises `ImportError` if CuPy or
@@ -267,6 +271,21 @@ keys, order, positions, charges = xp.algorithms.sort_by_key(keys, positions, cha
 Returns `(keys[order], order, *(a[order] for a in arrays))`, `order` as
 `int64`. Equal keys keep their order, so the result is reproducible.
 
+### `algorithms.compact_by_mask(mask, *arrays)`
+
+Moves the rows where the boolean `mask` is True to the front of every array, in
+place and in their original order, and returns how many there are. Typical use:
+keep the live particles at the front of the marker arrays.
+
+```python
+n = xp.algorithms.compact_by_mask(alive, markers, weights)
+markers, weights = markers[:n], weights[:n]
+```
+
+The rows after the first `n` are unspecified. The count is needed on the host,
+so on CuPy each call synchronizes once. The mask and the arrays must be on the
+same backend.
+
 ## Count transfers
 
 A transfer inside a time loop is the classic performance bug of a GPU port:
@@ -286,7 +305,7 @@ with xp.profiling.count_transfers() as counter:
 assert counter.total == 0, counter.report()
 ```
 
-Five kinds of events are recorded:
+Six kinds of events are recorded:
 
 * `to_host`: an actual device-to-host copy through conversion, mirror, staging,
   serial MPI, or host kernel helpers;
@@ -298,7 +317,12 @@ Five kinds of events are recorded:
 * `fallback`: a `Kernel` without CUDA kernel calling its host kernel on the
   CuPy backend (`missing_cuda="fallback"`), one event per call, naming the
   kernel. Physical copies and a `kernel_conversion` marker are recorded separately;
-* `device_copy`: a device-only dtype/layout conversion through CuNumpy helpers.
+* `device_copy`: a device-only dtype/layout conversion through CuNumpy helpers;
+* `sync`: the host waited for the device: `xp.synchronize()`, the waits of the MPI
+  helpers (`synchronize_for_mpi()`, `mpi_buffer()` staging) and of the CUDA debug
+  mode, and, on the fake CuPy, a scalar read of a device array (`float(a)`,
+  `int(a)`, `bool(a)`, `a.item()`, `a.tolist()`). They are in `counter.syncs` and in
+  the report, but not in `total`.
 
 Only real transfers count: `to_numpy()` of a NumPy array or `to_cupy()` of a
 CuPy array records nothing. The counter has the attributes `to_host`,
@@ -327,16 +351,17 @@ not thread-safe.
 
 **Limitation:** only transfers made through CuNumpy are seen. Raw
 `cupy.ndarray.get()`, `cupy.asarray(numpy_array)`, `numpy.asarray(cupy_array)`,
-`float(device_array)`, forwarded backend calls such as `xp.asarray()`, and
-implicit conversions inside other libraries are
-not counted. Use `nsys` (or CuPy's profiling hooks) to find those.
+forwarded backend calls such as `xp.asarray()`, and implicit conversions inside
+other libraries are not counted. Neither is `float(device_array)` (an implicit
+sync) with the real CuPy, which cannot be observed from Python; the fake CuPy
+counts it. Use `nsys` (or CuPy's profiling hooks) to find those.
 
-### `profiling.assert_no_transfers()`
+### `profiling.assert_no_transfers(*, syncs=False)`
 
 Context manager that raises `AssertionError` with the counter's `report()` if
 the block makes a host/device transfer or host fallback through CuNumpy.
-Device-only dtype/layout conversions are allowed. It yields the `TransferCounter`
-too. An exception raised inside the block propagates as it is:
+Device-only dtype/layout conversions are allowed, and so are syncs unless
+`syncs=True`. It yields the `TransferCounter` too. An exception raised inside the block propagates as it is:
 
 ```python
 def test_time_step_stays_on_the_device():
@@ -808,8 +833,18 @@ CuPy arrays.
 * `is_array`: predicate for host array values to convert back to CuPy. The
   default is `isinstance(value, numpy.ndarray)`.
 * `outputs`: sequence of arguments the kernel may write to. Entries are
-  positional indices or keyword names. If omitted, every converted array is
+  indices or parameter names; a name also finds a positional argument, and an
+  index a keyword argument, when the parameter names are known (from the
+  Python signature, or `parameters`). If omitted, every converted array is
   copied back.
+* `parameters`: the names of the positional parameters, or a function that
+  returns them, for compiled kernels without a Python signature. A `Kernel`
+  supplies the names of its host function.
+
+`kernels.outputs_from_annotations(function)` returns the parameters a kernel may
+write to, read from its annotations: everything that is not `Final`, `const` or a
+scalar. Use it as `outputs=outputs_from_annotations(push)`, or pass
+`outputs="annotations"` to `Kernel.from_folder()` / `KernelCatalog.from_package()`.
 
 ### Example and output declarations
 
@@ -856,6 +891,51 @@ cycles terminate safely. Returned NumPy arrays (and arrays inside tuples or
 lists) are converted back using `is_array`; dictionaries in return values are
 not recursively converted. On the NumPy path, the original return value and
 normal Python mutation and exception behavior are preserved.
+
+## `kernels.MetalKernel`
+
+A Metal Shading Language kernel for the GPU of an Apple silicon Mac, run with
+[MLX](https://github.com/ml-explore/mlx) (`pip install 'cunumpy[metal]'`). It
+takes NumPy arrays and fills the output arrays you pass, so no backend switch
+is needed.
+
+```python
+import numpy as np
+import cunumpy as xp
+
+scale = xp.kernels.MetalKernel(
+    "uint i = thread_position_in_grid.x; y[i] = a[0] * x[i];",
+    inputs=["x", "a"],
+    outputs=["y"],
+)
+x = np.arange(8, dtype=np.float32)
+y = np.empty_like(x)
+scale(x, 2.0, out=y)
+```
+
+`MetalKernel(source, inputs, outputs, *, name="cunumpy_kernel", header="",
+threadgroup=256, float64="error", atomic_outputs=False, init_value=None)`
+
+- `source` is the body of the kernel function. MLX generates the signature: each
+  name in `inputs` and `outputs` is a pointer to the flat, row-major data of that
+  array, so `x[i]` is the flat index. `thread_position_in_grid` and the other
+  Metal attributes used in the body are added automatically. `header` goes before
+  the function (includes, defines, helper functions).
+- Calling the kernel: `kernel(*inputs, out=array_or_arrays, n_threads=None,
+  template=None)`. `n_threads` is the total thread count (default: first axis of
+  the first output). `template` gives compile-time constants, e.g.
+  `template={"NSTEPS": 200}`. It returns the output array, or a tuple of them.
+- Outputs are uninitialized: write every element, pass the old array as an input
+  too if the kernel reads it, or set `init_value`.
+- **float32 only.** The Apple GPU has no float64: a float64 input or output
+  raises `TypeError`. With `float64="cast"` float64 data is computed in float32
+  (a push over 200 steps agreed with float64 to about 3e-5).
+- Every call copies the inputs to MLX arrays and the results back, counted as
+  `to_device` and `to_host` transfers by `count_transfers()`. On a 4M-particle
+  push these copies were about 7 ms next to an 11.5 ms kernel.
+- `xp.kernels.metal_available()` is True if MLX is installed and a Metal GPU is
+  present. Without them, calling a `MetalKernel` raises `ImportError` or
+  `RuntimeError`.
 
 ## `kernels.CudaKernel`
 

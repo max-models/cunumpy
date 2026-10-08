@@ -66,6 +66,9 @@ from typing import Any, NamedTuple
 
 import numpy as np
 
+from cunumpy._transfers import _ACTIVE as _COUNTERS
+from cunumpy._transfers import _record_sync
+
 __all__ = [
     "DEBUG_OPTIONS",
     "CudaArguments",
@@ -2421,6 +2424,10 @@ class CudaKernel:
         if shared_mem < 0:
             raise ValueError(f"shared_mem must be non-negative, got {shared_mem}")
         values = self.prepare_args(*args)
+        # RawKernel accepts size-one NumPy arrays for structs passed by value,
+        # but not structured NumPy scalars (np.void). Keep their packed bytes
+        # and alignment intact, including array-view pointers and strides.
+        values = tuple(np.asarray(v) if isinstance(v, np.void) else v for v in values)
         if 0 in grid_shape:
             return
 
@@ -2528,6 +2535,8 @@ class CudaKernel:
             stream = cp.cuda.get_current_stream()
         if _is_capturing(stream):
             return
+        if _COUNTERS:
+            _record_sync(f"debug synchronization after kernel {self.expression!r}")
         try:
             stream.synchronize()
         except Exception as error:

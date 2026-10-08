@@ -20,6 +20,7 @@ from cunumpy._transfers import (
     _is_device_copy,
     _nbytes,
     _record,
+    _record_sync,
 )
 
 if os.environ.get("CUNUMPY_FAKE_CUPY", "").strip().lower() in ("1", "true", "yes"):
@@ -248,6 +249,8 @@ def default_float_dtype() -> Any:
 def synchronize() -> None:
     """Wait for all kernels in all streams on current device to complete."""
     if array_backend.backend == "cupy":
+        if _COUNTERS:
+            _record_sync("synchronize()")
         try:
             import cupy as cp
 
@@ -266,7 +269,7 @@ def synchronize() -> None:
 def _to_numpy(array: Any) -> np.ndarray:
     """`to_numpy` without transfer counting, for internal use."""
     if get_array_backend(array) == "cupy":
-        return array.get()
+        return array.get(order="A")
 
     return np.asarray(array)
 
@@ -286,6 +289,7 @@ def to_numpy(array: Any) -> np.ndarray:
 
     A CuPy array is copied to the host, which `count_transfers()` counts as a
     ``to_host`` transfer; anything else is passed through `numpy.asarray`.
+    Fortran-contiguous CuPy arrays keep F order; other CuPy arrays use C order.
     """
     result = _to_numpy(array)
     if _COUNTERS and get_array_backend(array) == "cupy":

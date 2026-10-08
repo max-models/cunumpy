@@ -40,6 +40,7 @@ from cunumpy._kernel import (
     HostImplementations,
     PyccelKernel,
     get_device_kernel_implementation,
+    outputs_from_annotations,
 )
 from cunumpy._transfers import _ACTIVE as _COUNTERS
 from cunumpy._transfers import _record
@@ -219,6 +220,10 @@ class Kernel:
                 "host_options are for wrapping a plain callable; configure the "
                 "given PyccelKernel directly",
             )
+        if host_kernel._parameters is None:
+            # compiled kernels have no Python signature: name the parameters
+            # from the host function, so that outputs may be given by name
+            host_kernel._parameters = self.host_parameters
         self._host_kernel = host_kernel
         self._cuda_kernel = cuda_kernel
         self._name = name if name is not None else host_kernel.name
@@ -239,6 +244,7 @@ class Kernel:
         check_name_length: bool = True,
         missing_cuda: str = "raise",
         host_options: Mapping[str, Any] | None = None,
+        outputs: Sequence[int | str] | str | None = None,
         include_dirs: Sequence[str | Path] | None = None,
         dispatch: str = "backend",
         compile_host: Callable[[Any], Any] | None = None,
@@ -285,6 +291,14 @@ class Kernel:
             As for :meth:`KernelCatalog.from_package`.
         missing_cuda, host_options, dispatch
             Passed on to :class:`Kernel`.
+        outputs : Sequence[int | str] | "annotations" | None
+            The arguments the host kernel writes to (names or indices, see
+            :class:`~cunumpy.kernels.PyccelKernel`), so that only those arrays are
+            copied back to the device on the fallback path. ``"annotations"``
+            reads them from the annotations of the host function: every
+            parameter that is not ``Final`` or a scalar is an output (see
+            :func:`~cunumpy.kernels.outputs_from_annotations`). A value in
+            `host_options` takes precedence.
         include_dirs : Sequence[str | Path] | None
             Include directories of the CUDA kernel, in addition to the folder
             itself; by default the source root of the top-level package (the
@@ -334,6 +348,19 @@ class Kernel:
             test_args = f"{package}.{name}{test_args_suffix}"
         module = importlib.import_module(f"{package}.{name}{host_suffix}")
         python = getattr(module, name)
+        if outputs is not None and "outputs" not in (host_options or {}):
+            declared = (
+                outputs_from_annotations(python)
+                if isinstance(outputs, str) and outputs == "annotations"
+                else outputs
+            )
+            if isinstance(outputs, str) and outputs != "annotations":
+                raise ValueError(
+                    f"outputs must be a sequence of names/indices or 'annotations', "
+                    f"got {outputs!r}",
+                )
+            if declared is not None:
+                host_options = {**(host_options or {}), "outputs": declared}
         loaders: dict[str, Callable[[], Callable[..., Any]]] = {
             "python": lambda: python,
             "pyccel": (
@@ -669,6 +696,12 @@ class KernelCatalog(Mapping):
         host_options: (
             Mapping[str, Any] | Callable[[str], Mapping[str, Any]] | None
         ) = None,
+        outputs: (
+            Sequence[int | str]
+            | str
+            | Callable[[str], Sequence[int | str] | str | None]
+            | None
+        ) = None,
         include_dirs: Sequence[str | Path] | None = None,
         dispatch: str = "backend",
         compile_host: Callable[[Any], Any] | None = None,
@@ -713,6 +746,10 @@ class KernelCatalog(Mapping):
             Keyword arguments for the :class:`~cunumpy.kernels.PyccelKernel` wrapping each
             host kernel (see :class:`Kernel`): the same for all kernels, or a
             function of the kernel name, e.g. to declare per-kernel ``outputs``.
+        outputs : Sequence[int | str] | "annotations" | Callable | None
+            The arguments every host kernel writes to, or ``"annotations"`` to
+            read them from the annotations of each host function, or a function
+            of the kernel name returning either (see :meth:`Kernel.from_folder`).
         include_dirs : Sequence[str | Path] | None
             Include directories of the CUDA kernels, in addition to each
             kernel's own folder. By default the source root of the top-level
@@ -757,6 +794,7 @@ class KernelCatalog(Mapping):
                 host_options=(
                     host_options(name) if callable(host_options) else host_options
                 ),
+                outputs=outputs(name) if callable(outputs) else outputs,
                 include_dirs=include_dirs,
                 dispatch=dispatch,
                 compile_host=compile_host,

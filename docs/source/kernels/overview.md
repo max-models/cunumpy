@@ -16,6 +16,7 @@ unchanged.
 | --- | --- | --- |
 | `PyccelKernel` | calls a host kernel with CuPy arrays by copying them to the host and back | [Host kernels with GPU data](pyccel-kernel.md) |
 | `CudaKernel` | wraps a CUDA C kernel, checks every call against its signature | [Writing CUDA kernels](cuda-kernel.md) |
+| `MetalKernel` | runs a Metal kernel on the GPU of an Apple silicon Mac, on NumPy float32 arrays | [Metal kernels on Apple silicon](metal-kernel.md) |
 | `Kernel` | a host kernel plus its CUDA kernel; calls the one matching the backend | [Pairing host and CUDA kernels](dispatch.md) |
 | `KernelCatalog` | all `Kernel`s of a package, found by folder convention | [Pairing host and CUDA kernels](dispatch.md) |
 | `CudaArguments`, `CudaStruct`, `CudaStructArguments` | pass a group of arrays and scalars as one argument | [Kernel arguments and structs](arguments.md) |

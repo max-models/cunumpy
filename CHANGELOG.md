@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Preserve Fortran order when copying CuPy arrays to the host through
+  `to_numpy`, `host_call`, `evaluate_on_host`, and `PyccelKernel` conversions.
+
+### Added
+- `kernel_testing.emulated_launches()` runs every `CudaKernel` launch in a block
+  on the CPU, on the host buffers of the fake CuPy arrays, so code that launches
+  kernels can be tested without a GPU. `emulate_cuda_kernel` now accepts struct
+  parameters (a mapping of field values, a `CudaStructValue`, or an object with
+  an attribute per field). `kernel_testing.host_buffer(array)` returns the NumPy
+  array behind a fake CuPy array.
+- `CUNUMPY_REQUIRE_CUDA=1` makes the GPU markers of `kernel_testing` fail instead
+  of skipping: `requires_cupy`, the `cupy` run of the `backend` fixture (which
+  activates CuPy strictly) and `assert_kernels_agree`. New `kernel_testing.cuda_required()`.
+- `count_transfers()` records `sync` events (the host waiting for the device):
+  `xp.synchronize()`, the waits of the MPI helpers and of the CUDA debug mode, and,
+  on the fake CuPy, scalar reads of device arrays. They are in `counter.syncs`
+  and the report but not in `total`; `assert_no_transfers(syncs=True)` rejects them.
+  The real CuPy's own `float(a)` cannot be observed from Python and is not counted.
+- `xp.algorithms.compact_by_mask(mask, *arrays)` moves the masked rows of arrays to
+  the front, in place and in order, and returns their number.
+- Kernel outputs: a name in `PyccelKernel(outputs=...)` also finds a positional
+  argument and an index a keyword argument, using the parameter names of the
+  function (or the new `parameters=`); a `Kernel` supplies those of its host
+  function. `xp.kernels.outputs_from_annotations()` reads the outputs from the
+  annotations (not `Final`, `const` or a scalar), and `Kernel.from_folder()` /
+  `KernelCatalog.from_package()` take `outputs=` (names, indices or
+  `"annotations"`). `assert_kernels_agree(outputs=...)` takes parameter names and
+  `"name.field"` to compare only some fields of a struct argument.
+- `xp.kernels.MetalKernel` runs a Metal Shading Language kernel on the GPU of an
+  Apple silicon Mac through MLX (`pip install 'cunumpy[metal]'`). It takes and
+  fills NumPy arrays, is float32 only (`float64="cast"` computes float64 data in
+  float32), and its copies are counted by `xp.profiling.count_transfers()`.
+  `xp.kernels.metal_available()` tells whether it can run.
+- `xp.host_call`, `xp.evaluate_on_host` and `xp.setup_on_host` run host-only code
+  (SciPy splines, file readers, external libraries) with arguments of either
+  backend: device arrays are copied to the host, the call runs on the NumPy
+  backend and array results are copied back. The copies are counted by
+  `xp.profiling.count_transfers()`.
+
 ### Changed
 - The launcher detection and the serial MPI stand-in moved to the new package
   [maybempi](https://github.com/max-models/maybempi), a dependency of cunumpy.

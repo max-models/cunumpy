@@ -1,0 +1,56 @@
+name: Tests (macOS)
+
+on:
+  push:
+    branches:
+      - main
+      - devel
+  pull_request:
+    branches:
+      - main
+      - devel
+  workflow_dispatch:
+
+jobs:
+  build:
+    # macos-latest is Apple silicon (arm64): checks the NumPy backend, the
+    # compiled host kernels and the MLX import on the platform of MetalKernel.
+    runs-on: macos-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.13"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # Pyccel is built from source here (no wheel for macOS arm64) and needs a
+      # Fortran compiler, which the macOS runners do not have.
+      - name: Install gfortran
+        run: |
+          brew install gcc
+          gfortran --version
+
+      - name: Install project
+        run: |
+          pip install --upgrade pip
+          pip install ".[test-compiled,metal]"
+
+      # Hosted macOS runners are virtual machines and usually have no Metal GPU,
+      # in which case the MetalKernel launch tests are skipped. This step shows
+      # which case this run is in.
+      - name: Report Metal availability
+        run: |
+          python -c "import platform, cunumpy as xp; print(platform.machine(), 'metal_available =', xp.kernels.metal_available())"
+
+      - name: Run tests
+        run: pytest . -rs

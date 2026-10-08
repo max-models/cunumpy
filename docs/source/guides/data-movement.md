@@ -21,6 +21,10 @@ implicitly: every transfer is a visible function call.
   `to_numpy()`, on CuPy like `to_cupy()`.
 * None of them modify the source array or change the active backend.
 
+CuPy-to-host conversions preserve F-contiguous layout; other device inputs
+become C-contiguous host arrays. See [Array ordering and strides](array-ordering.md)
+for conversion rules, copies, and compiled kernel requirements.
+
 ## Transfer at boundaries, not in loops
 
 Load or generate data, move it to the device once, run the whole computation
@@ -165,3 +169,27 @@ with xp.cuda.stream():
 Pinned memory is a limited system resource; use it for large, repeatedly
 transferred buffers after a profile shows transfers matter.
 `pin_memory()` requires CuPy.
+
+## Host-only code: `host_call`
+
+Some code can only run on the host: a SciPy spline, a file reader, an external
+equilibrium code. `xp.host_call(fun, *args, **kwargs)` calls it with arguments of
+either backend. Device arrays are copied to the host, `fun` runs on the NumPy
+backend, and array results are copied back, once per call. `@xp.evaluate_on_host`
+does the same for a method, and `@xp.setup_on_host` runs an `__init__` on the NumPy
+backend, so the object holds only host data. The copies are counted by
+`count_transfers()`. Use it for setup and diagnostics, not in a time loop.
+
+```python
+values = xp.host_call(spline, x)  # x on the device -> values on the device
+
+
+class Equilibrium:
+    @xp.setup_on_host
+    def __init__(self, path):
+        self.spline = read_spline(path)  # NumPy and SciPy
+
+    @xp.evaluate_on_host
+    def pressure(self, x):
+        return self.spline(x)
+```

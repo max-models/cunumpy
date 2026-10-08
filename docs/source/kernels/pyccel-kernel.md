@@ -37,6 +37,11 @@ with xp.use_backend("cupy"):
     smooth_kernel(field, out)  # out is updated on the device
 ```
 
+Device-to-host conversion preserves F-contiguous arrays. The host kernel must
+accept that order: the wrapper does not adapt arrays to a compiled signature.
+See [Array ordering and strides](../guides/array-ordering.md) for Pyccel signatures
+and the operations that can change layout.
+
 ## Declare the outputs
 
 The wrapper cannot know which arguments the function writes. By default it
@@ -50,10 +55,16 @@ xp.kernels.PyccelKernel(solve, outputs=("out",))  # solve(a, b, out=out)
 xp.kernels.PyccelKernel(norm, outputs=())  # writes nothing
 ```
 
-* Positional arguments are declared by index (negative indices count from the
-  end), keyword arguments by name. The two forms are not interchangeable,
-  because compiled functions usually do not expose a Python signature that
-  would map names to positions.
+* Arguments are declared by index (negative indices count from the end) or by
+  name. A name finds the argument also when it is passed positionally, and an
+  index also when it is passed as a keyword, as long as the parameter names are
+  known: from the Python signature, from `parameters=[...]`, or, for a kernel in a
+  `Kernel`, from its host function. For a compiled function without any of those
+  the two forms are not interchangeable.
+* `xp.kernels.outputs_from_annotations(function)` reads the outputs from the
+  annotations: every parameter that is not `Final`, `const` or a scalar. A
+  `Kernel.from_folder(..., outputs="annotations")` (and `KernelCatalog.from_package`)
+  applies it to the host function of each kernel folder.
 * A container or object declared as output has all its arrays copied back.
 * **A missing declaration is a silent bug**: if the function writes an
   argument that is not declared, the device array keeps its old values. When in

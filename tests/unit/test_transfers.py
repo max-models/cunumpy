@@ -42,8 +42,8 @@ class _FakeDeviceArray:
     def dtype(self):
         return self.data.dtype
 
-    def get(self):
-        return self.data.copy()
+    def get(self, order="C"):
+        return self.data.copy(order=order)
 
     def __setitem__(self, key, value):
         self.data[key] = value.data if isinstance(value, _FakeDeviceArray) else value
@@ -84,7 +84,7 @@ def test_empty_counter():
     assert counter.events == [] and counter.kernel_conversion_calls == []
     assert counter.report().startswith("0 transfer(s) through cunumpy")
     assert repr(counter) == (
-        "TransferCounter(to_host=0, to_device=0, kernel_conversion=0, fallback=0, device_copy=0)"
+        "TransferCounter(to_host=0, to_device=0, kernel_conversion=0, fallback=0, device_copy=0, sync=0)"
     )
 
 
@@ -189,7 +189,7 @@ def test_report_groups_events_by_kind_and_call_site(fake_device):
     lines = report.splitlines()
     assert lines[0] == (
         "4 transfer(s) through cunumpy "
-        "(3 to_host, 1 to_device, 0 kernel_conversion, 0 fallback, 0 device_copy)"
+        "(3 to_host, 1 to_device, 0 kernel_conversion, 0 fallback, 0 device_copy, 0 sync)"
     )
     assert "  to_host (3):" in lines
     assert "  to_device (1):" in lines
