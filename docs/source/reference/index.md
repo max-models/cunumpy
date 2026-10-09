@@ -15,6 +15,7 @@ cuda
 rng
 algorithms
 optimize
+integrate
 mpi
 profiling
 memory

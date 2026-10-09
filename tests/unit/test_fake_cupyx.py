@@ -18,6 +18,7 @@ def run(code):
 
 def test_same_subpackages_as_xp_scipy():
     assert _fake_cupyx.SUBPACKAGES == SUBMODULES
+    assert tuple(_fake_cupyx.NAMES) == SUBMODULES
 
 
 def test_splines_fit_and_evaluate_on_the_device():
@@ -81,6 +82,61 @@ except AttributeError as error:
     assert "not available on the cupy backend" in str(error)
 else:
     raise AssertionError
+print("ok")
+"""
+    assert "ok" in run(code)
+
+
+def test_every_subpackage_has_only_the_names_cupy_provides():
+    code = """
+import cunumpy as xp
+import cupyx.scipy.linalg
+xp.set_backend("cupy")
+missing = {
+    "special": ("jv", "erfi"),
+    "linalg": ("solve_circulant", "inv", "eigh"),
+    "sparse.linalg": ("inv",),
+}
+present = {
+    "special": ("yn", "erf", "erfinv", "ndtri"),
+    "linalg": ("circulant", "lu_factor", "lu_solve"),
+    "sparse": ("csr_matrix", "kron", "bmat", "identity"),
+    "sparse.linalg": ("splu", "spsolve", "cg"),
+    "signal": ("argrelextrema",),
+    "fft": ("rfft", "irfft"),
+}
+ns = lambda path: eval("xp.scipy." + path)
+for path, names in missing.items():
+    for name in names:
+        assert not hasattr(ns(path).resolve(), name), (path, name)
+for path, names in present.items():
+    for name in names:
+        assert ns(path).available(name), (path, name)
+# cunumpy fills in solve_circulant, which raw cupyx lacks
+assert not hasattr(cupyx.scipy.linalg, "solve_circulant")
+assert xp.scipy.linalg.available("solve_circulant")
+print("ok")
+"""
+    assert "ok" in run(code)
+
+
+def test_solve_circulant_stays_on_the_device():
+    code = """
+import numpy as np
+import scipy.linalg
+import cunumpy as xp
+xp.set_backend("cupy")
+rng = np.random.default_rng(0)
+c_h, b_h = rng.random(6) + 2.0, rng.random((6, 3))
+x = xp.scipy.linalg.solve_circulant(xp.asarray(c_h), xp.asarray(b_h))
+assert xp.is_gpu(x)
+assert np.allclose(xp.to_numpy(x), scipy.linalg.solve_circulant(c_h, b_h))
+try:
+    xp.scipy.linalg.solve_circulant(xp.asarray([1.0, 1.0, 0.0, 0.0]), xp.ones(4))
+except np.linalg.LinAlgError:
+    pass
+else:
+    raise AssertionError("singular matrix accepted")
 print("ok")
 """
     assert "ok" in run(code)
