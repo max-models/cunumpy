@@ -57,9 +57,21 @@ every call:
 | `Array1D<T>` ... `Array16D<T>` | CuPy array of dtype `T` and that ndim, contiguous or not | wrong dtype or ndim |
 | a `CudaStruct` type | a value of that struct | anything else |
 
-C types map to NumPy dtypes as on 64-bit Linux: `int` is `int32`, `long` and
-`long long` are `int64`, `float` is `float32`, `double` is `float64`.
-`xp.cuda.ctype_of(np.float64)` returns `"double"`, useful when generating source.
+C types map to NumPy dtypes as on 64-bit Linux (LP64): `int` is `int32`, `long`
+and `long long` are `int64`, `float` is `float32`, `double` is `float64`,
+`complex<double>` is `complex128`; fixed-width types such as `int64_t` and
+`size_t` work too. `xp.cuda.ctype_of(np.float64)` returns `"double"`, useful
+when generating source, and `xp.cuda.parse_cuda_signature()` returns the parsed
+parameters.
+
+Scalars in detail: a Python `int` is cast into integer (range-checked),
+floating-point and complex parameters, a `float` into floating-point and
+complex parameters, a `bool` into boolean and integer parameters. A NumPy
+scalar is passed as it is if its dtype matches, cast if the cast is safe
+(`np.float32` into `double`), and rejected otherwise (`np.float64` into
+`float`); NumPy integers are checked by value like Python ints, so
+`np.int64(5)` fits an `int` parameter and `np.int64(2**31)` raises
+`OverflowError`.
 
 A wrong argument count, dtype or layout raises before anything is launched,
 with the parameter name in the message:
@@ -75,9 +87,13 @@ because the kernel would read them as a flat buffer. Make them contiguous with
 `xp.ascontiguousarray()` (a copy), or use an array view parameter (below),
 which carries the strides.
 
-The checks cost about 0.3 µs per argument. For tiny kernels called millions of
-times, `check_signature=False` disables them once the calls are known to be
-correct; the kernel then behaves like a raw `RawKernel`.
+The checks cost about 0.3 µs per argument: about 10 µs for a kernel with 29
+arguments, measured on an H100 node, where the launch itself costs about as
+much. That is negligible for kernels that run for 100 µs or more. For tiny
+kernels called millions of times, `check_signature=False` disables them once the
+calls are known to be correct (also needed for signatures the parser cannot
+read, e.g. with macros or pointers to pointers); the kernel then behaves like a
+raw `RawKernel`.
 
 ## Launch configuration
 
@@ -185,7 +201,10 @@ Pass extra include directories with `include_dirs=[...]` and NVRTC flags with
 | `<cunumpy/morton.cuh>` | Morton (Z-order) keys `cunumpy_morton_key2(x, y, ...)`, `_key3`, equal to `xp.algorithms.morton_keys` on the host |
 | `<cunumpy/random.cuh>` | counter-based random numbers `cunumpy_uniform(seed, stream, counter)`, `cunumpy_normal2(...)`, equal to `xp.rng.philox_uniform` on the host |
 
-`xp.cuda.cuda_include_dir()` returns their directory for use with other compilers.
+`<cunumpy/reduce.cuh>` and `<cunumpy/scan.cuh>` add warp and block reductions
+and prefix sums. [CUDA headers](cuda-headers.md) documents every function of
+these headers. `xp.cuda.cuda_include_dir()` returns their directory for use
+with other compilers.
 
 CuPy's disk cache is keyed on the source string and the options only, so
 editing an included header would normally *not* trigger a recompile.
@@ -193,7 +212,17 @@ editing an included header would normally *not* trigger a recompile.
 hashes their contents, and adds `-DCUNUMPY_INCLUDE_HASH=0x...` to the options,
 so a changed header produces a new cache entry. `kernel.included_headers` lists
 the resolved files and `kernel.compile_options()` the options actually used.
-System includes in angle brackets are not hashed.
+
+A quoted include is looked up like NVRTC does: relative to the including file
+(`source_dir` for the kernel source, the header's own directory for nested
+includes), then in `include_dirs` in order, then in CuNumpy's header directory.
+CuNumpy's own headers are tracked also when included in angle brackets
+(`#include <cunumpy/reduce.cuh>`), so upgrading CuNumpy with a changed header
+recompiles the kernels that use it. Other system includes in angle brackets,
+and includes that cannot be found (NVRTC reports those), are not hashed. The
+list is recomputed at every access, so it follows the files on disk; a source
+without includes never touches the file system. `xp.cuda.resolve_includes()`
+and `xp.cuda.include_hash()` are the two building blocks.
 
 ## Index macros and array views
 
@@ -224,7 +253,9 @@ An `ArrayND<T>` parameter takes a CuPy array of dtype `T` and `N` dimensions; it
 is passed by value as pointer, shape and strides (in elements). `a(i, j)`
 returns a reference, `a.shape[k]` and `a.size()` give the extents. Compiling
 with `-DCUNUMPY_BOUNDS_CHECK` (automatic in [debug mode](debugging.md)) checks
-every index against the shape and traps with a message on violation.
+every index against the shape and traps with a message on violation. The
+packed layout of the views, the contiguous `CArrayND<T>` variants and the view
+fields of a `CudaStruct` are described in [CUDA headers](cuda-headers.md).
 
 The index macros remove the boilerplate of thread index computation:
 

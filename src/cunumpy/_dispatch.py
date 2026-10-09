@@ -1,14 +1,10 @@
 """Pairs of host and CUDA kernels, chosen by the backend or by the arguments.
 
-A :class:`Kernel` holds a host kernel (a :class:`~cunumpy.kernels.PyccelKernel`, e.g. a
-Pyccel-compiled function) and, optionally, its 1:1 corresponding CUDA kernel
-(:class:`~cunumpy.kernels.CudaKernel`). It calls the host kernel on the NumPy backend and
-the CUDA kernel on the CuPy backend (or, with ``dispatch="arrays"``, the CUDA
-kernel for device arguments and the host kernel for host arguments), so a code
-base can port its kernels to CUDA one by one.
-
-:class:`KernelCatalog` collects such pairs from a package laid out with one
-folder per kernel::
+A :class:`~cunumpy.kernels.Kernel` holds a host kernel (a
+:class:`~cunumpy.kernels.PyccelKernel`) and, optionally, its CUDA counterpart
+(a :class:`~cunumpy.kernels.CudaKernel`), so a code base can port its kernels
+to CUDA one by one. :class:`~cunumpy.kernels.KernelCatalog` collects such
+pairs from a package with one folder per kernel (see :doc:`/kernels/dispatch`)::
 
     my_kernels/
     ├── __init__.py              # catalog = KernelCatalog.from_package(__name__)
@@ -56,27 +52,18 @@ _is_device_array = array_api_compat.is_cupy_array
 
 
 def _on_device(arg: Any) -> bool:
-    """Whether a kernel argument lives on the GPU.
-
-    A CuPy array, or a CUDA argument object (one with ``__cuda_args__``, e.g. a
-    :class:`~cunumpy.arguments.CudaArguments` or a struct value).
-    """
+    """Whether `arg` is a CuPy array or a CUDA argument object (``__cuda_args__``)."""
     return _is_device_array(arg) or callable(getattr(type(arg), "__cuda_args__", None))
 
 
-#: Longest name a Fortran compiler accepts. pyccel names the wrapper module of a
-#: host kernel module ``bind_c_<module>``, so a kernel module name longer than
-#: 63 - len("bind_c_") characters cannot be compiled with the Fortran backend.
+#: Longest name a Fortran compiler accepts. Pyccel names the wrapper module of a
+#: host kernel module ``bind_c_<module>``, so a module name longer than
+#: ``63 - len("bind_c_")`` characters cannot be compiled with the Fortran backend.
 FORTRAN_NAME_LIMIT = 63
 
 
 def _pyccel_stub_parameters(function: Any) -> list[str] | None:
-    """Parameter names of a pyccel-compiled function, from its ``.pyi`` stub.
-
-    pyccel writes ``__pyccel__/<module>.pyi`` next to the compiled extension
-    module; the compiled function itself has no Python signature. Returns
-    None if the stub or the function is not found.
-    """
+    """Read the parameters of a Pyccel-compiled function from its ``.pyi`` stub."""
     module = getattr(function, "__self__", None)  # extension functions: the module
     if not isinstance(module, ModuleType):
         name = getattr(function, "__module__", None)
@@ -100,7 +87,7 @@ def _pyccel_stub_parameters(function: Any) -> list[str] | None:
 
 
 def _import_loader(module: str, name: str) -> Callable[[], Callable[..., Any]]:
-    """Loads function `name` of `module` on first use (the import may fail)."""
+    """Return a loader of function `name` of `module` (imported on first use)."""
     return lambda: getattr(importlib.import_module(module), name)
 
 
@@ -112,7 +99,7 @@ def _fallback_loader(
     ),
     name: str,
 ) -> dict[str, Callable[[], Callable[..., Any]]]:
-    """`from_package`'s `host_fallback` for kernel `name`, as its NumPy implementation."""
+    """Return the `host_fallback` of kernel `name` as its ``"numpy"`` loader."""
     fallback = (
         host_fallback(name)
         if callable(host_fallback)
@@ -122,7 +109,7 @@ def _fallback_loader(
 
 
 def _positional_parameters(function: Any) -> list[str] | None:
-    """Names of the positional parameters of `function`, or None without a signature."""
+    """Return the positional parameter names of `function`, or None if unknown."""
     try:
         signature = inspect.signature(function)
     except (TypeError, ValueError):
@@ -135,7 +122,7 @@ def _positional_parameters(function: Any) -> list[str] | None:
 
 
 def _source_root(package: str) -> Path:
-    """The directory containing the top-level package of `package`."""
+    """Return the directory containing the top-level package of `package`."""
     top = importlib.import_module(package.partition(".")[0])
     if top.__file__ is not None:
         return Path(top.__file__).parent.parent
@@ -143,50 +130,67 @@ def _source_root(package: str) -> Path:
 
 
 class Kernel:
-    """A host kernel and its CUDA counterpart; calls the one matching the backend.
+    """A host kernel and its CUDA counterpart; a call runs the one matching the backend.
+
+    See :doc:`/kernels/dispatch` for the porting workflow.
 
     Parameters
     ----------
-    host_kernel : PyccelKernel | callable
-        The host kernel, called on the NumPy backend. A plain callable is
-        wrapped in a :class:`~cunumpy.kernels.PyccelKernel`.
-    cuda_kernel : CudaKernel | None
-        The CUDA kernel, called on the CuPy backend; None if it has not been
-        written yet.
-    name : str | None
-        Name of the kernel; defaults to the name of the host kernel.
-    missing_cuda : {"raise", "fallback"}
-        What happens on the CuPy backend if there is no CUDA kernel: ``"raise"``
-        raises ``NotImplementedError``; ``"fallback"`` calls the host kernel
-        through :class:`~cunumpy.kernels.PyccelKernel`, which copies the arrays to the
-        host and back at every call (a warning is emitted once).
-    cuda_path : str | Path | None
-        Where the CUDA kernel is expected, for the error message if it is missing.
-    host_options : Mapping[str, Any] | None
-        Keyword arguments for the :class:`~cunumpy.kernels.PyccelKernel` that wraps a
-        plain callable `host_kernel`, e.g. ``{"object_modules": ("my_pkg.",),
-        "outputs": (2,)}``; they matter for the fallback on the CuPy backend.
-        Not allowed if `host_kernel` already is a ``PyccelKernel``.
-    dispatch : {"backend", "arrays"}
-        How a call chooses between the two kernels. ``"backend"`` (default):
-        the CUDA kernel on the CuPy backend, the host kernel on the NumPy
-        backend. ``"arrays"``: the CUDA kernel if any top-level argument lives
-        on the GPU (a CuPy array, or a device-only argument object such as a
-        :class:`~cunumpy.arguments.CudaArguments` or a struct value), else the host
-        kernel, whatever the backend. Use ``"arrays"`` when a code deliberately
-        hands host arrays to kernels while CuPy is active (diagnostics, MPI
-        staging, CPU fallbacks): the host kernel then runs on the host arrays
-        instead of the CUDA kernel rejecting them.
+    host_kernel : PyccelKernel or callable
+        The host kernel. A plain callable is wrapped in a
+        :class:`~cunumpy.kernels.PyccelKernel`.
+    cuda_kernel : CudaKernel, optional
+        The CUDA kernel; None if it has not been written yet.
+    name : str, optional
+        Name of the kernel; by default the name of the host kernel.
+    missing_cuda : {"raise", "fallback"}, optional
+        Behavior on the device without CUDA kernel: ``"raise"`` (default)
+        raises ``NotImplementedError``; ``"fallback"`` calls the host kernel,
+        which copies the arrays to the host and back at every call (a
+        ``RuntimeWarning`` is emitted once).
+    cuda_path : str or Path, optional
+        Where the CUDA kernel is expected, named in the error if it is missing.
+    host_options : mapping, optional
+        Keyword arguments for the :class:`~cunumpy.kernels.PyccelKernel`
+        wrapping a plain callable, e.g. ``{"outputs": (2,)}``; they matter
+        for the fallback. Not allowed with a `host_kernel` that already is a
+        ``PyccelKernel``.
+    dispatch : {"backend", "arrays"}, optional
+        ``"backend"`` (default): the CUDA kernel on the CuPy backend, the
+        host kernel on the NumPy backend. ``"arrays"``: the CUDA kernel if
+        any top-level argument is on the GPU (a CuPy array or an object with
+        ``__cuda_args__``), else the host kernel called directly, whatever the
+        backend; for codes that hand host arrays to kernels while CuPy is
+        active (diagnostics, MPI staging).
+    test_args : str, optional
+        Dotted name of the test-arguments module of the kernel (see
+        :func:`~cunumpy.kernel_testing.check_parity`).
+
+    Raises
+    ------
+    ValueError
+        If `dispatch` or `missing_cuda` is unknown, or `host_options` is
+        given with a ``PyccelKernel``.
+    TypeError
+        If `cuda_kernel` is not a :class:`~cunumpy.kernels.CudaKernel`.
 
     Notes
     -----
     Both kernels take the same arguments, except that the CUDA kernel gets the
-    launch shape (``n_threads`` or ``grid``) and argument objects in their CUDA
-    form (see :class:`~cunumpy.arguments.CudaArguments` and :class:`~cunumpy.arguments.CudaStruct`).
-    Argument objects are passed as they are: the caller passes the host
-    argument object (e.g. a pyccel class) on the host and the CUDA one (a
+    launch size and argument objects in their CUDA form: the caller passes
+    the host object (e.g. a Pyccel class) on the host and the CUDA one (e.g. a
     :class:`~cunumpy.arguments.CudaStructArguments`) on the device; see
     :doc:`/kernels/arguments`.
+
+    Examples
+    --------
+    >>> def scale(x, out):
+    ...     out[:] = 2 * x
+    >>> kernel = xp.kernels.Kernel(scale)
+    >>> out = np.empty(3)
+    >>> kernel(np.arange(3.0), out)
+    >>> out
+    array([0., 2., 4.])
     """
 
     def __init__(
@@ -253,72 +257,78 @@ class Kernel:
         ) = None,
         **cuda_options: Any,
     ) -> Kernel:
-        """The kernel of one kernel folder, the unit of :meth:`KernelCatalog.from_package`.
+        """Build the kernel of one kernel folder.
 
-        `package` is the dotted name of the folder ``<name>``. Every file of the
-        folder that defines a version of the kernel (a function ``<name>``, or
-        the ``__global__`` function ``<name>``) is one implementation:
-
-        * ``<name><host_suffix>.py``: ``"pyccel"``, compiled with `compile_host`
-          (as it is without one), and ``"python"``, the same file uncompiled;
-        * ``<name>_numba.py``: ``"numba"`` (the function decorated there, e.g.
-          with ``numba.njit``; unavailable if the import fails);
-        * ``<name>_numpy.py``: ``"numpy"``;
-        * ``<name><cuda_suffix>``: the CUDA kernel.
-
-        The host implementations form a :class:`~cunumpy.kernels.HostImplementations`:
-        a call runs the one set with :func:`~cunumpy.kernels.set_host_kernel_implementation`,
-        or by default the first available of pyccel, numba and NumPy. The
-        folder's own ``__init__.py`` can declare its kernel with this method, so
-        that the kernel is imported from where it is written::
-
-            # my_sim/kernels/push/__init__.py
-            kernel = xp.kernels.Kernel.from_folder(
-                __name__, host_suffix="_pyccel", compile_host=compile, dispatch="arrays"
-            )
-
-            # anywhere in the code
-            from my_sim.kernels.push import kernel as push
-
-        Nothing is compiled here: the CUDA source is parsed, the host module
-        imported.
+        Each version of ``<name>`` in the folder is an implementation:
+        ``<name><host_suffix>.py`` gives ``"pyccel"`` (compiled with
+        `compile_host` on first use) and ``"python"`` (uncompiled),
+        ``<name>_numba.py`` gives ``"numba"``, ``<name>_numpy.py`` gives
+        ``"numpy"`` and ``<name><cuda_suffix>`` the CUDA kernel. The host ones
+        form a :class:`~cunumpy.kernels.HostImplementations`. Nothing is
+        compiled here: the host module is imported, the CUDA source parsed.
 
         Parameters
         ----------
         package : str
             Dotted name of the kernel folder (``__name__`` in its ``__init__.py``).
-        host_suffix, cuda_suffix, test_args_suffix, check_name_length
-            As for :meth:`KernelCatalog.from_package`.
-        missing_cuda, host_options, dispatch
-            Passed on to :class:`Kernel`.
-        outputs : Sequence[int | str] | "annotations" | None
-            The arguments the host kernel writes to (names or indices, see
-            :class:`~cunumpy.kernels.PyccelKernel`), so that only those arrays are
-            copied back to the device on the fallback path. ``"annotations"``
-            reads them from the annotations of the host function: every
-            parameter that is not ``Final`` or a scalar is an output (see
-            :func:`~cunumpy.kernels.outputs_from_annotations`). A value in
-            `host_options` takes precedence.
-        include_dirs : Sequence[str | Path] | None
-            Include directories of the CUDA kernel, in addition to the folder
-            itself; by default the source root of the top-level package (the
-            directory containing it).
-        compile_host : Callable | None
-            Returns the compiled form of the ``<name><host_suffix>`` module
-            (cunumpy does not compile anything itself, e.g. a wrapper around
-            ``pyccel.epyccel`` with a cache), called on first use of the pyccel
-            implementation; if it raises, that implementation is unavailable.
-        extra_implementations : Mapping | None
-            Loaders of host implementations that are not files of the folder,
-            by implementation name, e.g. ``{"numpy": lambda: push_numpy}``.
+        host_suffix : str, optional
+            Module name suffix of the host kernel.
+        cuda_suffix : str, optional
+            File name suffix of the CUDA kernel.
+        test_args_suffix : str or None, optional
+            Module name suffix of the test arguments; None disables them.
+        check_name_length : bool, optional
+            Warn if the module name is too long for Pyccel's Fortran backend.
+        missing_cuda : {"raise", "fallback"}, optional
+            Passed on to :class:`~cunumpy.kernels.Kernel`.
+        host_options : mapping, optional
+            Passed on to :class:`~cunumpy.kernels.Kernel`.
+        outputs : sequence of int or str, or "annotations", optional
+            The arguments the host kernel writes to, copied back to the device
+            on the fallback path. ``"annotations"`` takes every parameter that
+            is not ``Final`` or a scalar (see
+            :func:`~cunumpy.kernels.outputs_from_annotations`). An
+            ``"outputs"`` entry of `host_options` takes precedence.
+        include_dirs : sequence of str or Path, optional
+            Include directories of the CUDA kernel besides the folder; by
+            default the directory containing the top-level package.
+        dispatch : {"backend", "arrays"}, optional
+            Passed on to :class:`~cunumpy.kernels.Kernel`.
+        compile_host : callable, optional
+            Returns the compiled form of the host module (e.g. a wrapper of
+            ``pyccel.epyccel`` with a cache); cunumpy compiles nothing itself.
+            If it raises, the ``"pyccel"`` implementation is unavailable.
+        extra_implementations : mapping, optional
+            Loaders of further host implementations by name, e.g.
+            ``{"numpy": lambda: push_numpy}``.
         **cuda_options
-            Passed on to :meth:`CudaKernel.from_file`, e.g. ``block_size`` or
-            ``n_threads_from``.
+            Passed on to :meth:`CudaKernel.from_file
+            <cunumpy.kernels.CudaKernel.from_file>`, e.g. ``block_size``.
+
+        Returns
+        -------
+        Kernel
+            The kernel of the folder.
 
         Raises
         ------
+        ModuleNotFoundError
+            If `package` is not a package.
         FileNotFoundError
             If the folder has no host kernel module.
+
+        See Also
+        --------
+        KernelCatalog.from_package : All kernel folders of a package.
+
+        Examples
+        --------
+        >>> # my_sim/kernels/push/__init__.py
+        >>> kernel = xp.kernels.Kernel.from_folder(  # doctest: +SKIP
+        ...     __name__, host_suffix="_pyccel", dispatch="arrays"
+        ... )
+        >>> kernel.implementations  # doctest: +SKIP
+        ('pyccel', 'python', 'cuda')
         """
         spec = importlib.util.find_spec(package)
         if spec is None or not spec.submodule_search_locations:
@@ -425,10 +435,7 @@ class Kernel:
 
     @property
     def missing_cuda(self) -> str:
-        """What happens on the CuPy backend without CUDA kernel.
-
-        ``"raise"`` or ``"fallback"``, see :class:`Kernel`.
-        """
+        """Behavior on the device without CUDA kernel: ``"raise"`` or ``"fallback"``."""
         return self._missing_cuda
 
     @property
@@ -443,11 +450,7 @@ class Kernel:
 
     @property
     def test_args_module(self) -> str | None:
-        """Dotted name of the module with the test arguments of this kernel, or None.
-
-        Set by :meth:`KernelCatalog.from_package` for a kernel folder that
-        contains ``<name>_test_args.py``; see :func:`cunumpy.kernel_testing.check_parity`.
-        """
+        """Dotted name of the test-arguments module of the kernel, or None."""
         return self._test_args_module
 
     @property
@@ -458,13 +461,16 @@ class Kernel:
         return self._test_args
 
     def host_parameters(self) -> list[str] | None:
-        """The parameter names of the host kernel, or None if they are unknown.
+        """Return the parameter names of the host kernel.
 
-        Read from the Python function (for a :class:`~cunumpy.kernels.CompiledHostKernel`,
-        its uncompiled Python version), or, for a pyccel-compiled function
-        without a Python signature, from the ``__pyccel__/<module>.pyi`` stub
-        pyccel writes next to the extension module. None if neither is
-        available.
+        Read from the Python function (the uncompiled version of a
+        :class:`~cunumpy.kernels.CompiledHostKernel`), or else from the
+        ``__pyccel__/<module>.pyi`` stub Pyccel writes next to a compiled module.
+
+        Returns
+        -------
+        list of str or None
+            The names, or None if neither source is available.
         """
         function = self._host_kernel.kernel
         if isinstance(function, (CompiledHostKernel, HostImplementations)):
@@ -477,13 +483,12 @@ class Kernel:
     def check_signature(self) -> None:
         """Check that all implementations of the kernel take the same parameters.
 
-        Compares the parameter names of the host function with those of the
-        parsed ``__global__`` signature, with those of the other host
-        implementations of a :class:`~cunumpy.kernels.HostImplementations` (numba,
-        NumPy; nothing is compiled, an implementation that fails to import is
-        skipped) and with the fallback of a :class:`~cunumpy.kernels.CompiledHostKernel`.
-        A side is skipped without a CUDA kernel, without a parsed CUDA signature
-        (``check_signature=False``), or without a Python signature.
+        Compares the host parameter names with the parsed ``__global__``
+        signature, the numba and NumPy implementations of a
+        :class:`~cunumpy.kernels.HostImplementations` (nothing is compiled;
+        one that fails to import is skipped) and the fallback of a
+        :class:`~cunumpy.kernels.CompiledHostKernel`. A side without a
+        signature is skipped.
 
         Raises
         ------
@@ -520,11 +525,11 @@ class Kernel:
                 )
 
     @property
-    def implementations(self) -> tuple[str, ...]:
-        """Names of the implementations, e.g. ``("pyccel", "numpy", "python", "cuda")``.
+    def implementations(self) -> tuple[str, ...]:  # numpydoc ignore=RT01
+        """The names of the implementations, e.g. ``("pyccel", "python", "cuda")``.
 
-        A host kernel that is not a :class:`~cunumpy.kernels.HostImplementations` counts
-        as ``"host"``.
+        A host kernel that is not a :class:`~cunumpy.kernels.HostImplementations`
+        counts as ``"host"``.
         """
         function = self._host_kernel.kernel
         host = (
@@ -533,16 +538,33 @@ class Kernel:
         return (*host, "cuda") if self._cuda_kernel is not None else host
 
     def selected(self, device: bool = False) -> str:
-        """The implementation a call with host (or `device`) arguments runs now.
+        """Return the implementation a call runs now, e.g. to rule out a slow path.
 
-        For host arguments: the setting of
-        :func:`~cunumpy.kernels.set_host_kernel_implementation` or the default (loads it), or
-        ``"host"`` for a host kernel that is not a
-        :class:`~cunumpy.kernels.HostImplementations`. For device arguments ``"cuda"``,
-        or ``"host"`` if there is no CUDA kernel and ``missing_cuda="fallback"``.
-        Explicit CUDA selection rejects missing CUDA implementations with
-        ``LookupError``, including when host fallback is configured.
-        Useful to check that a run does not use a slow path.
+        Parameters
+        ----------
+        device : bool, optional
+            Ask for device arguments instead of host arguments.
+
+        Returns
+        -------
+        str
+            For host arguments the implementation chosen by
+            :func:`~cunumpy.kernels.set_host_kernel_implementation` or the
+            default (loaded now), or ``"host"`` for a plain host kernel. For
+            device arguments ``"cuda"``, or ``"host"`` for the fallback.
+
+        Raises
+        ------
+        LookupError
+            With `device`, if CUDA is explicitly selected but missing.
+        NotImplementedError
+            With `device`, if there is no CUDA kernel and
+            ``missing_cuda="raise"``.
+
+        Examples
+        --------
+        >>> xp.kernels.Kernel(lambda x: None, name="noop").selected()
+        'host'
         """
         if device:
             return "cuda" if self._device_kernel() is self._cuda_kernel else "host"
@@ -552,9 +574,15 @@ class Kernel:
         )
 
     def get_kernel(self) -> PyccelKernel | CudaKernel:
-        """The kernel for the active backend.
+        """Return the kernel for the active backend.
 
         Call this once at setup to fail early if a CUDA kernel is missing.
+
+        Returns
+        -------
+        PyccelKernel or CudaKernel
+            The host kernel on the NumPy backend; on the CuPy backend the CUDA
+            kernel, or the host kernel with ``missing_cuda="fallback"``.
 
         Raises
         ------
@@ -616,18 +644,27 @@ class Kernel:
         shared_mem: int = 0,
         stream: Any = None,
     ) -> Any:
-        """Call the kernel for the active backend.
+        """Call the host or CUDA kernel, as chosen by `dispatch`.
 
         Parameters
         ----------
         *args
-            Kernel arguments, as the selected kernel takes them.
+            Kernel arguments, passed as they are.
         n_threads, grid, block, shared_mem, stream
             Launch configuration of the CUDA kernel, see
             :meth:`CudaKernel.__call__ <cunumpy.kernels.CudaKernel.__call__>`;
-            Thread counts are inferred from array shapes by default;
-            `n_threads` or `grid` overrides that choice.
-            Ignored by the host kernel.
+            by default inferred from the arguments. Ignored by the host kernel.
+
+        Returns
+        -------
+        object
+            What the selected kernel returns.
+
+        Raises
+        ------
+        ValueError
+            If the CUDA kernel runs without `n_threads`, `grid` or
+            ``n_threads_from``.
         """
         if self._dispatch == "arrays":
             on_device = any(_on_device(arg) for arg in args)
@@ -667,15 +704,22 @@ class Kernel:
 
 
 class KernelCatalog(Mapping):
-    """Kernels by name.
+    """A read-only mapping from names to :class:`~cunumpy.kernels.Kernel` objects.
 
-    A read-only mapping from names to :class:`Kernel` objects, usually built with
-    :meth:`from_package`; :meth:`register` adds kernels one by one.
+    Usually built with :meth:`from_package`; :meth:`register` adds kernels one
+    by one. ``str(catalog)`` is :meth:`summary`. See :doc:`/kernels/dispatch`.
 
     Parameters
     ----------
-    kernels : Mapping[str, Kernel] | None
+    kernels : mapping of str to Kernel, optional
         Initial kernels.
+
+    Examples
+    --------
+    >>> kernel = xp.kernels.Kernel(lambda x: None, name="push")
+    >>> catalog = xp.kernels.KernelCatalog({"push": kernel})
+    >>> print(catalog)
+    CUDA kernels: 0 of 1 (missing: push)
     """
 
     def __init__(self, kernels: Mapping[str, Kernel] | None = None) -> None:
@@ -714,67 +758,68 @@ class KernelCatalog(Mapping):
     ) -> KernelCatalog:
         """Collect the kernels of a package with one folder per kernel.
 
-        For every subfolder ``<name>`` of the package that contains the module
-        ``<name><host_suffix>.py``, the function ``<name>`` of that module is the
-        host kernel, and ``<name><cuda_suffix>`` in the same folder, if present,
-        is the CUDA kernel (with a ``__global__`` function ``<name>``). Other
-        ``__global__`` functions in that file are ignored by the catalog; load
-        them with :meth:`CudaKernel.all_from_file
-        <cunumpy.kernels.CudaKernel.all_from_file>`.
+        Every subfolder ``<name>`` containing ``<name><host_suffix>.py`` gives
+        a kernel (see :meth:`Kernel.from_folder
+        <cunumpy.kernels.Kernel.from_folder>`): the function ``<name>`` of that
+        module is the host kernel, the ``__global__`` function ``<name>`` of
+        ``<name><cuda_suffix>``, if present, the CUDA kernel. Other
+        ``__global__`` functions are ignored; load them with
+        :meth:`CudaKernel.all_from_file <cunumpy.kernels.CudaKernel.all_from_file>`.
 
         Parameters
         ----------
         package : str
             Full name of the package, e.g. ``__name__`` in its ``__init__.py``.
-        host_suffix : str
+        host_suffix : str, optional
             Module name suffix of the host kernels.
-        cuda_suffix : str
+        cuda_suffix : str, optional
             File name suffix of the CUDA kernels.
-        test_args_suffix : str | None
-            Module name suffix of the test arguments: ``<name><test_args_suffix>.py``
-            in the kernel's folder, if present, is recorded as
-            :attr:`Kernel.test_args_module` (imported only when a test asks for
-            it, see :func:`cunumpy.kernel_testing.check_parity`). None disables this.
-        check_name_length : bool
-            Warn about a kernel whose module name is too long for the Fortran
-            backend of pyccel: the wrapper module ``bind_c_<name><host_suffix>``
-            must fit :data:`FORTRAN_NAME_LIMIT` (63) characters, so with the
-            default suffix a kernel name has at most 48 characters.
-        missing_cuda : {"raise", "fallback"}
-            Passed on to every :class:`Kernel`.
-        host_options : Mapping | Callable[[str], Mapping] | None
-            Keyword arguments for the :class:`~cunumpy.kernels.PyccelKernel` wrapping each
-            host kernel (see :class:`Kernel`): the same for all kernels, or a
-            function of the kernel name, e.g. to declare per-kernel ``outputs``.
-        outputs : Sequence[int | str] | "annotations" | Callable | None
-            The arguments every host kernel writes to, or ``"annotations"`` to
-            read them from the annotations of each host function, or a function
-            of the kernel name returning either (see :meth:`Kernel.from_folder`).
-        include_dirs : Sequence[str | Path] | None
-            Include directories of the CUDA kernels, in addition to each
-            kernel's own folder. By default the source root of the top-level
-            package (the directory containing it), so that a kernel in
-            ``my_pkg.kernels`` can ``#include "my_pkg/common.cuh"``.
-        dispatch : {"backend", "arrays"}
-            Passed on to every :class:`Kernel`: choose the CUDA kernel by the
-            active backend or by where the arguments live.
-        compile_host : Callable | None
-            Compiles a host kernel module, e.g.
-            a function wrapping ``pyccel.epyccel`` (cunumpy does not compile
-            anything itself). Each host kernel then is a
-            :class:`~cunumpy.kernels.CompiledHostKernel`: compiled on its first
-            call, falling back to
-            `host_fallback`, or to the uncompiled Python function with a
-            warning, if compilation fails. By default the Python function is
-            called as it is.
-        host_fallback : Mapping | Callable | None
-            The fallback per kernel name, for a failed compilation (e.g. a
-            vectorized NumPy implementation with the same arguments): a mapping
-            from names to callables, or a function of the name returning a
-            callable or None.
+        test_args_suffix : str or None, optional
+            Module name suffix of the test arguments: a module
+            ``<name><test_args_suffix>.py`` in a kernel folder is recorded as
+            :attr:`Kernel.test_args_module
+            <cunumpy.kernels.Kernel.test_args_module>`. None disables this.
+        check_name_length : bool, optional
+            Warn about a kernel whose Pyccel Fortran wrapper module
+            ``bind_c_<name><host_suffix>`` exceeds 63 characters (kernel names
+            of at most 48 characters with the default suffix).
+        missing_cuda : {"raise", "fallback"}, optional
+            Passed on to every :class:`~cunumpy.kernels.Kernel`.
+        host_options : mapping or callable, optional
+            :class:`~cunumpy.kernels.PyccelKernel` options of the host kernels,
+            the same for all or a function of the kernel name.
+        outputs : sequence, "annotations" or callable, optional
+            The arguments every host kernel writes to, or a function of the
+            kernel name returning them (see :meth:`Kernel.from_folder
+            <cunumpy.kernels.Kernel.from_folder>`).
+        include_dirs : sequence of str or Path, optional
+            Include directories of the CUDA kernels besides each kernel's
+            folder; by default the directory containing the top-level package,
+            so ``#include "my_pkg/common.cuh"`` works.
+        dispatch : {"backend", "arrays"}, optional
+            Passed on to every :class:`~cunumpy.kernels.Kernel`.
+        compile_host : callable, optional
+            Compiles a host kernel module (e.g. a wrapper of ``pyccel.epyccel``);
+            cunumpy compiles nothing itself. Each host kernel then is compiled
+            on first use and falls back to `host_fallback`, or to the Python
+            function with a warning, if compilation fails.
+        host_fallback : mapping or callable, optional
+            The fallback for a failed compilation by kernel name (e.g. a
+            vectorized NumPy version): a mapping or a function of the name.
         **cuda_options
-            Passed on to :meth:`CudaKernel.from_file`, e.g. ``block_size`` or
-            ``structs``.
+            Passed on to :meth:`CudaKernel.from_file
+            <cunumpy.kernels.CudaKernel.from_file>`, e.g. ``block_size``.
+
+        Returns
+        -------
+        KernelCatalog
+            The kernels, by folder name.
+
+        Examples
+        --------
+        >>> # my_kernels/__init__.py
+        >>> catalog = xp.kernels.KernelCatalog.from_package(__name__)  # doctest: +SKIP
+        >>> catalog["push"](x, out, n_threads=len(x))  # doctest: +SKIP
         """
         root = Path(importlib.import_module(package).__file__).parent
         if include_dirs is None:
@@ -804,7 +849,25 @@ class KernelCatalog(Mapping):
         return cls(kernels)
 
     def register(self, kernel: Kernel, name: str | None = None) -> Kernel:
-        """Add a kernel under `name` (by default its own name) and return it."""
+        """Add a kernel to the catalog.
+
+        Parameters
+        ----------
+        kernel : Kernel
+            The kernel.
+        name : str, optional
+            Its name in the catalog; by default the kernel's own name.
+
+        Returns
+        -------
+        Kernel
+            `kernel` itself.
+
+        Raises
+        ------
+        KeyError
+            If a kernel of that name is already registered.
+        """
         if not isinstance(kernel, Kernel):
             raise TypeError(f"expected a Kernel, got {type(kernel).__name__}")
         name = kernel.name if name is None else name
@@ -831,12 +894,12 @@ class KernelCatalog(Mapping):
         return self.summary()
 
     def summary(self, max_missing: int = 10) -> str:
-        """One line on the porting status, e.g. for a ``--status`` command.
+        """Return one line on the porting status, e.g. for a ``--status`` command.
 
         Parameters
         ----------
-        max_missing : int
-            How many of the kernels without CUDA kernel to name; the rest is
+        max_missing : int, optional
+            How many kernels without CUDA kernel to name (default 10); the rest is
             shortened to ``...``.
 
         Returns
@@ -856,39 +919,43 @@ class KernelCatalog(Mapping):
 
     @property
     def with_cuda(self) -> list[str]:
-        """Names of the kernels with a CUDA kernel."""
+        """The names of the kernels with a CUDA kernel."""
         return [name for name, kernel in self._kernels.items() if kernel.has_cuda]
 
     @property
     def without_cuda(self) -> list[str]:
-        """Names of the kernels without a CUDA kernel, i.e. still to port."""
+        """The names of the kernels without a CUDA kernel, i.e. still to port."""
         return [name for name, kernel in self._kernels.items() if not kernel.has_cuda]
 
     def parity_cases(self) -> list[tuple[str, Kernel]]:
-        """The ``(name, kernel)`` pairs of the kernels that have a CUDA kernel.
+        """Return the ``(name, kernel)`` pairs of the kernels with a CUDA kernel.
 
         For a parametrised parity test of the whole catalog with
-        :func:`cunumpy.kernel_testing.assert_kernels_agree`::
+        :func:`~cunumpy.kernel_testing.assert_kernels_agree`::
 
             @pytest.mark.parametrize("name, kernel", catalog.parity_cases())
             def test_parity(name, kernel):
                 assert_kernels_agree(kernel, make_args[name], n_threads=1000)
+
+        Returns
+        -------
+        list of tuple of (str, Kernel)
+            The pairs, in catalog order.
         """
         return [
             (name, kernel) for name, kernel in self._kernels.items() if kernel.has_cuda
         ]
 
     def check_signatures(self) -> None:
-        """Check every kernel's host and CUDA parameters (:meth:`Kernel.check_signature`).
+        """Check the parameters of every kernel, e.g. in a unit test.
 
-        A cheap test for a ported package: call it once, e.g. in a unit test,
-        to catch a CUDA kernel whose parameters are missing, extra or in
-        another order than those of its host kernel.
+        Runs :meth:`Kernel.check_signature
+        <cunumpy.kernels.Kernel.check_signature>` on every kernel.
 
         Raises
         ------
         ValueError
-            Listing every kernel whose two signatures differ.
+            Listing every kernel whose implementations take different parameters.
         """
         problems = []
         for kernel in self._kernels.values():
@@ -905,21 +972,20 @@ class KernelCatalog(Mapping):
     def compile_all(self, jobs: int | None = 1) -> list[str]:
         """Compile all CUDA kernels now, e.g. at setup instead of in the first step.
 
-        Compilation is cached on disk by CuPy, so after the first run this mostly
-        loads the compiled kernels.
+        CuPy caches compilations on disk, so later runs mostly load them. All
+        kernels are compiled even if one fails; the first error is raised
+        afterwards.
 
         Parameters
         ----------
-        jobs : int | None
-            Number of kernels compiled at a time. With ``jobs > 1`` the kernels
-            are compiled in threads (NVRTC compilation releases the GIL, and
-            all threads use the current device); None uses the number of CPUs.
-            All kernels are compiled even if one fails; the first error is
-            raised afterwards.
+        jobs : int or None, optional
+            Number of kernels compiled at a time, in threads (NVRTC releases
+            the GIL; all threads use the current device); None uses the number
+            of CPUs.
 
         Returns
         -------
-        list[str]
+        list of str
             Names of the compiled kernels.
 
         Raises

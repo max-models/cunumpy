@@ -1,14 +1,12 @@
 """MPI with NumPy or CuPy arrays, and serial runs without MPI.
 
-:func:`get_mpi` returns ``mpi4py.MPI`` when the process was started by an MPI
-launcher (:func:`launched_under_mpi`, decided from the environment without
-importing mpi4py), and :class:`SerialMPI` otherwise: a stand-in whose
-``COMM_WORLD`` is a :class:`SerialComm` of size 1, so that the same code runs
+``get_mpi`` returns ``mpi4py.MPI`` when the process was started by an MPI
+launcher (``launched_under_mpi``, decided from the environment without
+importing mpi4py), and ``SerialMPI`` otherwise: a stand-in whose
+``COMM_WORLD`` is a ``SerialComm`` of size 1, so that the same code runs
 serially without starting MPI. These come from the `maybempi
 <https://max-models.github.io/maybempi/>`_ package and are re-exported here;
-``MAYBEMPI=1``/``0`` overrides the launcher detection::
-
-    import cunumpy as xp
+``MAYBEMPI=1``/``0`` (``OVERRIDE_VARIABLE``) overrides the launcher detection::
 
     MPI = xp.mpi.get_mpi()
     comm = MPI.COMM_WORLD
@@ -17,10 +15,10 @@ serially without starting MPI. These come from the `maybempi
 
 :func:`mpi_buffer` hands an array to mpi4py: the device array itself when the
 MPI library is CUDA-aware, a host copy otherwise; :func:`mpi_is_cuda_aware`
-finds out which. :func:`local_rank` is the rank of this process on its node
+finds out which. ``local_rank`` is the rank of this process on its node
 (to pick a GPU, see :func:`cunumpy.cuda.bind_local_device`).
 
-mpi4py is imported only by the functions that need it.
+mpi4py is imported only by the functions that need it. See :doc:`/guides/mpi`.
 """
 
 from maybempi import (

@@ -1,31 +1,11 @@
 """Reproducible random numbers for MPI programs on either backend.
 
-A simulation that draws random numbers in many places (initial loading,
-injection, collisions) is reproducible only if every draw comes from a seeded
-generator, and an MPI run needs a different stream on every rank.
-:data:`random_streams` is one generator per process and backend for that::
-
-    import cunumpy as xp
-
-    xp.rng.random_streams.seed(42, rank=comm.Get_rank())  # once, at start-up
-    v = xp.rng.random_streams.normal(0.0, v_th, (n, 3))    # anywhere afterwards
-    rng = xp.rng.random_streams.generator()               # the Generator itself
-
-Each rank draws the stream ``(seed, rank)`` (a NumPy ``SeedSequence`` with the
-rank as spawn key), so a run with the same seed and the same number of ranks
-reproduces its results exactly, and the ranks' streams are independent. The
-generator of each backend is created on first use from the same stream: a
-``numpy.random.Generator`` with the chosen bit generator, or a
-``cupy.random.Generator`` (CuPy's default bit generator).
-
-Components with a seed of their own (e.g. a source configured with a ``seed``)
-get a separate generator with :meth:`RandomStreams.make_generator`; without one
-they share the process generator. Without :meth:`~RandomStreams.seed`, or with
-``seed(None)``, the stream is seeded from the operating system.
-
-The draw functions work with NumPy and CuPy generators alike; CuPy's
-``Generator`` lacks some of NumPy's methods, and the missing ones are derived
-from ``random`` and ``standard_normal``.
+:data:`random_streams` is one seeded generator per process and backend. Each
+rank draws the stream ``(seed, rank)`` (a NumPy ``SeedSequence`` with the rank
+as spawn key), so the same seed and number of ranks reproduce a run exactly
+and the ranks' streams are independent. The generator of each backend is
+created on first use from that stream. See :doc:`/guides/mpi` for the use in
+MPI programs.
 """
 
 from __future__ import annotations
@@ -45,7 +25,26 @@ _BACKEND_KEYS = {"numpy": 0, "cupy": 1}
 
 
 class RandomStreams:
-    """One seeded random generator per process and backend; see :mod:`cunumpy.rng`."""
+    """One seeded random generator per process and backend.
+
+    Without :meth:`seed`, or with ``seed(None)``, the stream is seeded from the
+    operating system. The draw methods work with NumPy and CuPy generators
+    alike; :data:`random_streams` is the process-wide instance, and a new
+    instance is independent of it.
+
+    See Also
+    --------
+    get_rng : A fresh, unshared generator for the active backend.
+
+    Examples
+    --------
+    >>> streams = xp.rng.RandomStreams()
+    >>> streams.seed(42, rank=1)
+    >>> streams
+    RandomStreams(entropy=42, spawn_key=(1,), bit_generator='PCG64')
+    >>> streams.uniform(0.0, 1.0, 3)
+    array([0.57002868, 0.9724905 , 0.50377011])
+    """
 
     def __init__(self) -> None:
         self._sequence: np.random.SeedSequence | None = None
@@ -69,23 +68,27 @@ class RandomStreams:
         """Seed all draws of this process with the stream ``(value, rank)``.
 
         Replaces the generators of all backends. NumPy's global random state
-        (and, on the CuPy backend, CuPy's) is seeded from the same stream, for
-        code that still calls ``np.random.*`` or ``xp.random.*`` directly.
+        (and CuPy's on the CuPy backend) is seeded from the same stream, for
+        code that calls ``np.random.*`` directly.
 
         Parameters
         ----------
-        value : int | None
+        value : int or None
             The seed; None seeds from the operating system.
-        rank : int
+        rank : int, optional
             MPI rank of this process, so that ranks draw independent streams.
-        bit_generator : str | None
+        bit_generator : str, optional
             The NumPy bit generator, one of :data:`BIT_GENERATORS`; ``PCG64``
-            (NumPy's default) if None. CuPy always uses its own default.
+            by default. CuPy always uses its own default.
 
         Raises
         ------
         ValueError
             For an unknown `bit_generator`.
+
+        Examples
+        --------
+        >>> xp.rng.random_streams.seed(42, rank=comm.Get_rank())  # doctest: +SKIP
         """
         if bit_generator is not None and bit_generator not in BIT_GENERATORS:
             raise ValueError(
@@ -114,7 +117,23 @@ class RandomStreams:
         )
 
     def generator(self, backend: str | None = None) -> Any:
-        """The process generator of `backend` (the active backend by default)."""
+        """Return the process generator of a backend, created on first use.
+
+        Parameters
+        ----------
+        backend : {"numpy", "cupy"}, optional
+            The backend; the active one by default.
+
+        Returns
+        -------
+        numpy.random.Generator or cupy.random.Generator
+            The shared generator of this process and backend.
+
+        Raises
+        ------
+        ValueError
+            For a `backend` other than ``"numpy"`` or ``"cupy"``.
+        """
         backend = get_backend() if backend is None else backend
         if backend not in _BACKEND_KEYS:
             raise ValueError(f"backend must be 'numpy' or 'cupy', got {backend!r}")
@@ -135,15 +154,20 @@ class RandomStreams:
         seed: int | None = None,
         backend: str | None = None,
     ) -> Any:
-        """A generator for a component: its own if it has a seed, else the process one.
+        """Return a generator for a component: its own if it has a seed, else the shared one.
 
         Parameters
         ----------
-        seed : int | None
-            The component's own seed; None shares :meth:`generator`.
-        backend : str | None
+        seed : int, optional
+            The component's own seed; None returns :meth:`generator`.
+        backend : {"numpy", "cupy"}, optional
             ``"numpy"`` for a component that draws on the host whatever the
             active backend; the active backend by default.
+
+        Returns
+        -------
+        numpy.random.Generator or cupy.random.Generator
+            A new generator seeded with `seed`, or the process generator.
         """
         if seed is None:
             return self.generator(backend)
@@ -158,7 +182,20 @@ class RandomStreams:
         return self.generator() if rng is None else rng
 
     def random(self, size: int | tuple[int, ...] | None = None, rng: Any = None) -> Any:
-        """Uniform samples in [0, 1) from `rng` (the process generator by default)."""
+        """Draw uniform samples in [0, 1).
+
+        Parameters
+        ----------
+        size : int or tuple of int, optional
+            Output shape; None gives a scalar.
+        rng : Generator, optional
+            The generator to draw from; the process generator by default.
+
+        Returns
+        -------
+        array or float
+            On the backend of the generator.
+        """
         return self._rng(rng).random(size=size)
 
     def standard_normal(
@@ -166,7 +203,20 @@ class RandomStreams:
         size: int | tuple[int, ...] | None = None,
         rng: Any = None,
     ) -> Any:
-        """Standard normal samples from `rng` (the process generator by default)."""
+        """Draw standard normal samples.
+
+        Parameters
+        ----------
+        size : int or tuple of int, optional
+            Output shape; None gives a scalar.
+        rng : Generator, optional
+            The generator to draw from; the process generator by default.
+
+        Returns
+        -------
+        array or float
+            On the backend of the generator.
+        """
         return self._rng(rng).standard_normal(size=size)
 
     def normal(
@@ -176,7 +226,24 @@ class RandomStreams:
         size: int | tuple[int, ...] | None = None,
         rng: Any = None,
     ) -> Any:
-        """Normal samples from `rng` (the process generator by default)."""
+        """Draw normal samples, also from CuPy generators without ``normal``.
+
+        Parameters
+        ----------
+        loc : float or array, optional
+            Mean.
+        scale : float or array, optional
+            Standard deviation.
+        size : int or tuple of int, optional
+            Output shape; None gives a scalar.
+        rng : Generator, optional
+            The generator to draw from; the process generator by default.
+
+        Returns
+        -------
+        array or float
+            On the backend of the generator.
+        """
         rng = self._rng(rng)
         if hasattr(rng, "normal"):
             return rng.normal(loc=loc, scale=scale, size=size)
@@ -189,7 +256,22 @@ class RandomStreams:
         size: int | tuple[int, ...] | None = None,
         rng: Any = None,
     ) -> Any:
-        """Uniform samples in [low, high) from `rng` (the process generator by default)."""
+        """Draw uniform samples in [low, high), also from CuPy generators without ``uniform``.
+
+        Parameters
+        ----------
+        low, high : float or array, optional
+            The bounds, 0 and 1 by default.
+        size : int or tuple of int, optional
+            Output shape; None gives a scalar.
+        rng : Generator, optional
+            The generator to draw from; the process generator by default.
+
+        Returns
+        -------
+        array or float
+            On the backend of the generator.
+        """
         rng = self._rng(rng)
         if hasattr(rng, "uniform"):
             return rng.uniform(low=low, high=high, size=size)
@@ -201,11 +283,25 @@ random_streams = RandomStreams()
 
 
 def get_rng(seed: int | None = None) -> Any:
-    """Return a random Generator matching the active backend.
+    """Return a new random generator for the active backend.
 
-    NumPy and CuPy both provide `default_rng(seed)`, returning a
-    `Generator` with a largely-compatible distribution API, but picking the
-    right one requires branching on the backend -- this does that for you.
+    ``default_rng(seed)`` of NumPy or CuPy. The APIs are similar, but the same
+    seed does not give the same numbers on both backends.
+
+    Parameters
+    ----------
+    seed : int, optional
+        The seed; None seeds from the operating system.
+
+    Returns
+    -------
+    numpy.random.Generator or cupy.random.Generator
+        A generator independent of :data:`random_streams`.
+
+    Examples
+    --------
+    >>> xp.rng.get_rng(seed=7).random(2)
+    array([0.62509547, 0.8972138 ])
     """
     if get_backend() == "cupy":
         import cupy as cp

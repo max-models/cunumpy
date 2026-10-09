@@ -37,6 +37,7 @@ optional-dependencies.docs = [
   "myst-parser",
   "nbconvert",
   "nbsphinx",
+  "numpydoc",
   "jupyterlab",
   "pre-commit",
   "pyproject-fmt",
@@ -58,8 +59,33 @@ cunumpy = [ "py.typed", "*.pyi", "LLM_GUIDE.md", "cuda/include/cunumpy/*.cuh" ]
 # agent worktrees and scratch scripts are local copies, not part of the project
 extend-exclude = [ ".claude" ]
 # formatting: `ruff format`; import sorting: the isort rules of `ruff check`
-lint.extend-select = [ "I", "TID252" ]
+lint.extend-select = [ "D", "I", "TID252" ]
+# D105/D107: magic methods and __init__ (constructor parameters go in the class docstring)
+lint.extend-ignore = [ "D105", "D107" ]
 lint.isort.known-first-party = [ "cunumpy" ]
+lint.per-file-ignores."_fake_cupy*.py" = [ "D" ]
+lint.per-file-ignores."conftest.py" = [ "D" ]
+lint.per-file-ignores."docs/**" = [ "D" ]
+lint.per-file-ignores."tests/**" = [ "D" ]
+lint.pydocstyle.convention = "numpy"
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
+
+# `python -m numpydoc lint src/cunumpy/*.py`: the public API (names re-exported by a public
+# module) has full numpydoc sections; private helpers only need a one-line summary.
+[tool.numpydoc_validation]
+checks = [
+  "all",
+  "ES01", # extended summary is optional (docstrings are kept short)
+  "EX01", # examples are required for public functions and classes, not every method
+  "SA01", # See Also is optional
+  "GL08", # undocumented objects are caught by ruff's D rules instead
+]
+# one-line docstrings (properties, trivial methods) need no Returns section
+override_RT01 = [ '\A[^\n]*\Z' ]
+exclude = [
+  '\._[A-Za-z]\w*$',  # private functions, classes and methods
+  '\.__\w+__$',    # dunder methods
+  '_fake_cupy',
+]

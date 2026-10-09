@@ -1,25 +1,18 @@
-"""CUDA device runtime, reusable streams/events, and CUDA source tools.
+"""CUDA devices, memory, streams, debug mode and CUDA source tools.
 
 The device functions (:func:`set_device`, :func:`memory_info`, :func:`stream`,
-...) do nothing (or return ``None``/``0``) on the NumPy backend::
+...) do nothing, or return ``None`` or ``0``, on the NumPy backend, so the same
+code runs on both::
 
-    import cunumpy as xp
-
-    kernel = xp.kernels.CudaKernel(source, "push")
     with xp.cuda.stream():
         kernel(positions, velocities, dt, n_threads=n)
 
-The CUDA headers shipped with cunumpy (``cunumpy/atomic.cuh``,
-``cunumpy/random.cuh``, ...) are in :func:`cuda_include_dir`;
-:func:`parse_cuda_signature` and the other source tools inspect CUDA sources.
-
-Reusable :func:`create_stream` and :func:`create_event` return synchronous host
-equivalents on NumPy, supporting the same recording and completion interface.
-
-The kernel classes (:class:`~cunumpy.kernels.CudaKernel`,
-:class:`~cunumpy.kernels.PyccelKernel`, :class:`~cunumpy.kernels.Kernel`, ...)
-are in :mod:`cunumpy.kernels`, the argument objects
-(:class:`~cunumpy.arguments.CudaStructArguments`, ...) in :mod:`cunumpy.arguments`.
+:func:`create_stream` and :func:`create_event` return synchronous
+:class:`HostStream` and :class:`HostEvent` objects on NumPy. The CUDA headers
+shipped with cunumpy (``cunumpy/atomic.cuh``, ...) are in
+:func:`cuda_include_dir`; :func:`parse_cuda_signature` and the other source
+tools inspect CUDA sources. The kernel classes are in :mod:`cunumpy.kernels`,
+the argument objects in :mod:`cunumpy.arguments`. See :doc:`/guides/gpu-devices`.
 
 Importing this module makes ``xp.cuda`` refer to it instead of ``cupy.cuda``;
 use ``import cupy; cupy.cuda`` for CuPy's module.

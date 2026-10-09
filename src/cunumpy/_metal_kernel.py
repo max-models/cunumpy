@@ -1,4 +1,7 @@
-"""Metal kernels for the GPU of Apple silicon Macs, run through MLX."""
+"""Metal kernels for the GPU of Apple silicon Macs, run through MLX.
+
+See :doc:`/kernels/metal-kernel`.
+"""
 
 from __future__ import annotations
 
@@ -29,7 +32,18 @@ def _mlx() -> Any:
 
 
 def metal_available() -> bool:
-    """Whether `MetalKernel` can run here (MLX installed and a Metal GPU present)."""
+    """Check whether a :class:`~cunumpy.kernels.MetalKernel` can run here.
+
+    Returns
+    -------
+    bool
+        True if MLX is installed and reports a Metal GPU.
+
+    Examples
+    --------
+    >>> xp.kernels.metal_available()  # doctest: +SKIP
+    True
+    """
     try:
         _mlx()
     except (ImportError, RuntimeError):
@@ -40,49 +54,44 @@ def metal_available() -> bool:
 class MetalKernel:
     """A Metal Shading Language kernel for the GPU of Apple silicon, run with MLX.
 
-    The arrays are NumPy arrays: they are copied to MLX arrays for the launch
-    and the results are written back into the output arrays you pass, like a
-    :class:`~cunumpy.kernels.PyccelKernel` writes into its output arguments. No
-    backend switch is needed. The copies are counted by
-    :func:`~cunumpy.profiling.count_transfers`.
+    Takes NumPy arrays, no backend switch needed: every call copies the inputs
+    to MLX arrays and the results back into the output arrays you pass,
+    counted by :func:`~cunumpy.profiling.count_transfers`. The kernel is
+    compiled by MLX at its first call and cached. Needs ``cunumpy[metal]``;
+    see :doc:`/kernels/metal-kernel`.
 
     Parameters
     ----------
     source : str
-        Body of the kernel function (MSL). MLX generates the signature from
-        `inputs` and `outputs`: every name is a pointer to the flat, row-major
-        data of that array (``const device T*`` for inputs, ``device T*`` for
-        outputs), and ``thread_position_in_grid`` and the other Metal
-        attributes used in the body are added to the signature automatically.
-        Names from `template` are available as compile-time constants.
-    inputs : Sequence[str]
-        Names of the input arrays, in the order they are passed to the call.
-    outputs : Sequence[str]
-        Names of the output arrays, in the order they are passed as `out`.
-    name : str
+        Body of the kernel function. MLX generates the signature: each name
+        in `inputs` and `outputs` is a pointer to the flat, row-major data of
+        that array, and ``thread_position_in_grid`` and the other Metal
+        attributes used in the body are added automatically.
+    inputs : sequence of str
+        Names of the input arrays, in call order.
+    outputs : sequence of str
+        Names of the output arrays, in the order passed as `out`.
+    name : str, optional
         Name of the kernel; part of the compiled function name.
-    header : str
-        Source placed before the kernel function: includes, ``#define``\\ s and
-        helper functions.
-    threadgroup : int | Sequence[int]
-        Threads per threadgroup: an integer, or 1 to 3 integers.
-    float64 : {"error", "cast"}
-        The GPU has no float64. With "error" (the default) a float64 input or
-        output raises ``TypeError``. With "cast" float64 inputs are computed
-        in float32 and float64 outputs are filled from float32 results, which
-        is what to pick when float32 precision is enough.
-    atomic_outputs : bool
+    header : str, optional
+        Source before the kernel function: includes, defines, helper functions.
+    threadgroup : int or sequence of int, optional
+        Threads per threadgroup, 1 to 3 integers.
+    float64 : {"error", "cast"}, optional
+        The Apple GPU has no float64. ``"error"`` (default) raises
+        ``TypeError`` for a float64 input or output; ``"cast"`` computes
+        float64 data in float32.
+    atomic_outputs : bool, optional
         Declare the outputs as ``device atomic<T>*`` for atomic updates.
-    init_value : float | None
-        Value the outputs are filled with before the launch. Outputs are
-        otherwise uninitialized: write every element, or pass the old array as
-        an input as well to read its values.
+    init_value : float, optional
+        Value the outputs are filled with before the launch. Otherwise they
+        are uninitialized: write every element, or pass the old array as an
+        input too to read it.
 
-    Notes
-    -----
-    The kernel is compiled by MLX at its first call and cached. All inputs
-    and outputs are made C-contiguous, so ``a[i]`` in the source is the flat
-    index of the NumPy array.
+    Raises
+    ------
+    ValueError
+        If `float64` is unknown, there is no output, or names repeat.
 
     Examples
     --------
@@ -91,8 +100,9 @@ class MetalKernel:
     ...     inputs=["x", "a"],
     ...     outputs=["y"],
     ... )
-    >>> y = np.empty(n, dtype=np.float32)
-    >>> scale(x, np.float32([2.0]), out=y)
+    >>> y = np.empty(4, dtype=np.float32)
+    >>> scale(np.arange(4, dtype=np.float32), 2.0, out=y)  # doctest: +SKIP
+    array([0., 2., 4., 6.], dtype=float32)
     """
 
     def __init__(
@@ -140,7 +150,7 @@ class MetalKernel:
 
     @staticmethod
     def _as_input(value: Any) -> np.ndarray:
-        """A NumPy array; Python scalars become float32 or int32 arrays of shape (1,)."""
+        """Return `value` as a NumPy array; Python scalars become 1-element arrays."""
         if isinstance(value, (bool, int)):
             return np.array([value], dtype=np.int32)
         if isinstance(value, float):
@@ -179,26 +189,37 @@ class MetalKernel:
         n_threads: int | Sequence[int] | None = None,
         template: Mapping[str, Any] | None = None,
     ) -> Any:
-        """Launch the kernel.
+        """Launch the kernel; blocks until the results are copied back.
 
         Parameters
         ----------
         *args : numpy.ndarray or scalar
             The inputs, in the order of `inputs`. Python scalars become
-            1-element float32 or int32 arrays; read them as ``a[0]`` in the source.
-        out : numpy.ndarray or Sequence[numpy.ndarray]
+            1-element float32 or int32 arrays; read them as ``a[0]``.
+        out : numpy.ndarray or sequence of numpy.ndarray
             The output arrays, in the order of `outputs`; their shapes and
-            dtypes define the outputs and they are filled in place.
-        n_threads : int | Sequence[int] | None
-            Total number of threads (1 to 3 dimensions), not threadgroups. The
-            default is the first axis of the first output.
-        template : Mapping[str, int | bool | numpy.dtype] | None
-            Compile-time constants; each name is a constant in the source. A
-            different value compiles another variant.
+            dtypes define the outputs, and they are filled in place.
+        n_threads : int or sequence of int, optional
+            Total number of threads (1 to 3 dimensions), not threadgroups; by
+            default the first axis of the first output.
+        template : mapping, optional
+            Compile-time constants (int, bool or dtype) by name, e.g.
+            ``{"NSTEPS": 200}``; a new value compiles another variant.
 
         Returns
         -------
-        The output array, or a tuple of them if there are several.
+        numpy.ndarray or tuple of numpy.ndarray
+            The output array, or a tuple of them if there are several.
+
+        Raises
+        ------
+        TypeError
+            If the number of inputs or outputs is wrong, or a dtype is not
+            supported on the GPU.
+        ImportError
+            If MLX is not installed.
+        RuntimeError
+            If MLX reports no Metal GPU.
         """
         mx = _mlx()
         if len(args) != len(self.inputs):

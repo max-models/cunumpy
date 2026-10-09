@@ -1,3 +1,16 @@
+"""NumPy and CuPy behind one namespace.
+
+``import cunumpy as xp`` gives the functions of the active backend's
+``array-api-compat`` module (``xp.zeros``, ``xp.linalg``, ...), replaced when
+the backend changes, plus backend selection, array inspection and conversion,
+host execution helpers (:func:`host_call`), and :data:`scipy`. Everything else
+is in a submodule (:mod:`cunumpy.kernels`, :mod:`cunumpy.cuda`, ...). See
+:doc:`/api` for the module layout and :doc:`/guides/backends`.
+
+``xp.numpy_backend`` and ``xp.cupy_backend`` are booleans telling whether the
+active backend is NumPy or CuPy (prefer :func:`get_backend` for the name).
+"""
+
 # cunumpy/__init__.py
 import re as _re
 from importlib.metadata import PackageNotFoundError, version
@@ -38,6 +51,7 @@ from cunumpy.xp import (
 )
 
 try:
+    #: The installed version of cunumpy; ``"0.0.0+unknown"`` without package metadata.
     __version__ = version("cunumpy")
 except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
@@ -48,18 +62,27 @@ def _version_key(text: str) -> tuple[int, ...]:
 
 
 def require_version(minimum: str) -> None:
-    """Raise ``ImportError`` if this cunumpy is older than `minimum`.
+    """Raise ``ImportError`` if the installed cunumpy is older than `minimum`.
 
-    For projects that depend on a feature of a given release, as a clearer
-    error than an ``AttributeError`` later::
+    A clearer error than a later ``AttributeError`` for code that needs a
+    feature of a given release. Only the numeric part is compared (``0.4.0``
+    and ``0.4.0.dev1`` are equal); nothing is checked when the installed
+    version is unknown (cunumpy not installed as a package, ``xp.__version__``
+    is then ``"0.0.0+unknown"``).
 
-        import cunumpy as xp
+    Parameters
+    ----------
+    minimum : str
+        The oldest acceptable version, e.g. ``"0.4.0"``.
 
-        xp.require_version("0.4.0")
+    Raises
+    ------
+    ImportError
+        If the installed version is older than `minimum`.
 
-    Only the numeric part of the versions is compared (``0.4.0`` and
-    ``0.4.0.dev1`` compare equal). Nothing is checked when the installed
-    version is unknown (cunumpy not installed as a package).
+    Examples
+    --------
+    >>> xp.require_version("0.4.0")
     """
     if __version__.startswith("0.0.0+unknown"):
         return
@@ -111,12 +134,7 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    """Resolve names that are not in the namespace: cunumpy.<name> -> cunumpy.xp.<name>.
-
-    The public names of the active backend are copied into this namespace (see
-    `_sync_backend_namespace`), so this only runs for names missing from the
-    backend's ``__all__`` and for ``numpy_backend``/``cupy_backend``.
-    """
+    """Resolve ``numpy_backend``, ``cupy_backend`` and backend names not copied here."""
     if name == "numpy_backend":
         return xp.numpy_backend
     if name == "cupy_backend":

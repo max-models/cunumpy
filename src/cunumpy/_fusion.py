@@ -1,26 +1,9 @@
-"""``xp.kernels.fuse``: elementwise functions as one GPU kernel, plain calls on the host.
+"""Elementwise functions as one GPU kernel, plain calls on the host.
 
-A chain of elementwise operations (a pressure from density and temperature,
-fluxes and limiters of a fluid update, a Maxwellian at many velocities) runs
-as one kernel per operation on the GPU, each writing a temporary array: it is
-limited by memory bandwidth. ``cupy.fuse`` compiles the whole chain into one
-kernel. :func:`fuse` applies it when the function is called with CuPy arrays
-and calls the function as it is otherwise, so the same code runs on both
-backends::
-
-    @xp.kernels.fuse
-    def pressure(rho, T, gamma):
-        return (gamma - 1.0) * rho * T
-
-    p = pressure(rho, T, 5.0 / 3.0)
-
-The function must be elementwise: arithmetic, comparisons, ufuncs such as
-``xp.exp``, ``xp.sqrt``, ``xp.where`` and reductions that ``cupy.fuse``
-supports (``xp.sum`` as the last operation). On the CuPy path the CuPy
-backend is active while the function is traced, so ``xp.*`` names resolve to
-CuPy's ufuncs. Functions that ``cupy.fuse`` cannot trace (Python control
-flow on array values, indexing, wrappers that are not ufuncs) raise when the
-fused function is first called with CuPy arrays; test the CuPy path.
+On the GPU a chain of elementwise operations runs one kernel per operation,
+each writing a temporary array. :func:`~cunumpy.kernels.fuse` compiles the
+chain into one kernel with ``cupy.fuse`` when called with CuPy arrays and
+calls the function as it is otherwise, so the same code runs on both backends.
 """
 
 from __future__ import annotations
@@ -49,12 +32,7 @@ def _cupy_fuse(function: Callable[..., Any], kernel_name: str | None) -> Any:
 
 
 def _typed_scalars(args: tuple, kwargs: dict) -> tuple[tuple, dict]:
-    """Give Python scalars the dtype they would take next to the arrays.
-
-    ``cupy.fuse`` types a Python scalar on its own: ``gamma - 1.0`` with
-    ``gamma=5/3`` runs in float16. Eagerly, NumPy 2 and CuPy promote it with
-    the arrays (float64 arrays: float64), so cast it to that dtype first.
-    """
+    """Cast Python scalars to the dtype they promote to with the array arguments."""
     dtypes = [a.dtype for a in (*args, *kwargs.values()) if hasattr(a, "dtype")]
 
     def typed(a: Any) -> Any:
@@ -75,24 +53,36 @@ def fuse(
 ) -> F | Callable[[F], F]:
     """Fuse an elementwise function into one kernel when called with CuPy arrays.
 
-    Usable as ``@xp.kernels.fuse`` or ``@xp.kernels.fuse(kernel_name="pressure")``.
+    Usable as ``@xp.kernels.fuse`` or ``@xp.kernels.fuse(kernel_name=...)``.
+    The function must be elementwise in the sense of ``cupy.fuse``:
+    arithmetic, comparisons, ufuncs, ``xp.where`` and supported reductions as
+    the last operation; no Python control flow on array values, no indexing.
+    The CuPy backend is active while it is traced, so ``xp.exp`` etc. resolve
+    to CuPy ufuncs. A function ``cupy.fuse`` cannot trace raises at its first
+    call with CuPy arrays: test the CuPy path.
 
     Parameters
     ----------
-    function : callable
-        The elementwise function.
-    kernel_name : str | None
-        Name of the generated kernel (shown by profilers); by default the
-        function's name.
+    function : callable, optional
+        The elementwise function; omitted when used as ``fuse(kernel_name=...)``.
+    kernel_name : str, optional
+        Name of the kernel in profilers; by default the function's name.
 
     Returns
     -------
     callable
-        A function with the same signature. If any positional or keyword
-        argument is a CuPy array, it calls ``cupy.fuse(function)`` (created on
-        first use, with the CuPy backend active) with Python scalars cast to
-        the dtype they promote to with the array arguments; otherwise it calls
-        `function` itself.
+        A function with the same signature. If any argument is a CuPy array
+        it calls the fused kernel (created on first call and reused), with
+        Python scalars cast to the dtype they promote to with the arrays;
+        otherwise it calls `function` itself. Without `function`, a decorator.
+
+    Examples
+    --------
+    >>> @xp.kernels.fuse
+    ... def pressure(rho, T, gamma):
+    ...     return (gamma - 1.0) * rho * T
+    >>> pressure(np.array([1.0, 2.0]), np.array([3.0, 3.0]), 2.0)
+    array([3., 6.])
     """
     if function is None:
         return lambda f: fuse(f, kernel_name=kernel_name)

@@ -1,15 +1,16 @@
 """Array algorithms missing from NumPy/CuPy, on either backend.
 
 Morton (Z-order) keys (the same as ``cunumpy/morton.cuh`` computes in a
-kernel), a stable sort of several arrays by one key, sums per key, and the compaction of
-the live rows of particle arrays::
-
-    import cunumpy as xp
+kernel, at most ``MAX_MORTON_LEVELS`` bits per axis), a stable sort of several
+arrays by one key, sums per key, and the compaction of the live rows of
+particle arrays::
 
     keys = xp.algorithms.morton_keys(positions, lower, upper, levels)
     keys, order, positions = xp.algorithms.sort_by_key(keys, positions)
     charge = xp.algorithms.segment_sum(q, cell, n_cells)
     n = xp.algorithms.compact_by_mask(alive, positions, charges)
+
+See :doc:`/guides/particle-codes`.
 """
 
 from cunumpy._algorithms import (

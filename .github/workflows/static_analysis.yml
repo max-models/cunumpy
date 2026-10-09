@@ -74,6 +74,17 @@ jobs:
           pip install ruff
           ruff check src/ tests/
 
+  numpydoc:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the code
+        uses: actions/checkout@v4
+
+      - name: Docstring sections with numpydoc
+        run: |
+          pip install . numpydoc
+          python -m numpydoc lint $(git ls-files 'src/cunumpy/*.py' 'src/cunumpy/**/*.py' | grep -v _fake_cupy)
+
   pylint:
     runs-on: ubuntu-latest
     continue-on-error: true

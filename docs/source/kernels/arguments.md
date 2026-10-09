@@ -48,6 +48,9 @@ particles = DeviceParticles(x, v)
 push(0.1, particles, n_threads=particles.positions.shape[0])  # -> push(0.1, x, v, n)
 ```
 
+The values may include packed structs (`CudaStructValue.packed`) for the
+struct parameters of the kernel.
+
 Build the object once and reuse it. `as_device_array()` references existing
 device arrays of the right dtype and copies everything else exactly once (see
 [Data movement](../guides/data-movement.md), section "Build device arguments once").
@@ -207,7 +210,7 @@ struct MarkerArgs {
 
 Mappings: `float` to `double`, `int` to `long long` (Pyccel integers are
 64-bit; change with `int_type=`), `bool` to `bool`, NumPy scalar types to their
-C types, `"float[:, :]"` to `Array2D<double>` (1 to 3 dimensions). `Final[...]`
+C types, `"float[:, :]"` to `Array2D<double>` (1 to 16 dimensions). `Final[...]`
 and `const` are ignored. `scalar_names={"float": "float"}` switches to single
 precision. Parameters without a mappable annotation raise `ValueError`.
 

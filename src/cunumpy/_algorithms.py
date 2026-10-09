@@ -36,12 +36,39 @@ def _sorted_keys(keys: Any) -> tuple[Any, Any]:
 
 
 def segment_boundaries(sorted_keys: Any) -> tuple[Any, Any, Any]:
-    """Return ``(unique_keys, starts, stops)`` for runs of sorted integer keys.
+    """Return the runs of equal keys in sorted integer keys.
 
-    Starts/stops are int64 indices and describe half-open slices of the input.
-    Sparse, negative, and uint64 Morton keys are supported. All results stay on
-    the input backend. Validation and variable-length GPU output may synchronize;
-    prepare once and reuse the boundaries in repeated operations.
+    Sparse, negative and uint64 Morton keys are supported. The results stay on
+    the backend of `sorted_keys`. Validation and the variable-length output may
+    synchronize on CUDA: compute the boundaries once and reuse them.
+
+    Parameters
+    ----------
+    sorted_keys : array of int, shape (n,)
+        Keys sorted in nondecreasing order.
+
+    Returns
+    -------
+    unique_keys : array of int
+        The distinct keys.
+    starts, stops : array of int64
+        Run ``i`` is the half-open slice ``[starts[i], stops[i])`` of the input.
+
+    Raises
+    ------
+    ValueError
+        If `sorted_keys` is not 1D or not sorted.
+    TypeError
+        If `sorted_keys` is not an integer array.
+
+    See Also
+    --------
+    cell_offsets : Dense offsets for every cell, also the empty ones.
+
+    Examples
+    --------
+    >>> xp.algorithms.segment_boundaries(xp.asarray([3, 3, 5, 9, 9, 9]))
+    (array([3, 5, 9]), array([0, 2, 3]), array([2, 3, 6]))
     """
     xpm, keys = _sorted_keys(sorted_keys)
     if keys.size == 0:
@@ -54,11 +81,37 @@ def segment_boundaries(sorted_keys: Any) -> tuple[Any, Any, Any]:
 
 
 def cell_offsets(sorted_cells: Any, n_cells: int) -> Any:
-    """Dense int64 offsets into sorted cell IDs in ``[0, n_cells)``.
+    """Return the offsets of each cell into sorted cell IDs.
 
-    Cell k occupies ``[offsets[k], offsets[k+1])``; empty cells have equal
-    offsets. Returns n_cells+1 entries on the input backend. Filter negative
-    (invalid) cell IDs before calling. Validation may synchronize on CUDA.
+    Cell ``k`` occupies ``[offsets[k], offsets[k + 1])``; empty cells have equal
+    offsets. The result stays on the backend of `sorted_cells`; validation may
+    synchronize on CUDA. Filter out negative (invalid) cell IDs first.
+
+    Parameters
+    ----------
+    sorted_cells : array of int
+        Cell IDs in ``[0, n_cells)``, sorted in nondecreasing order.
+    n_cells : int
+        Number of cells.
+
+    Returns
+    -------
+    array of int64
+        ``n_cells + 1`` offsets.
+
+    Raises
+    ------
+    ValueError
+        If `sorted_cells` is not sorted or has an ID outside ``[0, n_cells)``.
+
+    See Also
+    --------
+    segment_boundaries : The runs of sorted keys that are present.
+
+    Examples
+    --------
+    >>> xp.algorithms.cell_offsets(xp.asarray([0, 0, 2]), 3)
+    array([0, 2, 2, 3])
     """
     n_cells = _segment_count(n_cells)
     xpm, cells = _sorted_keys(sorted_cells)
@@ -95,12 +148,37 @@ def _sum_kernel(dtype: Any) -> Any:
 
 
 class SegmentPlan:
-    """Snapshot and validate segment keys once, then reuse :meth:`sum`.
+    """Validated segment keys, reused by repeated :meth:`sum` calls.
 
-    A negative key drops its row; other keys must be below `n_segments`.
-    Keys are copied so later caller mutation cannot invalidate the plan. A GPU
-    plan is bound to its CUDA device. Setup may synchronize, but repeated sums
-    do not read GPU reductions back into Python or validate keys per column.
+    The keys are copied, so later changes to the caller's array do not affect the
+    plan. Setup may synchronize on CUDA; repeated sums do not validate the keys
+    again or read GPU values back to the host. A GPU plan is bound to its CUDA
+    device, which must be current when it is created and used.
+
+    Parameters
+    ----------
+    keys : array of int, shape (n,)
+        Segment of every row; a negative key drops the row.
+    n_segments : int
+        Number of segments; every key must be smaller.
+
+    Raises
+    ------
+    ValueError
+        If `keys` is not 1D, a key is ``>= n_segments``, or the keys' CUDA device
+        is not current.
+    TypeError
+        If `keys` is not an integer array.
+
+    See Also
+    --------
+    segment_sum : The same for a single use of the keys.
+
+    Examples
+    --------
+    >>> plan = xp.algorithms.SegmentPlan(xp.asarray([0, 1, 0, -1]), 2)
+    >>> plan.sum(xp.asarray([1.0, 2.0, 3.0, 4.0]))
+    array([4., 2.])
     """
 
     def __init__(self, keys: Any, n_segments: int) -> None:
@@ -120,17 +198,37 @@ class SegmentPlan:
 
     @property
     def n_segments(self) -> int:
-        """Number of output segments, fixed when the plan is prepared."""
+        """Number of output segments, fixed when the plan is created."""
         return self._n_segments
 
     def sum(self, values: Any, *, out: Any = None) -> Any:
-        """Sum rows into ``(n_segments, *values.shape[1:])``; overwrite `out`.
+        """Sum the rows of `values` per segment.
 
-        Floating/complex dtypes are preserved; integer/bool inputs produce
-        float64. CUDA supports float16/32/64 and complex64/128 outputs; float16
-        accumulates in a float32 workspace. Other CUDA accumulation
-        uses atomics and its floating-point order is not deterministic. `out`
-        must have the exact shape/dtype, be C-contiguous, and not alias values.
+        Floating-point and complex dtypes are kept; integer and bool values give
+        float64. CUDA supports float16/32/64 and complex64/128 (float16 accumulates
+        in float32) and sums all components in one launch with atomics, so the
+        floating-point order is not deterministic.
+
+        Parameters
+        ----------
+        values : array, shape (n, ...)
+            One row per key, on the backend of the keys.
+        out : array, optional
+            Output to overwrite: exact shape and dtype, writable, C-contiguous, and
+            not aliasing `values`.
+
+        Returns
+        -------
+        array, shape (n_segments, ...)
+            The sums, `out` if given.
+
+        Raises
+        ------
+        ValueError
+            If the shapes do not match, `out` is unsuitable, or the CUDA device is
+            not the plan's.
+        TypeError
+            If `values` is not numeric, or its dtype is not supported on CUDA.
         """
         assert_same_backend(self._keys, values)
         xpm = self._xp
@@ -202,12 +300,34 @@ class SegmentPlan:
 
 
 def segment_sum(values: Any, keys: Any, n_segments: int, *, out: Any = None) -> Any:
-    """Sum rows per integer key, dropping negatives; optionally overwrite `out`.
+    """Sum the rows of `values` per integer key.
 
-    Accepts arbitrary trailing value dimensions. Keys are validated once per
-    call and CUDA reduces all components in one launch, without per-column host
-    checks. Use ``SegmentPlan(keys, n_segments).sum(values, out=out)`` when the
-    keys are reused, to avoid repeating setup and its GPU synchronization.
+    ``out[k]`` is the sum of the rows ``i`` with ``keys[i] == k``; negative keys
+    drop their row. The result is on the backend of `keys`; mixed backends raise.
+    Use :class:`SegmentPlan` when the keys are reused, to avoid repeating the
+    validation and its GPU synchronization.
+
+    Parameters
+    ----------
+    values : array, shape (n, ...)
+        Values with any trailing dimensions.
+    keys : array of int, shape (n,)
+        Segment of every row.
+    n_segments : int
+        Number of segments; every key must be smaller.
+    out : array, optional
+        Output to overwrite, see :meth:`SegmentPlan.sum`.
+
+    Returns
+    -------
+    array, shape (n_segments, ...)
+        The sums, float64 for integer or bool values.
+
+    Examples
+    --------
+    >>> keys = xp.asarray([0, 1, 0, -1])
+    >>> xp.algorithms.segment_sum(xp.asarray([1.0, 2.0, 3.0, 4.0]), keys, 2)
+    array([4., 2.])
     """
     return SegmentPlan(keys, n_segments).sum(values, out=out)
 
@@ -217,14 +337,7 @@ _RADIX_MIN_SIZE = 4096
 
 
 def _radix_argsort(keys: np.ndarray) -> np.ndarray:
-    """Stable argsort of integer `keys`: least significant 16 bits first.
-
-    NumPy's stable argsort is a radix sort for 16-bit integers only; wider
-    integers get a timsort, about ten times slower on a million random keys.
-    Sorting the 16-bit digits of ``keys - keys.min()`` one after the other,
-    each pass stable, gives the same order (an LSD radix sort), in as many
-    passes as the range of the keys needs (two for up to 2**32 cells).
-    """
+    """Argsort integer `keys` stably, by an LSD radix sort on 16-bit digits."""
     low = keys.min()
     span = int(keys.max()) - int(low)
     if keys.dtype.kind == "i":
@@ -250,42 +363,40 @@ def _radix_argsort(keys: np.ndarray) -> np.ndarray:
 def sort_by_key(keys: Any, *arrays: Any, axis: int = 0) -> tuple[Any, ...]:
     """Sort `keys` and reorder every array the same way, in one stable argsort.
 
-    The usual first step of a particle code on the GPU: sort the particles by
-    cell index or Morton key (:func:`cunumpy.algorithms.morton_keys`), then work on
-    contiguous ranges. The sort is stable, so equal keys keep their order and
-    the result is reproducible::
-
-        keys, order, positions, charges = xp.algorithms.sort_by_key(keys, positions, charges)
-
-    Component-major marker arrays, ``(ncomp, N)`` next to ``(N,)`` scalars, keep
-    the markers along the last axis of each, so sort along that one::
-
-        keys, order, positions, weights = xp.algorithms.sort_by_key(
-            keys, positions, weights, axis=-1
-        )
-
-    On NumPy, integer keys (cell indices, Morton keys) are sorted by a radix
-    sort on their 16-bit digits, as on CuPy: two passes for up to ``2**32``
-    distinct cells, about ten times faster than NumPy's stable sort of 64-bit
-    integers.
+    The usual first step of a particle code: sort the particles by cell index or
+    Morton key (:func:`morton_keys`), then work on contiguous ranges. Equal keys
+    keep their order, so the result is reproducible. On CuPy the argsort is a
+    radix sort; on NumPy, integer keys of more than 4096 entries get an LSD
+    radix sort too (one stable ``uint16`` argsort per 16-bit digit the key range
+    needs), about ten times faster than NumPy's stable sort of 64-bit integers.
 
     Parameters
     ----------
     keys : array, shape (n,)
         The sort keys.
-    *arrays : arrays
-        Arrays with ``n`` entries along `axis` (any other axes), on the backend
-        of `keys`.
-    axis : int
-        The axis of every array that `keys` indexes, the first by default;
-        ``-1`` is the last axis of each array, whatever its number of axes.
+    *arrays : array
+        Arrays with ``n`` entries along `axis`, on the backend of `keys`.
+    axis : int, optional
+        The axis of every array that `keys` indexes, 0 by default; ``-1`` is the
+        last axis of each array, for component-major ``(ncomp, n)`` markers next
+        to ``(n,)`` arrays.
 
     Returns
     -------
-    tuple
-        ``(sorted_keys, order, *sorted_arrays)``: ``order`` (int64) is the
-        permutation, ``sorted_keys = keys[order]``, and each sorted array is
-        ``take(array, order, axis=axis)`` (a new array).
+    tuple of arrays
+        ``(keys[order], order, *sorted_arrays)``, with the int64 permutation
+        ``order`` and each array taken along `axis` (new arrays).
+
+    Raises
+    ------
+    ValueError
+        If `keys` is not 1D or an array does not have ``n`` entries along `axis`.
+
+    Examples
+    --------
+    >>> keys = xp.asarray([2, 0, 1, 0])
+    >>> xp.algorithms.sort_by_key(keys, xp.asarray([10.0, 11.0, 12.0, 13.0]))
+    (array([0, 0, 1, 2]), array([1, 3, 2, 0]), array([11., 13., 12., 10.]))
     """
     if get_array_backend(keys) == "cupy":
         import cupy as xpm  # its argsort is a stable radix sort
@@ -324,39 +435,42 @@ def sort_by_key(keys: Any, *arrays: Any, axis: int = 0) -> tuple[Any, ...]:
 def compact_by_mask(mask: Any, *arrays: Any, axis: int = 0) -> int:
     """Move the entries where `mask` is True to the front of every array, in place.
 
-    The usual step after particles left the domain or were absorbed: keep the
-    live ones at the front of the marker array (and of the arrays that go with
-    it) and continue with ``markers[:n]``. The order of the kept entries is
-    preserved, so the result is reproducible::
-
-        n = xp.algorithms.compact_by_mask(alive, markers, weights)
-        markers, weights = markers[:n], weights[:n]
-
-    Component-major marker arrays, ``(ncomp, N)`` next to ``(N,)`` scalars, keep
-    the markers along the last axis of each, so compact that one::
-
-        n = xp.algorithms.compact_by_mask(alive, positions, weights, axis=-1)
-        positions, weights = positions[:, :n], weights[:n]
+    The usual step after particles left the domain: keep the live ones at the
+    front, in their original order, and continue with ``markers[:n]``. The
+    entries after the first ``n`` are unspecified. The count is needed on the
+    host, so on CuPy each call synchronizes once (seen by
+    :func:`~cunumpy.profiling.count_transfers`).
 
     Parameters
     ----------
     mask : array of bool, shape (n,)
         True for the entries to keep.
-    *arrays : arrays
-        Arrays with ``n`` entries along `axis` (any other axes), on the backend
-        of `mask`. Entries ``[:count]`` along `axis` hold the kept ones
-        afterwards; the entries after them are unspecified, so ignore them (or
-        overwrite them).
-    axis : int
-        The axis of every array that `mask` indexes, the first by default;
-        ``-1`` is the last axis of each array, whatever its number of axes.
+    *arrays : array
+        Arrays with ``n`` entries along `axis`, on the backend of `mask`;
+        modified in place.
+    axis : int, optional
+        The axis of every array that `mask` indexes, 0 by default; ``-1`` is the
+        last axis of each array, for component-major ``(ncomp, n)`` markers next
+        to ``(n,)`` arrays.
 
     Returns
     -------
     int
-        The number of kept entries. Its value is needed on the host, so on CuPy
-        the call synchronizes once per call (counted by
-        :func:`~cunumpy.profiling.count_transfers` where it can be seen).
+        The number of kept entries.
+
+    Raises
+    ------
+    TypeError
+        If `mask` is not a 1D boolean array.
+    ValueError
+        If an array does not have ``n`` entries along `axis`.
+
+    Examples
+    --------
+    >>> x = xp.asarray([1.0, 2.0, 3.0, 4.0])
+    >>> n = xp.algorithms.compact_by_mask(xp.asarray([True, False, True, False]), x)
+    >>> x[:n]
+    array([1., 3.])
     """
     assert_same_backend(mask, *arrays)
     xpm = get_array_module(mask)

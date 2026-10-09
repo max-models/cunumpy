@@ -1,55 +1,47 @@
-"""Helpers for testing host/CUDA kernel pairs with pytest.
+"""Pytest helpers for testing host/CUDA kernel pairs.
 
-A code base that ports its kernels to CUDA one by one needs the same test for
-every kernel: build the arguments on both backends, run the host kernel and the
-CUDA kernel, and compare what they wrote. This module provides that test
-(:func:`assert_kernels_agree`), the pytest markers to parametrize tests over
-the backends (:data:`BACKENDS`, :data:`requires_cupy`, the :func:`backend`
-fixture), :func:`device_function_kernel`, which wraps a ``__device__``
-function in an elementwise ``__global__`` kernel so that device helpers can be
-tested from Python without a hand-written test kernel, and
-:func:`emulate_cuda_kernel` (from the private module ``cunumpy._emulation``), which runs a CUDA
-kernel on the CPU, one thread after another, so that its arithmetic can be
-checked against the host kernel in CI without a GPU. Without a GPU, the CuPy
-code paths of a program (argument objects, conversions, backend branches) can
-still run on the fake CuPy of :mod:`cunumpy._fake_cupy` (:func:`install_fake_cupy`,
-or ``CUNUMPY_FAKE_CUPY=1``); :func:`fake_cupy_active` tells whether it is in
-use, and ``requires_cupy`` skips the tests that launch kernels then.
-:func:`fake_cupy_session` runs a whole CuPy-backend program on it (launches and
-compilation emulated, see :func:`emulated_launches`), :data:`requires_device_backend`
-skips tests that need a GPU or the fake CuPy, and :func:`run_in_fake_cupy_subprocess`
-runs code in a child process on the fake CuPy from a test process that cannot
-switch to it.
+Not imported by ``import cunumpy``; pytest is imported only when one of the
+pytest objects below is used, so e.g. :func:`device_function_kernel` works
+without it. See :doc:`/kernels/testing`.
 
-A catalog's parity tests need no code per kernel when each kernel folder
-holds ``<name>_test_args.py`` with ``make_args(backend, seed)`` (and
-``N_THREADS``): :func:`parity_cases` and :func:`check_parity` drive
-:func:`assert_kernels_agree` from these modules.
+* Compare host and CUDA kernels: :func:`assert_kernels_agree`, and for a
+  catalog :func:`parity_cases` / :func:`check_parity`.
+* Run on both backends (built on first access):
 
-The module imports pytest only when one of its pytest objects is used, so it
-can be imported (e.g. for :func:`device_function_kernel`) without pytest, and
-``import cunumpy`` never imports pytest.
+  ``BACKENDS``
+      ``["numpy", pytest.param("cupy", marks=requires_cupy)]``, to
+      parametrize a test over the backends.
+  ``backend``
+      A pytest fixture that runs the test once per backend, with it active.
+  ``requires_cupy``
+      A ``skipif`` marker for tests that launch CUDA kernels (needs a GPU,
+      not the fake CuPy).
+  ``requires_device_backend``
+      A ``skipif`` marker for tests that need a GPU or the fake CuPy, see
+      :func:`device_backend_available`.
+
+  With ``CUNUMPY_REQUIRE_CUDA=1`` (:func:`cuda_required`) they fail
+  instead of skipping.
+* Test ``__device__`` helpers: :func:`device_function_kernel`.
+* Run CUDA kernels on the CPU, without a GPU (from ``cunumpy._emulation``):
+  :func:`emulate_cuda_kernel`, :func:`emulated_launches`,
+  :func:`compile_for_emulation`, :func:`emulation_compiler` and
+  :func:`emulation_cache_dir`.
+* Run CuPy-backend code on the fake CuPy, a strict host stand-in for CuPy
+  (also installed by ``CUNUMPY_FAKE_CUPY=1``): :func:`install_fake_cupy`,
+  :func:`fake_cupy_active`, :func:`fake_cupy_session`,
+  :func:`run_in_fake_cupy_subprocess` and :func:`host_buffer` (the NumPy
+  array behind a fake CuPy array, not a copy).
 
 Examples
 --------
-One parametrised test covers every kernel of a catalog that has a CUDA
-version::
+One parametrized test covers every kernel of a catalog::
 
-    import pytest
-    from cunumpy.kernel_testing import assert_kernels_agree
+    from cunumpy.kernel_testing import parity_cases, check_parity
 
-    from my_kernels import catalog
-
-
-    def make_args(backend, seed):
-        rng = xp.rng.get_rng(seed)  # the backend is active: arrays land on it
-        x = rng.random(1000)
-        return (x, 2.0, x.size)
-
-
-    @pytest.mark.parametrize("name, kernel", catalog.parity_cases())
-    def test_parity(name, kernel):
-        assert_kernels_agree(kernel, make_args, n_threads=1000)
+    @pytest.mark.parametrize("kernel", parity_cases(catalog))
+    def test_parity(kernel):
+        check_parity(kernel)
 """
 
 from __future__ import annotations
@@ -119,16 +111,46 @@ FAKE_SKIP_REASON = "the fake CuPy cannot run CUDA kernels"
 
 
 def fake_cupy_active() -> bool:
-    """Whether the fake CuPy (:mod:`cunumpy._fake_cupy`) stands in for CuPy."""
+    """Tell whether the fake CuPy stands in for CuPy in this process.
+
+    Returns
+    -------
+    bool
+        True after :func:`install_fake_cupy` or with ``CUNUMPY_FAKE_CUPY=1``.
+
+    Examples
+    --------
+    >>> from cunumpy.kernel_testing import fake_cupy_active
+    >>> fake_cupy_active()  # doctest: +SKIP
+    False
+    """
     return _fake_cupy.is_active()
 
 
 def install_fake_cupy() -> Any:
-    """Install the fake CuPy for this process; see :mod:`cunumpy._fake_cupy`.
+    """Install the fake CuPy, a strict host stand-in for CuPy, in this process.
 
-    Call it before the first backend use (e.g. at the top of ``conftest.py``),
-    or set ``CUNUMPY_FAKE_CUPY=1`` in the environment instead. Returns the
-    fake ``cupy`` module.
+    Its arrays live in host memory but behave like CuPy arrays (e.g.
+    ``numpy.asarray`` rejects them); CUDA kernels cannot run on it except in
+    :func:`emulated_launches`. Call it before the first backend use (e.g. at
+    the top of ``conftest.py``), or set ``CUNUMPY_FAKE_CUPY=1`` instead.
+    Calling it again is a no-op.
+
+    Returns
+    -------
+    module
+        The fake ``cupy`` module.
+
+    Raises
+    ------
+    RuntimeError
+        If the real CuPy was imported already, or cunumpy already checked
+        for CuPy.
+
+    Examples
+    --------
+    >>> from cunumpy.kernel_testing import install_fake_cupy
+    >>> install_fake_cupy()  # doctest: +SKIP
     """
     return _fake_cupy.install()
 
@@ -139,12 +161,23 @@ def _can_launch() -> bool:
 
 
 def cuda_required() -> bool:
-    """Whether ``CUNUMPY_REQUIRE_CUDA`` demands a real GPU (the CI guard).
+    """Tell whether ``CUNUMPY_REQUIRE_CUDA`` demands a real GPU (the CI guard).
 
-    Then tests that need a GPU fail instead of being skipped where there is
-    none (:data:`requires_cupy`, :func:`assert_kernels_agree`, the ``cupy``
-    parameter of :func:`backend`), so that a CI job on a GPU machine cannot
-    pass silently because CuPy or the driver is broken.
+    If so, tests that need a GPU fail instead of being skipped (``requires_cupy``,
+    ``requires_device_backend``, :func:`assert_kernels_agree`, the ``cupy``
+    run of the ``backend`` fixture), so that a GPU CI job cannot pass
+    silently because CuPy or the driver is broken.
+
+    Returns
+    -------
+    bool
+        True if ``CUNUMPY_REQUIRE_CUDA`` is ``1``, ``true`` or ``yes``.
+
+    Examples
+    --------
+    >>> from cunumpy.kernel_testing import cuda_required
+    >>> cuda_required()  # doctest: +SKIP
+    False
     """
     return os.environ.get("CUNUMPY_REQUIRE_CUDA", "").lower() in {"1", "true", "yes"}
 
@@ -157,7 +190,13 @@ def _skip_or_fail(reason: str) -> None:
 
 
 def cuda_gate() -> bool:
-    """Condition of ``requires_cupy`` under ``CUNUMPY_REQUIRE_CUDA``: fail, or False."""
+    """Return the ``requires_cupy`` condition under ``CUNUMPY_REQUIRE_CUDA``.
+
+    Returns
+    -------
+    bool
+        False (do not skip) if CUDA kernels can run; otherwise the test fails.
+    """
     if not _can_launch():
         reason = FAKE_SKIP_REASON if fake_cupy_active() else SKIP_REASON
         _pytest().fail(f"CUNUMPY_REQUIRE_CUDA is set, but {reason}", pytrace=False)
@@ -165,18 +204,36 @@ def cuda_gate() -> bool:
 
 
 def device_backend_available() -> bool:
-    """Whether a CuPy-backend program can run here: a GPU, or the fake CuPy.
+    """Tell whether a CuPy-backend program can run here: a GPU, or the fake CuPy.
 
-    Unlike :data:`requires_cupy` (CUDA kernels can be launched), this is also
-    True on the fake CuPy, where launches only work inside
-    :func:`emulated_launches` (see :func:`fake_cupy_session`). The marker
-    :data:`requires_device_backend` skips tests that need it.
+    Unlike ``requires_cupy`` (CUDA kernels can be launched), this is also true
+    on the fake CuPy, where launches only work inside :func:`emulated_launches`
+    (see :func:`fake_cupy_session`). The marker ``requires_device_backend``
+    skips tests where it is false.
+
+    Returns
+    -------
+    bool
+        True with a working CuPy or with the fake CuPy active.
+
+    Examples
+    --------
+    >>> from cunumpy.kernel_testing import device_backend_available
+    >>> device_backend_available()  # doctest: +SKIP
+    True
     """
     return fake_cupy_active() or cupy_available()
 
 
 def device_backend_gate() -> bool:
-    """Condition of ``requires_device_backend`` under ``CUNUMPY_REQUIRE_CUDA``."""
+    """Return the ``requires_device_backend`` condition under ``CUNUMPY_REQUIRE_CUDA``.
+
+    Returns
+    -------
+    bool
+        False (do not skip) if a device backend is available; otherwise the
+        test fails.
+    """
     if not device_backend_available():
         _pytest().fail(
             f"CUNUMPY_REQUIRE_CUDA is set, but {DEVICE_SKIP_REASON}", pytrace=False
@@ -193,17 +250,31 @@ def fake_cupy_session(
     """Run a CuPy-backend program on the CPU, on the fake CuPy.
 
     Activates the CuPy backend (the fake CuPy) and emulates every CUDA launch
-    and compilation in the block (:func:`emulated_launches`, which takes
-    `compiler` and `options`)::
+    and compilation in the block with :func:`emulated_launches`.
 
-        with fake_cupy_session():
-            sim.run()  # kernels compiled up front and launched, all on the CPU
+    Parameters
+    ----------
+    compiler : str, optional
+        The C++ compiler of the emulation; default :func:`emulation_compiler`.
+    options : sequence of str, optional
+        Extra compiler options, e.g. ``("-ffp-contract=off",)``.
+
+    Yields
+    ------
+    None
+        The block runs on the fake CuPy with emulated launches.
 
     Raises
     ------
     RuntimeError
         If the fake CuPy is not active (:func:`install_fake_cupy`,
         ``CUNUMPY_FAKE_CUPY=1``; or use :func:`run_in_fake_cupy_subprocess`).
+
+    Examples
+    --------
+    >>> from cunumpy.kernel_testing import fake_cupy_session
+    >>> with fake_cupy_session():  # doctest: +SKIP
+    ...     sim.run()  # kernels compiled and launched, all on the CPU
     """
     if not fake_cupy_active():
         raise RuntimeError(
@@ -245,30 +316,39 @@ def run_in_fake_cupy_subprocess(
     env: Mapping[str, str] | None = None,
     timeout: float | None = None,
 ) -> subprocess.CompletedProcess:
-    """Run `code` in a serial child Python process on the fake CuPy; fail the test if it fails.
+    """Run code in a serial child process on the fake CuPy; fail the test if it fails.
 
     The fake CuPy must be installed before anything imports cunumpy, so a test
-    process that already uses cunumpy cannot switch to it; the child starts
-    with ``CUNUMPY_FAKE_CUPY=1``. It runs ``python -X faulthandler -c code``
-    (a crash prints the Python traceback) with ``OMP_NUM_THREADS=1`` and
-    without the variables of an MPI launcher, so it does not join the MPI job
-    of the parent (``MAYBEMPI=0``). Under MPI only rank 0 starts the child and
-    the other ranks skip the test: concurrent children are not needed for a
-    serial check, and have crashed external libraries.
+    process that already uses cunumpy cannot switch to it. The child runs
+    ``python -X faulthandler -c code`` with ``CUNUMPY_FAKE_CUPY=1``,
+    ``OMP_NUM_THREADS=1``, ``MAYBEMPI=0`` and without the variables of an MPI
+    launcher, so it does not join the parent's MPI job. Under MPI only rank 0
+    starts the child; the other ranks skip the test.
 
     Parameters
     ----------
     code : str
         Python source to run.
-    env : Mapping[str, str] | None
+    env : mapping of str to str, optional
         Additional environment variables for the child (e.g. ``PYTHONPATH``).
-    timeout : float | None
+    timeout : float, optional
         Seconds after which the child is killed and the test fails.
 
     Returns
     -------
     subprocess.CompletedProcess
         The finished child (exit code 0), with its stdout and stderr.
+
+    Notes
+    -----
+    If the child fails or times out, the test fails (``pytest.fail``) with the
+    exit code or signal (e.g. ``SIGSEGV``) and the last 50 lines of its stdout
+    and stderr.
+
+    Examples
+    --------
+    >>> from cunumpy.kernel_testing import run_in_fake_cupy_subprocess
+    >>> run_in_fake_cupy_subprocess("import my_sim; my_sim.check()")  # doctest: +SKIP
     """
     pytest = _pytest()
     from cunumpy.mpi import get_mpi
@@ -364,6 +444,16 @@ def _build_lazy() -> None:
 
         With ``CUNUMPY_REQUIRE_CUDA`` set, the ``cupy`` run fails if the CuPy
         backend cannot be activated, instead of silently running on NumPy.
+
+        Parameters
+        ----------
+        request : pytest.FixtureRequest
+            The pytest request; ``request.param`` is the backend.
+
+        Yields
+        ------
+        str
+            The active backend, ``"numpy"`` or ``"cupy"``.
         """
         with use_backend(request.param, strict=cuda_required()):
             yield request.param
@@ -430,7 +520,7 @@ def _resolve_output(
     n_args: int,
     parameters: Sequence[str] | None,
 ) -> tuple[int, str | None]:
-    """The argument index and the field filter (or None) of an `outputs` entry."""
+    """Return the argument index and field filter (or None) of an `outputs` entry."""
     if isinstance(entry, bool) or not isinstance(entry, (int, str)):
         raise TypeError(
             "outputs entries must be argument indices (int) or names (str, "
@@ -463,22 +553,7 @@ def _collect_arrays(
     outputs: Sequence[int | str] | None = None,
     parameters: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """The arrays among `args` (or among the arguments `outputs`), by name.
-
-    An argument that is an array is named ``"argument <i>"``; arrays found one
-    level deep, in a tuple, list or dict argument or in the attributes of an
-    argument object (e.g. a ``CudaArguments`` object), are named
-    ``"argument <i>[<j>]"`` or ``"argument <i>.<attribute>"``, and arrays in a
-    container attribute of an object ``"argument <i>.<attribute>[<j>]"``. A
-    :class:`~cunumpy.arguments.CudaStructArguments` object or a struct value is read
-    through its struct fields, ``"argument <i>.<field>"``, so that its arrays
-    get the names of the attributes of the host argument object it mirrors,
-    also when the fields are properties.
-
-    An entry of `outputs` is an argument index, or the name of a parameter (in
-    `parameters`), optionally followed by ``.<field>`` to compare only that
-    field (attribute) of a struct or argument object, e.g. ``"markers.positions"``.
-    """
+    """Return the arrays among `args` (or the arguments `outputs`), by argument name."""
     entries = range(len(args)) if outputs is None else outputs
     found: dict[str, Any] = {}
     for entry in entries:
@@ -507,14 +582,7 @@ def _compare_results(
     atol: float,
     kernel_name: str = "kernel",
 ) -> None:
-    """Compare the arrays of `device` with those of `host`, by name.
-
-    Raises
-    ------
-    AssertionError
-        If the two do not hold the same names, or an array differs (the
-        message names the argument).
-    """
+    """Assert that the arrays of `device` match those of `host`, by name."""
     if host.keys() != device.keys():
         raise AssertionError(
             f"{kernel_name}: the host and CUDA calls do not have the same array "
@@ -543,71 +611,72 @@ def assert_kernels_agree(
     outputs: Sequence[int | str] | None = None,
     seed: int = 0,
 ) -> dict[str, np.ndarray]:
-    """Check that the host and CUDA versions of `kernel` compute the same.
+    """Check that the host and CUDA versions of a kernel compute the same.
 
-    For each backend, ``"numpy"`` then ``"cupy"``, the backend is activated
-    with :func:`~cunumpy.use_backend`, the arguments are built with
-    ``make_args(backend, seed)``, the kernel is called `n_calls` times, and
-    the arrays among the arguments are collected. The arrays written by the
-    CUDA kernel are then copied to the host and compared with those of the host
-    kernel using ``numpy.testing.assert_allclose``.
+    For each backend, ``"numpy"`` then ``"cupy"``, the backend is activated,
+    the arguments are built with ``make_args(backend, seed)``, the kernel is
+    called `n_calls` times, and the arrays among the arguments are collected.
+    The CUDA results are copied to the host and compared with
+    ``numpy.testing.assert_allclose``.
 
     Parameters
     ----------
     kernel : Kernel
-        A kernel with a CUDA version (``kernel.has_cuda``).
-    make_args : Callable[[str, int], Sequence]
+        A :class:`~cunumpy.kernels.Kernel` with a CUDA version.
+    make_args : callable
         ``make_args(backend, seed)`` returns the positional arguments of the
-        kernel, as a tuple or list. It is called with the backend (``"numpy"``
-        or ``"cupy"``) active, so arrays created through ``cunumpy`` (e.g. with
-        ``xp.zeros`` or ``xp.rng.get_rng(seed)``) land on that backend; NumPy and
-        CuPy random generators do not produce the same sequence from one seed,
-        so build random data on the host with ``numpy.random.default_rng(seed)``
-        and convert it with :func:`~cunumpy.to_cunumpy`. Kernels take positional
-        arguments only.
-    n_threads, grid, block
+        kernel (a tuple or list). It runs with the backend active, so arrays
+        made through cunumpy land on it. NumPy and CuPy generators differ for
+        one seed: build random data with ``numpy.random.default_rng(seed)``
+        and convert it with :func:`~cunumpy.to_cunumpy`.
+    n_threads, grid, block : int or tuple of int, optional
         Launch configuration of the CUDA kernel, see
-        :meth:`CudaKernel.__call__ <cunumpy.kernels.CudaKernel.__call__>`. `n_threads`
-        may also be a function of the tuple of arguments, e.g.
-        ``lambda args: args[0].shape[0]``. Omitted sizes use the CUDA kernel's
-        shape-based default or its configured ``n_threads_from``; explicit sizes
-        are required when inference is disabled.
-    rtol, atol : float
+        :meth:`CudaKernel.__call__ <cunumpy.kernels.CudaKernel.__call__>`.
+        `n_threads` may also be a function of the argument tuple, e.g.
+        ``lambda args: args[0].shape[0]``. Without `n_threads` and `grid`,
+        the kernel's ``n_threads_from`` is used.
+    rtol, atol : float, optional
         Tolerances of ``numpy.testing.assert_allclose``.
-    n_calls : int
+    n_calls : int, optional
         How many times the kernel is called on each backend (e.g. to test a
         kernel that accumulates).
-    outputs : Sequence[int | str] | None
-        The arguments to compare, like ``PyccelKernel(outputs=...)``: indices
-        (negative indices count from the end) or parameter names. A name with
-        ``.<field>`` (``"markers.positions"``) compares only that field of a
-        struct or argument object, leaving the other fields (e.g. buffers the
-        two kernels fill differently) out. By default the ``outputs``
-        declared by the host kernel are used, and if it declares none, every
-        argument. An argument that is an array is compared; for a tuple, list,
-        dict or object argument (e.g. a ``CudaArguments`` object), the arrays
-        it holds are compared (one level deep, plus arrays in a container
-        attribute of an object).
-    seed : int
+    outputs : sequence of int or str, optional
+        The arguments to compare: indices (negative from the end) or
+        parameter names; ``"markers.positions"`` compares only that field of
+        a struct or argument object. Default: the host kernel's ``outputs``,
+        else every argument. Arrays inside tuple, list, dict or object
+        arguments are compared one level deep (plus container attributes).
+    seed : int, optional
         Passed to `make_args` on both backends.
 
     Returns
     -------
-    dict[str, numpy.ndarray]
-        The arrays of the host call by argument name (``"argument 0"``,
+    dict of str to numpy.ndarray
+        The host-call arrays by argument name (``"argument 0"``,
         ``"argument 1.x"``), for further checks.
 
     Raises
     ------
     ValueError
-        If `kernel` has no CUDA version.
+        If `kernel` has no CUDA version or `n_calls` is less than 1.
+    TypeError
+        If `kernel` is not a ``Kernel``, or no launch size is given or
+        configured.
     AssertionError
         If an array differs; the message names the argument.
 
     Notes
     -----
-    The test is skipped with ``pytest.skip`` if CuPy or a GPU is not available,
-    or if the fake CuPy is active; with ``CUNUMPY_REQUIRE_CUDA=1`` it fails instead.
+    Skipped with ``pytest.skip`` without a GPU or on the fake CuPy; with
+    ``CUNUMPY_REQUIRE_CUDA=1`` it fails instead. See :doc:`/kernels/testing`.
+
+    Examples
+    --------
+    >>> from cunumpy.kernel_testing import assert_kernels_agree
+    >>> def make_args(backend, seed):
+    ...     x = xp.to_cunumpy(np.random.default_rng(seed).random(1000))
+    ...     return (x, 2.0, x.size)
+    >>> assert_kernels_agree(catalog["scale"], make_args, n_threads=1000)  # doctest: +SKIP
     """
     if not isinstance(kernel, Kernel):
         raise TypeError(f"expected a Kernel, got {type(kernel).__name__}")
@@ -660,18 +729,36 @@ TEST_ARGS_SETTINGS = {
 
 
 def parity_cases(catalog: Any) -> list[Any]:
-    """The kernels of a catalog with a CUDA version, as pytest parameters.
+    """Return the kernels of a catalog with a CUDA version, as pytest parameters.
 
-    One ``pytest.param(kernel, id=name)`` per kernel of
-    ``catalog.parity_cases()``. A kernel without a test-arguments module
-    (:attr:`Kernel.test_args_module <cunumpy.kernels.Kernel.test_args_module>`, from
-    ``<name>_test_args.py`` in its folder) is marked ``skip`` with a reason
-    naming the missing file, so the report shows which kernels still lack
-    their parity test::
+    A kernel without a test-arguments module (``<name>_test_args.py`` in its
+    folder, see :attr:`Kernel.test_args_module
+    <cunumpy.kernels.Kernel.test_args_module>`) is marked ``skip`` with a
+    reason naming the missing file, so the report shows which kernels still
+    lack a parity test.
 
-        @pytest.mark.parametrize("kernel", parity_cases(catalog))
-        def test_parity(kernel):
-            check_parity(kernel)
+    Parameters
+    ----------
+    catalog : KernelCatalog
+        A :class:`~cunumpy.kernels.KernelCatalog` (anything with
+        ``parity_cases()``).
+
+    Returns
+    -------
+    list of pytest.param
+        One ``pytest.param(kernel, id=name)`` per kernel of
+        ``catalog.parity_cases()``.
+
+    See Also
+    --------
+    check_parity : The test to run for each case.
+
+    Examples
+    --------
+    >>> from cunumpy.kernel_testing import check_parity, parity_cases
+    >>> @pytest.mark.parametrize("kernel", parity_cases(catalog))  # doctest: +SKIP
+    ... def test_parity(kernel):
+    ...     check_parity(kernel)
     """
     pytest = _pytest()
     cases = []
@@ -691,17 +778,24 @@ def parity_cases(catalog: Any) -> list[Any]:
 def check_parity(kernel: Kernel, **overrides: Any) -> dict[str, np.ndarray]:
     """Run :func:`assert_kernels_agree` with the kernel's test-arguments module.
 
-    The module (``<name>_test_args.py`` in the kernel's folder, see
-    :meth:`KernelCatalog.from_package <cunumpy.kernels.KernelCatalog.from_package>`)
-    defines ``make_args(backend, seed)`` and, as module-level names, the
-    launch and comparison settings of :data:`TEST_ARGS_SETTINGS`:
-    ``N_THREADS`` (an integer, a tuple, or a function of the argument tuple),
-    or ``GRID``, plus optionally ``BLOCK``, ``RTOL``, ``ATOL``, ``N_CALLS``,
-    ``OUTPUTS`` and ``SEED``. Keyword arguments override them.
+    The module is ``<name>_test_args.py`` in the kernel's folder (see
+    :meth:`KernelCatalog.from_package
+    <cunumpy.kernels.KernelCatalog.from_package>`). It defines
+    ``make_args(backend, seed)`` and, optionally, the settings of
+    ``TEST_ARGS_SETTINGS`` as module-level names (``N_THREADS``, ``GRID``,
+    ``BLOCK``, ``RTOL``, ``ATOL``, ``N_CALLS``, ``OUTPUTS``, ``SEED``).
+
+    Parameters
+    ----------
+    kernel : Kernel
+        A :class:`~cunumpy.kernels.Kernel` with a CUDA version.
+    **overrides
+        Keyword arguments of :func:`assert_kernels_agree` that override the
+        module's settings.
 
     Returns
     -------
-    dict[str, numpy.ndarray]
+    dict of str to numpy.ndarray
         The host arrays, as :func:`assert_kernels_agree` returns them.
 
     Raises
@@ -710,6 +804,11 @@ def check_parity(kernel: Kernel, **overrides: Any) -> dict[str, np.ndarray]:
         If the kernel has no test-arguments module.
     TypeError
         If the module has no callable ``make_args``.
+
+    Examples
+    --------
+    >>> from cunumpy.kernel_testing import check_parity
+    >>> check_parity(catalog["push"], rtol=1e-10)  # doctest: +SKIP
     """
     module = kernel.test_args
     if module is None:
@@ -744,12 +843,7 @@ def _parse_prototype(
     signature: str,
     structs: dict[str, Any] | None = None,
 ) -> tuple[CudaParameter | None, str, list[tuple[str, CudaParameter]]]:
-    """Parse a C function prototype into (result, name, [(text, parameter)]).
-
-    The result is None for a ``void`` function; each parameter is its original
-    text together with its parsed form. A struct of `structs` may be taken by
-    value or by (const) reference.
-    """
+    """Parse a C prototype into (result or None, name, [(text, parameter)])."""
     match = _PROTOTYPE.match(_strip_comments(signature))
     if match is None:
         raise ValueError(f"cannot parse the function prototype {signature!r}")
@@ -800,75 +894,67 @@ def device_function_kernel(
 ) -> CudaKernel:
     """Wrap a ``__device__`` function in an elementwise kernel, for testing.
 
-    Generates an ``extern "C" __global__`` kernel that calls the device function
-    once per thread, so that a device helper (e.g. a B-spline evaluation) can be
-    run from Python on many inputs at once and compared with its host version.
+    Generates an ``extern "C" __global__`` kernel that calls the device
+    function once per thread, so that a device helper (e.g. a B-spline
+    evaluation) can be run from Python on many inputs and compared with its
+    host version. See :doc:`/kernels/testing`.
 
     Parameters
     ----------
     header_source : str
-        CUDA source defining the device function (typically the content of the
-        header, or ``#include`` directives, see `includes`).
+        CUDA source defining the device function (typically the content of
+        its header).
     signature : str
         The C prototype of the device function, e.g.
-        ``"int find_span(const double* t, int p, double eta)"``. Pointer
-        parameters, scalar parameters of the types :class:`CudaKernel` supports,
-        struct parameters (by value or by ``const`` reference, for the structs
-        passed in ``structs``) and a scalar or ``void`` return type are
+        ``"int find_span(const double* t, int p, double eta)"``. Pointer,
+        scalar and struct parameters (by value or ``const`` reference, for
+        the structs in ``structs``) and a scalar or ``void`` return type are
         supported.
-    name : str | None
+    name : str, optional
         Name of the generated kernel; ``"<function>_kernel"`` by default.
-    includes : Sequence[str]
-        Headers to include before `header_source`: ``"bsplines.cuh"`` becomes
-        ``#include "bsplines.cuh"``, ``"<cupy/complex.cuh>"`` is included with
-        angle brackets. Pass ``include_dirs`` for the directories.
-    n_threads_param : str
-        Name of the generated kernel's last parameter, the number of elements.
-    out_param : str
+    includes : sequence of str, optional
+        Headers to ``#include`` before `header_source`: ``"bsplines.cuh"``
+        with quotes, ``"<cupy/complex.cuh>"`` with angle brackets. Pass
+        ``include_dirs`` for the directories.
+    n_threads_param : str, optional
+        Name of the last generated parameter, the number of elements.
+    out_param : str, optional
         Name of the generated output array parameter.
     **kwargs
-        Passed on to :class:`CudaKernel`, e.g. ``include_dirs``, ``options``,
-        ``block_size`` or ``structs`` (the :class:`~cunumpy.arguments.CudaStruct` types
-        of struct parameters, whose definitions `header_source` or the
-        `includes` must provide).
+        Passed on to :class:`~cunumpy.kernels.CudaKernel`, e.g.
+        ``include_dirs``, ``options``, ``block_size`` or ``structs`` (the
+        :class:`~cunumpy.arguments.CudaStruct` types of struct parameters).
 
     Returns
     -------
     CudaKernel
-        The wrapper kernel. Its parameters are those of the device function, in
-        order, followed by the output array (unless the function returns
-        ``void``) and the number of elements:
-
-        * a pointer parameter stays as it is and is passed through unchanged to
-          every call (an array shared by all threads);
-        * a struct parameter (``DomainArgs d`` or ``const DomainArgs& d``) is
-          taken by value and passed through unchanged to every call (pass a
-          :class:`~cunumpy.arguments.CudaStructArguments` object or a packed value);
-        * a scalar parameter ``T x`` becomes a device array ``const T* x`` of
-          length ``n``, and thread ``i`` calls the function with ``x[i]``;
-        * the return value of thread ``i`` is stored in ``out[i]``, an array
-          ``R* out`` of length ``n`` where ``R`` is the return type;
-        * ``int n`` is the number of elements (threads ``i >= n`` do nothing).
-
-        Launch it with ``n_threads=n``.
+        The wrapper kernel. Its parameters are those of the function, in
+        order, then ``R* out`` (unless the function returns ``void``) and
+        ``int n``. Pointer and struct parameters are passed unchanged to every
+        call; a scalar parameter ``T x`` becomes an array ``const T* x`` and
+        thread ``i`` calls the function with ``x[i]``, storing the result in
+        ``out[i]``. Threads ``i >= n`` do nothing. Launch it with
+        ``n_threads=n``.
 
     Raises
     ------
     ValueError
-        If the prototype cannot be parsed, the return type is not a scalar type
-        or ``void``, a parameter has an unsupported type, or a parameter is
-        named like `out_param` or `n_threads_param`.
+        If the prototype cannot be parsed, the return type is not a scalar or
+        ``void``, a parameter type is unsupported, or a parameter is named
+        like `out_param` or `n_threads_param`.
 
     Examples
     --------
-    >>> from cunumpy.kernel_testing import device_function_kernel
+    >>> from cunumpy.kernel_testing import device_function_kernel, emulate_cuda_kernel
     >>> sq = device_function_kernel(
-    ...     "__device__ double sq(double x) { return x * x; }",
-    ...     "double sq(double x)",
+    ...     "__device__ double sq(double x) { return x * x; }", "double sq(double x)"
     ... )
-    >>> sq.signature  # (const double* x, double* out, int n)
-    >>> x = cp.arange(10.0); out = cp.empty(10)  # doctest: +SKIP
-    >>> sq(x, out, 10, n_threads=10)  # doctest: +SKIP
+    >>> [p.name for p in sq.signature]
+    ['x', 'out', 'n']
+    >>> x, out = np.arange(4.0), np.empty(4)
+    >>> emulate_cuda_kernel(sq, x, out, 4, n_threads=4)  # on the CPU, needs a C++ compiler
+    >>> out
+    array([0., 1., 4., 9.])
     """
     structs = {struct.name: struct for struct in kwargs.get("structs", ())}
     result, function, params = _parse_prototype(signature, structs)

@@ -1,4 +1,4 @@
-"""Run host-only code (SciPy, file readers, external libraries) with arguments of any backend."""
+"""Run host-only code (SciPy, file readers, external libraries) with arguments of either backend."""
 
 import functools
 from collections.abc import Callable
@@ -31,17 +31,17 @@ def _to_device(arg: Any) -> Any:
 
 
 def host_call(fun: Callable, *args: Any, **kwargs: Any) -> Any:
-    """Call a host-only function with arguments of any backend.
+    """Call a host-only function with arguments of either backend.
 
     Device (CuPy) arrays among the arguments are copied to the host, `fun` runs
     on the NumPy backend, and its array results are copied back to the device,
-    once per call. Without device arguments `fun` is called directly (on the
-    NumPy backend this is a plain call), so the result lives where the
-    arguments live. The copies are counted by `xp.profiling.count_transfers()`.
+    once per call (counted by :func:`~cunumpy.profiling.count_transfers`).
+    Without device arguments `fun` is called directly, so the result lives
+    where the arguments live. See :doc:`/guides/data-movement`.
 
     Parameters
     ----------
-    fun
+    fun : callable
         The host-only function (a SciPy spline, an external code, ...).
     *args, **kwargs
         Arguments of `fun`: arrays (or tuples/lists of arrays) of either
@@ -49,12 +49,19 @@ def host_call(fun: Callable, *args: Any, **kwargs: Any) -> Any:
 
     Returns
     -------
-    The result of `fun` (an array, a tuple/list of arrays or a scalar), with
-    arrays on the device if any argument was on the device.
+    object
+        The result of `fun` (an array, a tuple/list of arrays or a scalar),
+        with its arrays on the device if any argument was on the device.
+
+    See Also
+    --------
+    evaluate_on_host : The same for a method.
 
     Examples
     --------
-    >>> values = xp.host_call(spline, x)  # x on the device -> values on the device
+    >>> xp.host_call(np.cumsum, xp.asarray([1, 2, 3]))
+    array([1, 3, 6])
+    >>> values = xp.host_call(spline, x_device)  # doctest: +SKIP
     """
     device = _on_device(args) or _on_device(list(kwargs.values()))
     if xp.get_backend() == "numpy" and not device:
@@ -65,14 +72,30 @@ def host_call(fun: Callable, *args: Any, **kwargs: Any) -> Any:
 
 
 def evaluate_on_host(method: Callable) -> Callable:
-    """Decorator for methods that can only be evaluated on the host (see `host_call`).
+    """Make a host-only method callable with arguments of either backend.
+
+    Each call goes through :func:`host_call`: device arrays are copied to the
+    host, the method runs on the NumPy backend, and array results are copied
+    back if any argument was on the device.
+
+    Parameters
+    ----------
+    method : callable
+        The method, ``method(self, *args, **kwargs)``.
+
+    Returns
+    -------
+    callable
+        The wrapped method.
 
     Examples
     --------
-    >>> class Equilibrium:
+    >>> class Profile:
     ...     @xp.evaluate_on_host
-    ...     def pressure(self, x):
-    ...         return scipy_spline(x)
+    ...     def cumulative(self, x):
+    ...         return np.cumsum(x)
+    >>> Profile().cumulative(xp.asarray([1, 2, 3]))
+    array([1, 3, 6])
     """
 
     @functools.wraps(method)
@@ -83,11 +106,30 @@ def evaluate_on_host(method: Callable) -> Callable:
 
 
 def setup_on_host(init: Callable) -> Callable:
-    """Decorator for an ``__init__`` whose setup is host-only.
+    """Run an ``__init__`` on the NumPy backend.
 
-    `init` runs on the NumPy backend, so the object holds only host data (NumPy
-    arrays, SciPy splines, floats) on either backend. Host-only parts of its
-    evaluation can then go through `host_call` or `evaluate_on_host`.
+    The object then holds only host data (NumPy arrays, SciPy splines, floats)
+    on either backend; host-only parts of its evaluation can go through
+    :func:`host_call` or :func:`evaluate_on_host`.
+
+    Parameters
+    ----------
+    init : callable
+        The ``__init__`` method.
+
+    Returns
+    -------
+    callable
+        The wrapped ``__init__``.
+
+    Examples
+    --------
+    >>> class Grid:
+    ...     @xp.setup_on_host
+    ...     def __init__(self, n):
+    ...         self.x = xp.linspace(0.0, 1.0, n)
+    >>> xp.get_array_backend(Grid(3).x)
+    'numpy'
     """
 
     @functools.wraps(init)

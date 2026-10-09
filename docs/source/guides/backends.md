@@ -15,7 +15,10 @@ CUNUMPY_BACKEND=cupy python simulate.py
 
 This is the least intrusive option for scripts and batch jobs: the code does
 not change, and a job script decides whether it runs on a GPU. The variable is
-read once, at import; setting it later in `os.environ` has no effect.
+read once, at import; setting it later in `os.environ` has no effect. The value
+is case-insensitive (`CUPY` works too), and any other value selects NumPy.
+Requesting CuPy this way falls back to NumPy, like `set_backend("cupy")`, when
+CuPy or CUDA is not usable.
 
 The startup setting is named `CUNUMPY_BACKEND`; migrate existing job scripts
 from `ARRAY_BACKEND`. CuNumpy-owned environment options share the `CUNUMPY_`
