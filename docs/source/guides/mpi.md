@@ -141,6 +141,34 @@ pinned staging buffers instead of allocating them per call, pass an
 `mpi_is_cuda_aware()` call and no `set_mpi_cuda_aware()`), a device array
 raises instead of guessing.
 
+### Exchange several buffers: `exchange`
+
+For a group of point-to-point transfers, `exchange()` manages the buffer
+contexts and waits for all requests internally:
+
+```python
+xp.mpi.exchange(
+    comm,
+    sends=[(send_r, right, 0), (send_l, left, 1)],
+    receives=[(recv_l, left, 0), (recv_r, right, 1)],
+)
+# recv_l and recv_r are ready, including any copies back to the GPU.
+```
+
+Each entry is `(array, peer_rank, tag)`. The helper prepares every buffer,
+posts all receives followed by all sends, and waits before closing any
+context. `cuda_aware=` has the same meaning as for `mpi_buffer()`. Each
+device receive slice gets its own staging buffer when staging is needed.
+Receive buffers must not overlap each other or send buffers; buffers passed
+directly to MPI must be contiguous. Empty lists do nothing, while zero-length
+arrays still send or receive messages and need matching peer operations.
+
+Preparation errors propagate before any local requests are posted. An error
+while posting or waiting aborts the communicator with `comm.Abort(1)`, because
+outstanding MPI requests may still access the buffers. On success the helper
+returns `None`; use `mpi_buffer()` directly when you need request statuses or
+control over asynchronous progress.
+
 ## Reproducible random numbers
 
 Each rank needs its own random stream, and a run is reproducible only if every

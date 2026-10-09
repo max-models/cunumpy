@@ -36,6 +36,7 @@ from maybempi import (
 
 from cunumpy._mpi import (
     MPIStaging,
+    exchange,
     get_mpi_cuda_aware,
     mpi_buffer,
     mpi_is_cuda_aware,
@@ -66,6 +67,7 @@ __all__ = [
     "SerialMPI",
     "SerialRequest",
     "SerialStatus",
+    "exchange",
     "get_mpi",
     "get_mpi_cuda_aware",
     "is_serial",

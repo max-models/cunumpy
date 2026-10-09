@@ -31,6 +31,20 @@ def test_reexported_from_maybempi():
     assert xp.mpi.is_serial(MPI) and xp.mpi.is_serial(comm)
 
 
+@pytest.mark.parametrize("size", [0, 4])
+def test_exchange_host_self_transfer(size):
+    send = np.arange(size, dtype=float)
+    recv = np.zeros_like(send)
+    assert (
+        xp.mpi.exchange(comm, sends=[(send, 0, 17)], receives=[(recv, 0, 17)]) is None
+    )
+    np.testing.assert_array_equal(recv, send)
+
+
+def test_exchange_empty_does_not_touch_communicator():
+    xp.mpi.exchange(object())
+
+
 class _DeviceArray:
     """Duck-typed device array: `.get()` copies it to the host."""
 
