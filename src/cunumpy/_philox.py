@@ -1,21 +1,14 @@
 """Counter-based random numbers (Philox4x32-10), the same on host and device.
 
-The host side of ``cunumpy/random.cuh``: :func:`philox_uniform` returns, for
-every (seed, stream, counter), exactly the doubles that ``cunumpy_uniform`` /
-``cunumpy_uniform2`` return in a kernel, so a kernel that samples random
-numbers can be compared with its host version element by element::
-
-    ids = xp.arange(n, dtype=xp.uint64)              # one stream per particle
-    u0, u1 = xp.rng.philox_uniform2(seed, ids, step)      # what each GPU thread draws
-    z0, z1 = xp.rng.philox_normal2(seed, ids, step)
-
-The numbers are a pure function of the key (``seed``, 64 bit) and the 128-bit
-counter (``counter`` and ``stream``, 64 bit each): no state, independent of the
-launch shape. Arguments broadcast like NumPy arrays; the result is a NumPy or a
-CuPy array, matching the inputs (NumPy for Python ints). Uniform numbers are
-bit-identical to the device ones; normal numbers (Box-Muller with ``log``,
-``sqrt``, ``sin``, ``cos``) can differ in the last bits, since the device math
-functions are not the host's.
+The host side of ``cunumpy/random.cuh``: for every (seed, stream, counter) the
+``philox_*`` functions return the numbers a kernel draws, so a kernel can be
+compared with its host version element by element. The numbers are a pure
+function of the 64-bit key (``seed``) and the 128-bit counter (``counter``,
+``stream``): no state, independent of the launch shape. Arguments broadcast;
+the result is a NumPy or CuPy array matching the inputs (NumPy for Python
+ints). Uniform numbers are bit-identical to the device ones; normal numbers
+can differ in the last bits, since the device math functions are not the
+host's.
 """
 
 from __future__ import annotations
@@ -49,7 +42,10 @@ def _module(*values: Any) -> Any:
 
 
 def philox4x32_10(counter: Any, key0: Any, key1: Any) -> Any:
-    """Philox4x32-10 of a ``(..., 4)`` array of uint32 counter words and a 2x32-bit key.
+    """Return Philox4x32-10 of uint32 counter words and a 2x32-bit key.
+
+    The raw generator, as ``cunumpy_philox4x32_10`` in ``cunumpy/random.cuh``
+    computes it; it passes the Random123 known-answer tests.
 
     Parameters
     ----------
@@ -61,7 +57,16 @@ def philox4x32_10(counter: Any, key0: Any, key1: Any) -> Any:
     Returns
     -------
     array of uint32, shape (..., 4)
-        The random words, as ``cunumpy_philox4x32_10`` computes them.
+        The random words, on the backend of the inputs.
+
+    See Also
+    --------
+    philox_uniform2 : Uniform doubles from (seed, stream, counter).
+
+    Examples
+    --------
+    >>> xp.rng.philox4x32_10(np.zeros(4, dtype=np.uint32), 0, 0)
+    array([1713891541, 3781805453, 3159862348, 2600524760], dtype=uint32)
     """
     xp = _module(counter, key0, key1)
     ctr = xp.asarray(counter, dtype=xp.uint64)
@@ -105,21 +110,39 @@ def _to_uniform(xp: Any, hi: Any, lo: Any) -> Any:
 
 
 def philox_uniform2(seed: Any, stream: Any, counter: Any) -> tuple[Any, Any]:
-    """Two uniform doubles in [0, 1) per (seed, stream, counter), as ``cunumpy_uniform2``.
+    """Return two uniform doubles in [0, 1) per (seed, stream, counter).
+
+    Bit-identical to ``cunumpy_uniform2`` in a kernel (53 random bits each).
+    Use a different `counter` for every random decision of a step.
 
     Parameters
     ----------
-    seed : int or array
-        The key (64 bit).
-    stream : int or array
-        The stream, e.g. a particle id (64 bit).
-    counter : int or array
-        The draw index, e.g. the time step (64 bit).
+    seed : int or array of uint64
+        The key.
+    stream : int or array of uint64
+        The stream, e.g. a particle id.
+    counter : int or array of uint64
+        The draw index, e.g. the time step.
 
     Returns
     -------
-    tuple of arrays
-        ``(u0, u1)``, broadcast to the shape of the arguments.
+    u0 : array of float64
+        The first number, broadcast to the shape of the arguments, on their
+        backend.
+    u1 : array of float64
+        The second number.
+
+    See Also
+    --------
+    philox_uniform : The first of the two numbers.
+    philox_normal2 : Normal numbers from the same draw.
+
+    Examples
+    --------
+    >>> ids = xp.arange(3, dtype=xp.uint64)  # one stream per particle
+    >>> u0, u1 = xp.rng.philox_uniform2(42, ids, 0)
+    >>> u0
+    array([0.61295988, 0.01005884, 0.3984137 ])
     """
     xp = _module(seed, stream, counter)
     r = _random_bits(seed, stream, counter)
@@ -127,15 +150,62 @@ def philox_uniform2(seed: Any, stream: Any, counter: Any) -> tuple[Any, Any]:
 
 
 def philox_uniform(seed: Any, stream: Any, counter: Any) -> Any:
-    """One uniform double in [0, 1) per (seed, stream, counter), as ``cunumpy_uniform``."""
+    """Return one uniform double in [0, 1) per (seed, stream, counter).
+
+    Bit-identical to ``cunumpy_uniform`` in a kernel: the first number of
+    :func:`philox_uniform2`.
+
+    Parameters
+    ----------
+    seed : int or array of uint64
+        The key.
+    stream : int or array of uint64
+        The stream, e.g. a particle id.
+    counter : int or array of uint64
+        The draw index, e.g. the time step.
+
+    Returns
+    -------
+    array of float64
+        Broadcast to the shape of the arguments, on their backend.
+
+    Examples
+    --------
+    >>> xp.rng.philox_uniform(42, xp.arange(3, dtype=xp.uint64), 0)
+    array([0.61295988, 0.01005884, 0.3984137 ])
+    """
     return philox_uniform2(seed, stream, counter)[0]
 
 
 def philox_normal2(seed: Any, stream: Any, counter: Any) -> tuple[Any, Any]:
-    """Two standard normal doubles per (seed, stream, counter), as ``cunumpy_normal2``.
+    """Return two standard normal doubles per (seed, stream, counter).
 
-    Box-Muller of :func:`philox_uniform2`; equal to the device numbers up to the
-    last bits of the math functions.
+    Box-Muller of :func:`philox_uniform2`, as ``cunumpy_normal2`` in a kernel;
+    equal to the device numbers up to the last bits of ``log``, ``sqrt``,
+    ``sin`` and ``cos``.
+
+    Parameters
+    ----------
+    seed : int or array of uint64
+        The key.
+    stream : int or array of uint64
+        The stream, e.g. a particle id.
+    counter : int or array of uint64
+        The draw index, e.g. the time step.
+
+    Returns
+    -------
+    z0 : array of float64
+        The first number, broadcast to the shape of the arguments, on their
+        backend.
+    z1 : array of float64
+        The second number.
+
+    Examples
+    --------
+    >>> z0, z1 = xp.rng.philox_normal2(42, xp.arange(1000, dtype=xp.uint64), 0)
+    >>> z0.shape, z0.dtype
+    ((1000,), dtype('float64'))
     """
     xp = _module(seed, stream, counter)
     u0, u1 = philox_uniform2(seed, stream, counter)
@@ -145,5 +215,28 @@ def philox_normal2(seed: Any, stream: Any, counter: Any) -> tuple[Any, Any]:
 
 
 def philox_normal(seed: Any, stream: Any, counter: Any) -> Any:
-    """One standard normal double per (seed, stream, counter), as ``cunumpy_normal``."""
+    """Return one standard normal double per (seed, stream, counter).
+
+    As ``cunumpy_normal`` in a kernel: the first number of
+    :func:`philox_normal2`.
+
+    Parameters
+    ----------
+    seed : int or array of uint64
+        The key.
+    stream : int or array of uint64
+        The stream, e.g. a particle id.
+    counter : int or array of uint64
+        The draw index, e.g. the time step.
+
+    Returns
+    -------
+    array of float64
+        Broadcast to the shape of the arguments, on their backend.
+
+    Examples
+    --------
+    >>> xp.rng.philox_normal(42, xp.arange(4, dtype=xp.uint64), 0).shape
+    (4,)
+    """
     return philox_normal2(seed, stream, counter)[0]

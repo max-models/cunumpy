@@ -7,9 +7,6 @@ CUDA kernels; the code that owns the arrays builds the one for its backend.
 Kernels receive argument objects as they are; cunumpy never converts one form
 into the other::
 
-    import cunumpy as xp
-
-
     class CudaMarkerArguments(xp.arguments.CudaStructArguments):
         struct_name = "MarkerArgs"
         fields = (("markers", "Array2D<double>"), ("n_markers", "int"))
@@ -22,7 +19,7 @@ into the other::
 :class:`CudaArguments` flattens a group into several kernel parameters,
 :class:`CudaStruct` defines a C struct passed by value, and
 :func:`write_cuda_header` writes struct definitions to a header. The kernel
-classes are in :mod:`cunumpy.kernels`.
+classes are in :mod:`cunumpy.kernels`. See :doc:`/kernels/arguments`.
 """
 
 from cunumpy._cuda_kernel import (

@@ -1,23 +1,19 @@
-"""Morton (Z-order) keys, the same on host and device.
+"""Morton (Z-order) keys, the same on the host and in ``cunumpy/morton.cuh``.
 
-The host side of ``cunumpy/morton.cuh``. A Morton key interleaves the bits of
-the integer cell coordinates of a point, so sorting points by their keys
-orders them along a Z-shaped space-filling curve: points close in space end up
-close in memory (better locality for gathers and neighbour loops), and the
-points of every node of a quadtree (2D) or octree (3D) on the same box are a
-contiguous range of the sorted array::
+A Morton key interleaves the bits of the integer cell coordinates of a point.
+Sorting by it orders points along a Z-shaped curve: points close in space end
+up close in memory, and the points of every quadtree (2D) or octree (3D) node
+on the box are a contiguous range::
 
-    scales = xp.algorithms.morton_scales(lower, upper, levels)
-    keys = xp.algorithms.morton_keys(positions, lower, upper, levels)   # uint64, one per point
-    keys, order, positions, charges = xp.algorithms.sort_by_key(keys, positions, charges)
-    node = keys >> np.uint64(ndim * (levels - level))       # node index at `level`
+    keys = xp.algorithms.morton_keys(positions, lower, upper, levels)
+    keys, order, positions = xp.algorithms.sort_by_key(keys, positions)
+    node = keys >> np.uint64(ndim * (levels - level))  # node index at `level`
 
-Bit layout: with ``levels`` bits per axis the key has ``ndim * levels`` bits;
-axis 0 is the lowest bit of every group of ``ndim`` bits. The top group is the
-child of the root a point lies in, the next group the child of that child, and
-so on. In a kernel, ``cunumpy_morton_key2`` / ``cunumpy_morton_key3`` with the
-:func:`morton_scales` of the host return exactly the keys of
-:func:`morton_keys` (the cell index is ``floor((x - lower) * scale)`` in both).
+With ``levels`` bits per axis the key has ``ndim * levels`` bits; axis 0 is
+the lowest bit of every group of ``ndim`` bits, and the top group is the child
+of the root. In a kernel, ``cunumpy_morton_key2`` / ``cunumpy_morton_key3``
+with the :func:`morton_scales` of the host return the keys of
+:func:`morton_keys`.
 """
 
 from __future__ import annotations
@@ -91,14 +87,29 @@ def morton_encode(*cells: Any) -> Any:
 
     Parameters
     ----------
-    *cells : arrays of non-negative integers
+    *cells : array of int
         One array per axis (2 or 3 of them), broadcast against each other;
-        values must fit in 32 bits (2D) or 21 bits (3D).
+        non-negative, fitting in 32 bits (2D) or 21 bits (3D).
 
     Returns
     -------
     array of uint64
-        The keys, bit ``ndim * b + a`` holding bit ``b`` of axis ``a``.
+        The keys, bit ``ndim * b + a`` holding bit ``b`` of axis ``a``, on the
+        backend of `cells`.
+
+    Raises
+    ------
+    ValueError
+        If there are not 2 or 3 arrays.
+
+    See Also
+    --------
+    morton_decode : The inverse.
+
+    Examples
+    --------
+    >>> xp.algorithms.morton_encode(xp.asarray([1, 0, 3]), xp.asarray([0, 1, 3]))
+    array([ 1,  2, 15], dtype=uint64)
     """
     ndim = len(cells)
     _check_levels(ndim, 1)
@@ -111,12 +122,31 @@ def morton_encode(*cells: Any) -> Any:
 
 
 def morton_decode(keys: Any, ndim: int) -> tuple[Any, ...]:
-    """The integer cell coordinates of Morton keys, the inverse of :func:`morton_encode`.
+    """Return the integer cell coordinates of Morton keys.
+
+    The inverse of :func:`morton_encode`.
+
+    Parameters
+    ----------
+    keys : array of uint64
+        Morton keys.
+    ndim : int
+        Number of axes, 2 or 3.
 
     Returns
     -------
     tuple of arrays of uint64
-        One array per axis, shaped like `keys`.
+        One array per axis, shaped like `keys`, on its backend.
+
+    Raises
+    ------
+    ValueError
+        If `ndim` is not 2 or 3.
+
+    Examples
+    --------
+    >>> xp.algorithms.morton_decode(xp.asarray([1, 2, 15], dtype=np.uint64), 2)
+    (array([1, 0, 3], dtype=uint64), array([0, 1, 3], dtype=uint64))
     """
     _check_levels(ndim, 1)
     xpm = _module(keys)
@@ -125,10 +155,33 @@ def morton_decode(keys: Any, ndim: int) -> tuple[Any, ...]:
 
 
 def morton_scales(lower: Sequence[float], upper: Sequence[float], levels: int) -> Any:
-    """Cells per unit length of every axis, ``2**levels / (upper - lower)``.
+    """Return the cells per unit length of every axis, ``2**levels / (upper - lower)``.
 
-    The numbers to pass to ``cunumpy_morton_key2`` / ``_key3`` in a kernel so
-    that it computes the keys of :func:`morton_keys`. A float64 NumPy array.
+    Pass them to ``cunumpy_morton_key2`` / ``cunumpy_morton_key3`` in a kernel so
+    that it computes the keys of :func:`morton_keys`.
+
+    Parameters
+    ----------
+    lower, upper : sequence of float
+        Corners of the box, one value per axis (2 or 3).
+    levels : int
+        Bits per axis: 1 to 32 in 2D, 1 to 21 in 3D.
+
+    Returns
+    -------
+    numpy.ndarray of float64
+        One scale per axis, always on the host.
+
+    Raises
+    ------
+    ValueError
+        If the corners have different lengths, a dimension other than 2 or 3, or
+        are equal on an axis, or if `levels` is out of range.
+
+    Examples
+    --------
+    >>> xp.algorithms.morton_scales([0.0, 0.0], [1.0, 2.0], 4)
+    array([16.,  8.])
     """
     lower = np.asarray(lower, dtype=np.float64)
     upper = np.asarray(upper, dtype=np.float64)
@@ -149,13 +202,12 @@ def morton_keys(
     upper: Sequence[float],
     levels: int,
 ) -> Any:
-    """Morton keys of points in the box ``[lower, upper]``, ``levels`` bits per axis.
+    """Return the Morton keys of points in the box ``[lower, upper]``.
 
     The cell of a point along an axis is ``floor((x - lower) * scale)`` with the
-    :func:`morton_scales`, clipped to ``[0, 2**levels - 1]``, so points on or
-    outside the box get the cell at the nearest face. A point exactly on a cell
-    boundary belongs to the upper cell. ``lower > upper`` on an axis reverses
-    that axis (cell 0 at ``lower``).
+    :func:`morton_scales`, clipped to ``[0, 2**levels - 1]``: points on or outside
+    the box get the cell at the nearest face, and a point on a cell boundary
+    belongs to the upper cell. ``lower > upper`` on an axis reverses that axis.
 
     Parameters
     ----------
@@ -169,7 +221,22 @@ def morton_keys(
     Returns
     -------
     array of uint64, shape (n,)
-        On the backend of `positions`.
+        The keys, on the backend of `positions`.
+
+    Raises
+    ------
+    ValueError
+        If the shapes do not match or `levels` is out of range.
+
+    See Also
+    --------
+    sort_by_key : Sort points by their keys.
+
+    Examples
+    --------
+    >>> positions = xp.asarray([[0.1, 0.1], [0.9, 0.1], [0.9, 0.9]])
+    >>> xp.algorithms.morton_keys(positions, [0.0, 0.0], [1.0, 1.0], levels=2)
+    array([ 0,  5, 15], dtype=uint64)
     """
     xpm = _module(positions)
     positions = xpm.asarray(positions)

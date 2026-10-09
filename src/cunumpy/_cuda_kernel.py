@@ -1,49 +1,18 @@
 """CUDA kernels (``cupy.RawKernel``) called like their NumPy/Pyccel counterparts.
 
-:class:`CudaKernel` wraps a CUDA C kernel so that it can be called with the same
-arguments as the host kernel it mirrors:
+:class:`~cunumpy.kernels.CudaKernel` parses the ``__global__`` signature once
+and checks every call against it: argument count, array dtypes and
+contiguity, structs, and scalars (cast to the declared C type, or raising
+instead of reaching the kernel as a wrong value). Arrays are never copied to
+the device. Argument objects (:class:`~cunumpy.arguments.CudaArguments`) are
+flattened, C structs (:class:`~cunumpy.arguments.CudaStruct`) are passed by
+value, and ``Array2D<T>`` parameters take strided CuPy arrays.
+:class:`~cunumpy.kernels.CudaKernelVariants` caches generated kernels per
+variant.
 
-* argument objects that implement the :class:`CudaArguments` protocol
-  (a ``__cuda_args__()`` method) are flattened into their device arrays and
-  scalars, so an object holding several arrays can be passed as one argument;
-* C structs can be passed by value: :class:`CudaStruct` defines the struct once,
-  generates its C declaration and packs its values;
-* the ``__global__`` signature is parsed once, and every call is checked against
-  it: the number of arguments, the dtype of every array, every struct, and
-  every scalar. Python scalars are cast to the declared C type; a scalar that
-  does not fit the declared type (a ``float`` for an ``int``, an integer out of
-  range, a NumPy scalar that would lose precision) raises instead of reaching
-  the kernel as a silently wrong value, which is what ``cupy.RawKernel`` would
-  do;
-* arrays are never converted or copied: they must already be C-contiguous
-  CuPy arrays (build them once with :func:`cunumpy.as_device_array`);
-* strided array views: a parameter or struct field of type ``Array2D<double>``
-  (from the shipped header ``cunumpy/array_view.cuh``, see
-  :func:`cuda_include_dir`) takes a 2D CuPy array, contiguous or not, and
-  receives its pointer, shape and strides, so that kernels index ``a(i, j)``
-  like the pyccel kernels they are ported from; ``CArray2D<double>`` is the
-  C-contiguous variant (shape only, ``a(i, j)`` is ``data[i * shape[1] + j]``),
-  which takes C-contiguous arrays only and raises for other views;
-* C++ function templates are instantiated with ``template_args``, and generated
-  kernels (one source per variant) are compiled once per variant by
-  :class:`CudaKernelVariants`.
-
-The launch shape is given at each call, either as the number of threads
-(``n_threads``, in 1 to 3 dimensions) or as an explicit ``grid``.
-
-Argument structs can be generated from the annotations of a Python class
-(:meth:`CudaStruct.from_signature`) and written to a header
-(:meth:`CudaStruct.to_header`, :func:`write_cuda_header`), so that the Python
-class is the one definition of the arguments.
-
-In debug mode (``debug=True``, ``xp.cuda.set_cuda_debug(True)`` or the environment
-variable ``CUNUMPY_CUDA_DEBUG=1``) kernels are compiled with ``-lineinfo`` and
-``-DCUNUMPY_BOUNDS_CHECK``, and every launch is synchronized so that an
-asynchronous CUDA error is raised, as a ``RuntimeError`` naming the kernel, at
-the launch that caused it.
-
-This module imports CuPy only when a kernel is compiled, so it can be imported
-(and signatures parsed) without CuPy.
+CuPy is imported only when a kernel is compiled, so kernels can be created and
+signatures parsed without CuPy. See :doc:`/kernels/cuda-kernel`,
+:doc:`/kernels/arguments` and :doc:`/kernels/debugging`.
 """
 
 from __future__ import annotations
@@ -122,80 +91,101 @@ _ARRAY_VIEW_INCLUDE = '#include "cunumpy/array_view.cuh"'
 
 
 def cuda_include_dir() -> str:
-    """The directory of the CUDA headers shipped with cunumpy.
+    """Return the directory of the CUDA headers shipped with cunumpy.
 
-    :class:`CudaKernel` adds it to the include path automatically, so kernels
-    can ``#include "cunumpy/array_view.cuh"`` (strided ``Array1D<T>``
-    to ``Array16D<T>`` views passed by value) and
-    ``#include "cunumpy/index.cuh"`` (thread-index and grid-stride macros such
-    as ``CUNUMPY_THREAD_1D(i, n)``), ``#include "cunumpy/atomic.cuh"`` (atomic
-    adds) and ``#include "cunumpy/reduce.cuh"`` (warp and block reductions).
-    Pass it as ``-I`` to other compilers.
+    :class:`~cunumpy.kernels.CudaKernel` always finds these headers:
+    ``cunumpy/array_view.cuh`` (strided ``Array1D<T>`` to ``Array16D<T>``
+    views), ``cunumpy/index.cuh`` (thread-index macros such as
+    ``CUNUMPY_THREAD_1D(i, n)``), ``cunumpy/atomic.cuh`` (atomic adds),
+    ``cunumpy/reduce.cuh`` and ``cunumpy/scan.cuh`` (warp and block
+    reductions and prefix sums), ``cunumpy/random.cuh`` (Philox random
+    numbers) and ``cunumpy/morton.cuh`` (Morton keys). See
+    :doc:`/kernels/cuda-headers`.
+
+    Returns
+    -------
+    str
+        The directory, to pass as ``-I<dir>`` to other compilers.
+
+    Examples
+    --------
+    >>> import os
+    >>> os.path.isfile(os.path.join(xp.cuda.cuda_include_dir(), "cunumpy", "atomic.cuh"))
+    True
     """
     return str(_CUDA_INCLUDE_DIR)
 
 
-#: NVRTC options added in debug mode: source line information for
-#: ``compute-sanitizer``/``nsys``, and bounds checks in the array views.
-#: (``-G`` is not among them: NVRTC does not support it.)
+#: NVRTC options added in debug mode: line information for
+#: ``compute-sanitizer``/``nsys`` and bounds checks in the array views
+#: (no ``-G``: NVRTC does not support it).
 DEBUG_OPTIONS = ("-lineinfo", "-DCUNUMPY_BOUNDS_CHECK")
 
 
 class CudaArguments:
-    """Base class for objects passed to a :class:`CudaKernel` as one argument.
+    """Base class for objects passed to a CUDA kernel as several arguments.
 
-    A :class:`CudaKernel` replaces every argument that has a ``__cuda_args__()``
-    method by the values it returns, in order. Subclassing this class is
-    optional: any object implementing ``__cuda_args__()`` is flattened.
+    A :class:`~cunumpy.kernels.CudaKernel` replaces every argument that has a
+    ``__cuda_args__()`` method by the values it returns, in order. Subclassing
+    is optional: any object with ``__cuda_args__()`` is flattened. See
+    :doc:`/kernels/arguments`.
 
     Parameters
     ----------
     *values
-        The CUDA kernel arguments this object stands for: CuPy arrays and
-        scalars, in the order of the kernel signature.
+        The kernel arguments this object stands for (CuPy arrays and
+        scalars), in the order of the kernel signature.
 
     Examples
     --------
-    >>> class Particles(CudaArguments):
+    >>> class Particles(xp.arguments.CudaArguments):
     ...     def __init__(self, positions, velocities):
-    ...         self.positions = positions
     ...         super().__init__(positions, velocities, positions.shape[0])
-    >>> kernel(dt, Particles(x, v), n_threads=x.shape[0])  # doctest: +SKIP
+    >>> Particles(np.zeros(3), np.ones(3)).__cuda_args__()
+    (array([0., 0., 0.]), array([1., 1., 1.]), 3)
+    >>> kernel(dt, Particles(x, v))  # doctest: +SKIP
     """
 
     def __init__(self, *values: Any) -> None:
         self._cuda_args = tuple(values)
 
     def __cuda_args__(self) -> tuple[Any, ...]:
-        """The CUDA kernel arguments this object stands for."""
+        """Return the kernel arguments this object stands for."""
         return self._cuda_args
 
 
 class CudaParameter(NamedTuple):
-    """One parameter of a CUDA kernel signature (or one field of a struct).
+    """One parameter of a CUDA kernel signature, or one field of a struct.
+
+    Returned by :func:`~cunumpy.cuda.parse_cuda_signature`.
 
     Attributes
     ----------
     name : str
         Parameter name.
     ctype : str
-        Normalized C type without qualifiers or ``*``, e.g. ``"double"`` or
+        C type without qualifiers or ``*``, e.g. ``"double"`` or
         ``"Array2D<double>"``.
-    dtype : numpy.dtype | None
-        NumPy dtype of the value (or of the pointed-to elements, or of the
-        elements of an array view; the structured dtype for a struct);
-        ``None`` for ``void*``.
+    dtype : numpy.dtype or None
+        Dtype of the value, of the pointed-to or viewed elements, or the
+        structured dtype of a struct; None for ``void*``.
     pointer : bool
         Whether the parameter is a pointer (a device array).
-    struct : CudaStruct | None
+    struct : CudaStruct or None
         The struct type, for a struct passed by value.
-    view_ndim : int | None
-        The number of dimensions, for an array view (``Array1D<T>`` to
-        ``Array16D<T>`` or ``CArray1D<T>`` to ``CArray16D<T>``, see
-        :func:`cuda_include_dir`) passed by value.
+    view_ndim : int or None
+        Number of dimensions of an array view (``Array1D<T>`` to
+        ``Array16D<T>``, ``CArray1D<T>`` to ``CArray16D<T>``).
     contiguous : bool
         Whether the array view is C-contiguous (``CArray2D<T>``): packed
-        without strides, and only C-contiguous arrays are accepted.
+        without strides, takes C-contiguous arrays only.
+
+    Examples
+    --------
+    >>> source = 'extern "C" __global__ void f(const double* x, int n) {}'
+    >>> x, n = xp.cuda.parse_cuda_signature(source, "f")
+    >>> x.ctype, x.dtype, x.pointer
+    ('double', dtype('float64'), True)
     """
 
     name: str
@@ -278,16 +268,13 @@ _TOKEN = re.compile(
 
 
 def _normalize_view(match: re.Match) -> str:
-    """``Array2D< const double >`` -> ``Array2D<double>``."""
+    """Normalize a view type: ``Array2D< const double >`` -> ``Array2D<double>``."""
     words = [w for w in match.group(3).split() if w not in _QUALIFIERS]
     return f"{match.group(1)}Array{match.group(2)}D<{' '.join(words)}>"
 
 
 def _view_dtype(ndim: int, contiguous: bool = False) -> np.dtype:
-    """The structured dtype with the C layout of ``Array<ndim>D<T>``.
-
-    ``CArray<ndim>D<T>`` (`contiguous`) has no strides.
-    """
+    """Return the structured dtype of ``Array<ndim>D<T>`` (no strides if `contiguous`)."""
     fields = [("data", np.uint64), ("shape", np.int64, (ndim,))]
     if not contiguous:
         fields.append(("strides", np.int64, (ndim,)))
@@ -295,11 +282,31 @@ def _view_dtype(ndim: int, contiguous: bool = False) -> np.dtype:
 
 
 def ctype_of(dtype: Any) -> str:
-    """The C type of a NumPy dtype, e.g. ``ctype_of(np.float64) == "double"``.
+    """Return the C type of a NumPy dtype.
 
-    Useful to generate CUDA source or template arguments for a given dtype.
-    Complex dtypes map to ``complex<float>``/``complex<double>`` (include
+    Useful to generate CUDA source or template arguments for a dtype. Complex
+    dtypes map to ``complex<float>``/``complex<double>`` (include
     ``<cupy/complex.cuh>`` in the source).
+
+    Parameters
+    ----------
+    dtype : dtype-like
+        A boolean, integer, floating-point or complex dtype.
+
+    Returns
+    -------
+    str
+        The C type, e.g. ``"double"`` or ``"long long"``.
+
+    Raises
+    ------
+    ValueError
+        If the dtype has no C type.
+
+    Examples
+    --------
+    >>> xp.cuda.ctype_of(np.float64), xp.cuda.ctype_of(np.int64)
+    ('double', 'long long')
     """
     try:
         return _CTYPE_OF[np.dtype(dtype)]
@@ -322,7 +329,7 @@ _INCLUDE = re.compile(
 
 
 def _includes(source: str) -> list[tuple[str, bool]]:
-    """``(name, quoted)`` of every ``#include`` in `source`, in order."""
+    """Return ``(name, quoted)`` of every ``#include`` in `source`, in order."""
     return [
         (quoted or angle, bool(quoted))
         for quoted, angle in _INCLUDE.findall(_strip_comments(source))
@@ -336,37 +343,38 @@ def resolve_includes(
     base_dir: str | Path | None = None,
     angle_dirs: Iterable[str | Path] = (),
 ) -> list[Path]:
-    """The header files a CUDA source includes, recursively.
+    r"""Return the header files a CUDA source includes, recursively.
 
-    Scans `source` (comments removed) for ``#include "name"`` and resolves each
-    name like NVRTC does: relative to `base_dir` (the directory of the
-    including file), then in `include_dirs`, then in `angle_dirs`, in order.
-    Found headers are scanned in turn, relative to their own directory.
-    Includes in angle brackets (``#include <name>``) are system headers and
-    ignored, unless they are found in `angle_dirs`. Includes that cannot be
-    found are ignored; NVRTC reports them when the kernel is compiled.
+    Each ``#include "name"`` (comments ignored) is resolved like NVRTC does:
+    in `base_dir`, then `include_dirs`, then `angle_dirs`; found headers are
+    scanned in turn, relative to their own directory. ``#include <name>`` is
+    ignored unless found in `angle_dirs`, and so are includes that cannot be
+    found (NVRTC reports them at compile time).
 
     Parameters
     ----------
     source : str
         CUDA C source code.
-    include_dirs : Iterable[str | Path]
-        Directories searched for included files, in order (the ``-I`` options).
-    base_dir : str | Path | None
-        Directory of the file `source` was read from, searched first; None if
-        the source is not from a file.
-    angle_dirs : Iterable[str | Path]
-        Directories whose headers are tracked also when included in angle
-        brackets, searched last; :class:`CudaKernel` passes
-        :func:`cuda_include_dir`, so that ``#include <cunumpy/reduce.cuh>``
-        is tracked.
+    include_dirs : iterable of str or Path, optional
+        Directories searched in order (the ``-I`` options).
+    base_dir : str or Path, optional
+        Directory of the file `source` was read from, searched first.
+    angle_dirs : iterable of str or Path, optional
+        Directories searched last, also for ``#include <name>``;
+        :class:`~cunumpy.kernels.CudaKernel` passes
+        :func:`~cunumpy.cuda.cuda_include_dir`.
 
     Returns
     -------
-    list[Path]
-        The resolved header files, each once, in order of first inclusion
-        (depth first). Empty if the source has no includes to track; the file
-        system is not touched in that case.
+    list of Path
+        The headers, each once, in depth-first order of first inclusion.
+        Empty, without touching the file system, if there is nothing to track.
+
+    Examples
+    --------
+    >>> source = '#include <cunumpy/index.cuh>\n#include <cstdio>'
+    >>> [p.name for p in xp.cuda.resolve_includes(source, angle_dirs=[xp.cuda.cuda_include_dir()])]
+    ['index.cuh']
     """
     angle = tuple(Path(d) for d in angle_dirs)
     dirs = tuple(Path(d) for d in include_dirs)
@@ -395,21 +403,29 @@ def resolve_includes(
 
 
 def include_hash(paths: Iterable[str | Path]) -> str:
-    """A short hex digest of the contents of `paths`, in order.
+    """Return a short hex digest of the contents of files, in order.
 
-    Only the file contents count, not their locations: moving a header does not
-    change the hash, editing it does. Used to make CuPy's kernel cache key
-    depend on the included headers, see :meth:`CudaKernel.compile_options`.
+    Only the contents count: moving a header keeps the hash, editing it
+    changes it. Makes CuPy's kernel cache key depend on the included headers,
+    see :meth:`CudaKernel.compile_options
+    <cunumpy.kernels.CudaKernel.compile_options>`.
 
     Parameters
     ----------
-    paths : Iterable[str | Path]
-        Files to hash, e.g. from :func:`resolve_includes`.
+    paths : iterable of str or Path
+        Files to hash, e.g. from :func:`~cunumpy.cuda.resolve_includes`.
 
     Returns
     -------
     str
         The first 16 hex digits of the SHA-256 digest.
+
+    Examples
+    --------
+    >>> import os
+    >>> header = os.path.join(xp.cuda.cuda_include_dir(), "cunumpy", "index.cuh")
+    >>> len(xp.cuda.include_hash([header]))
+    16
     """
     digest = hashlib.sha256()
     for path in paths:
@@ -423,10 +439,10 @@ _GLOBAL_FUNCTION = re.compile(r"__global__\s+void\s+([A-Za-z_]\w*)\s*\(")
 
 
 def cuda_kernel_names(source: str) -> list[str]:
-    """The names of the ``__global__`` functions defined in `source`, in order.
+    """Return the names of the ``__global__`` functions in a CUDA source.
 
-    Comments are ignored. Templates are included; a function declared more
-    than once (e.g. a forward declaration) is listed once.
+    Comments are ignored, templates included; a function declared more than
+    once is listed once.
 
     Parameters
     ----------
@@ -435,8 +451,17 @@ def cuda_kernel_names(source: str) -> list[str]:
 
     Returns
     -------
-    list[str]
-        The kernel names, in the order of their first appearance.
+    list of str
+        The kernel names, in order of first appearance.
+
+    Examples
+    --------
+    >>> source = '''
+    ... extern "C" __global__ void scale(double* x) {}
+    ... // __global__ void old(double* x) {}
+    ... extern "C" __global__ void shift(double* x) {}'''
+    >>> xp.cuda.cuda_kernel_names(source)
+    ['scale', 'shift']
     """
     return list(dict.fromkeys(_GLOBAL_FUNCTION.findall(_strip_comments(source))))
 
@@ -445,18 +470,7 @@ def _compile_in_threads(
     compilers: Mapping[Hashable, Callable[[], Any]],
     jobs: int | None,
 ) -> list[Hashable]:
-    """Run the `compilers` (name -> compile function), `jobs` at a time.
-
-    With ``jobs=1`` they run one after the other in the calling thread; with
-    ``jobs=None`` as many threads as CPUs are used. All compilers are run even
-    if one fails; the first exception (in the order of `compilers`) is raised
-    afterwards.
-
-    Returns
-    -------
-    list
-        The names whose compiler succeeded, in the order of `compilers`.
-    """
+    """Run the `compilers` `jobs` at a time; raise the first error after all ran."""
     if jobs is None:
         jobs = os.cpu_count() or 1
     if jobs < 1:
@@ -557,7 +571,7 @@ def _split_top_level(text: str) -> list[str]:
 
 
 def _template_arg(value: Any) -> str:
-    """A template argument as C++ source: a C type for dtypes, else a literal."""
+    """Return a template argument as C++ source: a C type for dtypes, else a literal."""
     if isinstance(value, str):
         return value
     if isinstance(value, bool):
@@ -574,7 +588,10 @@ def parse_cuda_signature(
     structs: Iterable[CudaStruct] = (),
     template_args: Sequence[Any] | None = None,
 ) -> tuple[CudaParameter, ...]:
-    """Parse the parameters of the ``__global__`` function `name` in `source`.
+    """Parse the parameters of a ``__global__`` function.
+
+    C types map to dtypes as on Linux (LP64): ``int`` is int32, ``long`` and
+    ``long long`` are int64.
 
     Parameters
     ----------
@@ -582,26 +599,34 @@ def parse_cuda_signature(
         CUDA C source code.
     name : str
         Name of the ``__global__`` function.
-    structs : Iterable[CudaStruct]
-        Struct types that may appear as parameters (passed by value). If the
-        source defines a struct of the same name, its fields must match.
-    template_args : Sequence | None
-        Template arguments, if `name` is a function template: C types (or NumPy
-        dtypes, see :func:`ctype_of`) for type parameters, integers or bools for
-        non-type parameters. They are substituted into the parameter list.
+    structs : iterable of CudaStruct, optional
+        Struct types that may appear as parameters (by value). A definition
+        of the struct in `source` must match.
+    template_args : sequence, optional
+        Template arguments if `name` is a function template: C types or
+        dtypes (see :func:`~cunumpy.cuda.ctype_of`) for type parameters,
+        ints or bools for non-type parameters.
 
     Returns
     -------
-    tuple[CudaParameter, ...]
+    tuple of CudaParameter
         The parameters, in order.
 
     Raises
     ------
     ValueError
-        If there is no such function, a template is used without (the right
-        number of) `template_args`, a struct definition in the source does not
-        match its :class:`CudaStruct`, or a parameter has a type that cannot be
-        checked (e.g. a macro or a pointer to pointer).
+        If there is no such function, `template_args` do not fit, a struct
+        definition does not match its :class:`~cunumpy.arguments.CudaStruct`,
+        or a parameter type cannot be checked (e.g. a macro or ``double**``).
+
+    Examples
+    --------
+    >>> source = '''
+    ... template <typename T>
+    ... __global__ void scale(T* x, T factor, int n) {}'''
+    >>> [(p.name, p.ctype, p.pointer) for p in xp.cuda.parse_cuda_signature(
+    ...     source, "scale", template_args=[np.float32])]
+    [('x', 'float', True), ('factor', 'float', False), ('n', 'int', False)]
     """
     code = _strip_comments(source)
     structs = {s.name: s for s in structs}
@@ -654,11 +679,7 @@ def _describe(param: CudaParameter, index: int) -> str:
 
 
 def _current_device_id() -> int | None:
-    """The id of the current CUDA device, or None if CuPy has not been imported.
-
-    CuPy is looked up in ``sys.modules`` and never imported here: without it
-    there are no device arrays whose device could be checked.
-    """
+    """Return the current CUDA device id, or None if CuPy was never imported."""
     cp = sys.modules.get("cupy")
     if cp is None:
         return None
@@ -717,13 +738,7 @@ def _pointer_checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
 
 
 def _view_checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
-    """Checker for an array view: packs (pointer, shape, strides) of a device array.
-
-    Strides are converted from bytes to elements; the array need not be
-    contiguous. A contiguous view (``CArray2D<T>``) packs (pointer, shape) and
-    takes C-contiguous arrays only: it is never copied, since what the kernel
-    writes into a copy would be lost.
-    """
+    """Checker for an array view: packs pointer, shape and strides (in elements)."""
     ndim = param.view_ndim
     contiguous = param.contiguous
     dtype = _view_dtype(ndim, contiguous)
@@ -853,7 +868,7 @@ def _checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
 
 
 def _field_dtype(field: CudaParameter) -> np.dtype:
-    """The dtype of a struct field: pointers are stored as device addresses."""
+    """Return the dtype of a struct field (pointers are stored as addresses)."""
     if field.pointer:
         return np.dtype(np.uint64)
     if field.view_ndim is not None:
@@ -882,7 +897,7 @@ _PYCCEL_ANNOTATION = re.compile(
 
 
 def _pyccel_ctype(annotation: Any, scalars: Mapping[str, str], what: str) -> str:
-    """The C type for a pyccel-style annotation, e.g. ``"float[:, :]"``."""
+    """Return the C type of a pyccel-style annotation, e.g. ``"float[:, :]"``."""
     if annotation is inspect.Parameter.empty:
         raise ValueError(f"{what} has no type annotation")
     if typing.get_origin(annotation) is typing.Final:
@@ -890,7 +905,10 @@ def _pyccel_ctype(annotation: Any, scalars: Mapping[str, str], what: str) -> str
     if isinstance(annotation, typing.ForwardRef):
         annotation = annotation.__forward_arg__
     if isinstance(annotation, str):
-        match = _PYCCEL_ANNOTATION.match(annotation.strip())
+        # with `from __future__ import annotations`, 'float[:]' arrives quoted:
+        # "'float[:]'" (and Final['float[:]'] as one string), as in _annotation_text
+        text = annotation.replace("'", "").replace('"', "")
+        match = _PYCCEL_ANNOTATION.match(text.strip())
         if match is None:
             raise ValueError(f"{what}: cannot parse the annotation {annotation!r}")
         scalar, dims = match.group("scalar"), match.group("dims")
@@ -918,7 +936,7 @@ def _apply_contiguous(
     contiguous: bool | Iterable[str],
     what: str,
 ) -> list[tuple[str, str]]:
-    """Make array fields ``CArray<n>D<T>``: all of them, or those named."""
+    """Make all array fields, or the named ones, ``CArray<n>D<T>``."""
     if contiguous is True:
         names = {f for f, ctype in fields if ctype.startswith("Array")}
     elif contiguous is False:
@@ -971,30 +989,46 @@ def write_cuda_header(
     *,
     includes: Iterable[str] = (),
 ) -> str:
-    """Write the declarations of several structs to one header file.
+    """Write the definitions of several structs to one header file.
 
     The header has an include guard, ``#include "cunumpy/array_view.cuh"`` if
-    a struct has array view fields, then the struct definitions in order.
-    Generate the header at build or test time from the Python definitions,
-    and commit it next to the kernels; a test can regenerate it and compare
-    (see :meth:`CudaStruct.to_header`).
+    a struct has array view fields, any `includes`, then the structs in
+    order. Commit it next to the kernels and let a test regenerate and
+    compare it (see :meth:`CudaStruct.to_header`).
 
     Parameters
     ----------
-    path : str | Path
+    path : str or Path
         File to write.
-    structs : Iterable[CudaStruct]
-        The structs, in the order they are declared.
-    guard : str | None
+    structs : iterable of CudaStruct
+        The structs, in declaration order.
+    guard : str, optional
         Include guard macro; by default from the file name
         (``pusher_args.cuh`` -> ``PUSHER_ARGS_CUH``).
-    includes : Iterable[str]
-        Additional headers to include, as file names or ``#include`` lines.
+    includes : iterable of str, optional
+        Additional headers, as file names or ``#include`` lines.
 
     Returns
     -------
     str
         The header source that was written.
+
+    Examples
+    --------
+    >>> import os, tempfile
+    >>> Vec = xp.arguments.CudaStruct("Vec", [("data", "double*"), ("n", "int")])
+    >>> path = os.path.join(tempfile.mkdtemp(), "vec.cuh")
+    >>> print(xp.arguments.write_cuda_header(path, [Vec]), end="")
+    // Generated by cunumpy.arguments.CudaStruct from the Python definition; do not edit.
+    #ifndef VEC_CUH
+    #define VEC_CUH
+    <BLANKLINE>
+    struct Vec {
+        double* data;
+        int n;
+    };
+    <BLANKLINE>
+    #endif  // VEC_CUH
     """
     path = Path(path)
     source = _header_source(tuple(structs), guard or _header_guard(path.name), includes)
@@ -1003,7 +1037,7 @@ def write_cuda_header(
 
 
 def _read_python_source(source: str | Path) -> tuple[str, str]:
-    """`(text, description)` of a Python source given as a path or as code."""
+    """Return ``(text, description)`` of a Python source given as a path or as code."""
     if isinstance(source, Path) or (
         "\n" not in source and source.strip().endswith(".py")
     ):
@@ -1013,7 +1047,7 @@ def _read_python_source(source: str | Path) -> tuple[str, str]:
 
 
 def _find_init(tree: ast.Module, class_name: str, where: str) -> ast.FunctionDef:
-    """The ``__init__`` function of the class `class_name` in a parsed module."""
+    """Return the ``__init__`` of the class `class_name` in a parsed module."""
     for node in tree.body:
         if isinstance(node, ast.ClassDef) and node.name == class_name:
             for item in node.body:
@@ -1024,7 +1058,7 @@ def _find_init(tree: ast.Module, class_name: str, where: str) -> ast.FunctionDef
 
 
 def _stored_parameters(init: ast.FunctionDef) -> dict[str, str]:
-    """``{parameter: attribute}`` for the ``self.<attribute> = <parameter>`` statements."""
+    """Return ``{parameter: attribute}`` for ``self.<attribute> = <parameter>``."""
     stored: dict[str, str] = {}
     for node in ast.walk(init):
         targets: list[ast.expr] = []
@@ -1047,7 +1081,7 @@ def _stored_parameters(init: ast.FunctionDef) -> dict[str, str]:
 
 
 def _annotation_text(annotation: ast.expr) -> str:
-    """The pyccel-style annotation string of a parsed annotation."""
+    """Return the pyccel-style annotation string of a parsed annotation."""
     if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
         return annotation.value
     text = ast.unparse(annotation)
@@ -1058,50 +1092,44 @@ def _annotation_text(annotation: ast.expr) -> str:
 class CudaStruct:
     """A C struct type passed to CUDA kernels by value.
 
-    Defines the struct once: :attr:`declaration` is its C definition, to put in
-    the CUDA source (or a header), and calling the struct packs values into it.
-    The packed value has the memory layout of the C struct (the NumPy structured
-    dtype with C alignment), pointers are stored as device addresses. Kernels
-    that are told about the struct (``CudaKernel(..., structs=[...])``) check
-    that they get a value of the right struct, and that a definition of the
-    struct in their source matches.
-
-    Instead of a long flat parameter list, a group of arguments (e.g. all arrays
-    describing particles) becomes one struct parameter; adding a field then
-    changes one definition instead of every kernel signature.
+    Defines the struct once: :attr:`declaration` is its C definition, and
+    calling the struct packs values into a :class:`CudaStructValue` with the C
+    memory layout (pointers stored as device addresses). Kernels created with
+    ``structs=[...]`` check that they get a value of this struct and that a
+    definition in their source matches. See :doc:`/kernels/arguments`.
 
     Parameters
     ----------
     name : str
         Name of the struct type in C.
-    fields : Sequence[tuple[str, str]]
-        ``(field name, C type)`` pairs, in order, e.g. ``("x", "double*")`` or
-        ``("n", "int")``. Scalar fields, pointers to the scalar types of
-        :func:`ctype_of` (or ``void*``), and array views ``Array1D<T>`` to
-        ``Array16D<T>`` of those scalar types (from ``cunumpy/array_view.cuh``,
-        packed as pointer, shape and strides in elements) are supported.
+    fields : sequence of (str, str)
+        ``(field name, C type)`` pairs in order, e.g. ``("x", "double*")``.
+        Scalars, pointers to scalars (or ``void*``), and array views
+        ``Array1D<T>`` to ``Array16D<T>`` (packed as pointer, shape and
+        strides in elements) or C-contiguous ``CArray1D<T>`` to
+        ``CArray16D<T>`` are supported.
+
+    Raises
+    ------
+    ValueError
+        If the name is not a C identifier, a field type is not supported or
+        field names repeat.
 
     Examples
     --------
-    >>> Vec = CudaStruct("Vec", [("data", "double*"), ("n", "int")])
+    >>> Vec = xp.arguments.CudaStruct("Vec", [("data", "double*"), ("n", "int")])
+    >>> print(Vec.declaration, end="")
+    struct Vec {
+        double* data;
+        int n;
+    };
     >>> source = Vec.declaration + r'''
     ... extern "C" __global__ void scale(Vec v, double a) {
     ...     int i = blockDim.x * blockIdx.x + threadIdx.x;
     ...     if (i < v.n) v.data[i] *= a;
     ... }'''
-    >>> scale = CudaKernel(source, "scale", structs=[Vec])
-    >>> scale(Vec(data=x, n=x.size), 2.0, n_threads=x.size)  # doctest: +SKIP
-
-    With array views, the kernel indexes like the pyccel kernel it mirrors:
-
-    >>> Markers = CudaStruct("Markers", [("markers", "Array2D<double>"), ("n", "int")])
-    >>> source = '#include "cunumpy/array_view.cuh"\n' + Markers.declaration + r'''
-    ... extern "C" __global__ void push(Markers m, double dt) {
-    ...     int ip = blockDim.x * blockIdx.x + threadIdx.x;
-    ...     if (ip < m.n) m.markers(ip, 0) += dt * m.markers(ip, 3);
-    ... }'''
-    >>> push = CudaKernel(source, "push", structs=[Markers])
-    >>> push(Markers(markers=markers, n=markers.shape[0]), 0.1, n_threads=markers.shape[0])  # doctest: +SKIP
+    >>> scale = xp.kernels.CudaKernel(source, "scale", structs=[Vec])
+    >>> scale(Vec(data=x, n=x.size), 2.0)  # doctest: +SKIP
     """
 
     def __init__(self, name: str, fields: Sequence[tuple[str, str]]) -> None:
@@ -1131,50 +1159,53 @@ class CudaStruct:
     ) -> CudaStruct:
         """Build the struct from the annotated parameters of a Python function.
 
-        One field per parameter of `func` (``self`` is skipped), in order,
-        with the C type given by the parameter's annotation, written in the
-        pyccel style: ``"float"`` -> ``double``, ``"int"`` -> `int_type`,
-        ``"bool"`` -> ``bool``, and an array ``"float[:, :]"`` ->
-        ``Array2D<double>`` (``Final[...]`` and ``const`` are ignored). The
-        annotations may also be the real types ``int``, ``float``, ``bool``
-        (or NumPy scalar types such as ``np.float32``). Typically `func` is the
-        ``__init__`` of an argument class, so that the class is the one
-        definition of the arguments on the host and on the device.
+        One field per parameter of `func` (``self`` skipped), in order, typed
+        by its pyccel-style annotation: ``float`` -> ``double``, ``int`` ->
+        `int_type`, ``bool`` -> ``bool``, ``float[:, :]`` ->
+        ``Array2D<double>`` (``Final[...]`` and ``const`` ignored). Real
+        types (``int``, ``np.float32``, ...) work too. Typically `func` is the
+        ``__init__`` of the host argument class, so that one class defines
+        the arguments on host and device.
 
         Parameters
         ----------
-        func : Callable
+        func : callable
             The function whose parameters define the fields.
         name : str
             Name of the struct type in C.
-        int_type : str
-            C type for ``int`` annotations: pyccel integers are 64 bit, so
-            ``"long long"`` by default; ``"int"`` for 32 bit.
-        scalar_names : Mapping[str, str] | None
-            Additional (or changed) mappings from annotation scalar names to
-            C types, e.g. ``{"float": "float"}`` for single precision.
-        contiguous : bool | Iterable[str]
-            Array fields that become C-contiguous views (``CArray2D<double>``
-            instead of ``Array2D<double>``): ``True`` for all of them, or their
-            names. Packing such a field raises for a non-contiguous array.
+        int_type : str, optional
+            C type for ``int``: ``"long long"`` (default, pyccel integers are
+            64 bit) or ``"int"``.
+        scalar_names : mapping of str to str, optional
+            Additional or changed scalar mappings, e.g. ``{"float": "float"}``
+            for single precision.
+        contiguous : bool or iterable of str, optional
+            Array fields that become C-contiguous views (``CArray2D<double>``):
+            True for all, or their names. Packing them raises for a
+            non-contiguous array.
+
+        Returns
+        -------
+        CudaStruct
+            The struct.
 
         Raises
         ------
         ValueError
-            A parameter without annotation, or with an annotation that cannot
-            be mapped (an unknown scalar, more than 3 dimensions).
+            If a parameter has no annotation, or one that cannot be mapped
+            (an unknown scalar, more than 16 dimensions).
 
         Examples
         --------
         >>> class MarkerArguments:
-        ...     def __init__(self, markers: "float[:, :]", n_markers: "int", valid: "bool[:]"):
-        ...         ...
-        >>> MarkerArgs = CudaStruct.from_signature(MarkerArguments.__init__, "MarkerArgs")
-        >>> print(MarkerArgs.declaration)
+        ...     def __init__(self, markers: "float[:, :]", n_markers: int): ...
+        >>> MarkerArgs = xp.arguments.CudaStruct.from_signature(
+        ...     MarkerArguments.__init__, "MarkerArgs"
+        ... )
+        >>> print(MarkerArgs.declaration, end="")
         struct MarkerArgs {
             Array2D<double> markers;
             long long n_markers;
-            Array1D<bool> valid;
         };
         """
         scalars = dict(_PYCCEL_SCALARS, int=int_type)
@@ -1205,49 +1236,58 @@ class CudaStruct:
         attribute_names: bool = True,
         contiguous: bool | Iterable[str] = False,
     ) -> CudaStruct:
-        """Build the struct from the ``__init__`` of a class in a Python source file.
+        """Build the struct from the ``__init__`` of a class in a Python source.
 
-        Like :meth:`from_signature`, but for a class whose module is compiled
-        by pyccel: importing such a module gives the compiled class, whose
-        ``__init__`` has no Python signature. The ``.py`` source is parsed
-        with :mod:`ast` instead and is never imported or executed.
-
-        One field per parameter of ``__init__`` (``self`` skipped), in order.
-        A parameter that ``__init__`` stores as ``self.<attribute> = <parameter>``
-        gives a field named after the attribute (`attribute_names`), so that
-        the struct members are the attribute names the host kernels use, also
-        when the constructor parameter is called differently.
+        Like :meth:`from_signature`, for a class whose module pyccel compiles
+        (the compiled ``__init__`` has no Python signature): the source is
+        parsed with :mod:`ast`, never imported or executed. A parameter stored
+        as ``self.<attribute> = <parameter>`` gives a field named after the
+        attribute, as the host kernels use it.
 
         Parameters
         ----------
-        source : str | Path
-            Path of the ``.py`` file, or the source code itself (a string that
-            contains a newline or does not end with ``.py``).
+        source : str or Path
+            Path of the ``.py`` file, or the source code (a string with a
+            newline or not ending in ``.py``).
         class_name : str
             Name of the class in the source.
-        name : str | None
+        name : str, optional
             Name of the struct type in C; `class_name` by default.
-        int_type, scalar_names, contiguous
-            As for :meth:`from_signature` (`contiguous` takes field names, i.e.
-            attribute names when `attribute_names` is set).
-        exclude : Sequence[str]
+        int_type : str, optional
+            As for :meth:`from_signature`.
+        scalar_names : mapping of str to str, optional
+            As for :meth:`from_signature`.
+        exclude : sequence of str, optional
             Parameter or attribute names that do not become fields, e.g.
-            scratch arrays the host class allocates for itself.
-        attribute_names : bool
-            Name the fields after the attributes the parameters are stored in
-            (default); False keeps the parameter names.
+            scratch arrays of the host class.
+        attribute_names : bool, optional
+            Name the fields after the attributes (default), else after the
+            parameters.
+        contiguous : bool or iterable of str, optional
+            As for :meth:`from_signature`, with field names.
+
+        Returns
+        -------
+        CudaStruct
+            The struct.
 
         Raises
         ------
         ValueError
-            The class or its ``__init__`` is not found, or an annotation
-            cannot be mapped (see :meth:`from_signature`).
+            If the class or its ``__init__`` is not found, or an annotation
+            cannot be mapped.
 
         Examples
         --------
-        >>> MarkerArgs = CudaStruct.from_pyccel_class(
-        ...     "kernel_arguments/pusher_args_kernels.py", "MarkerArguments", "MarkerArgs"
-        ... )  # doctest: +SKIP
+        >>> source = '''
+        ... class MarkerArguments:
+        ...     def __init__(self, markers: 'float[:, :]', n: 'int'):
+        ...         self.markers = markers
+        ...         self.n_markers = n
+        ... '''
+        >>> MarkerArgs = xp.arguments.CudaStruct.from_pyccel_class(source, "MarkerArguments")
+        >>> [f.name for f in MarkerArgs.fields]
+        ['markers', 'n_markers']
         """
         text, where = _read_python_source(source)
         init = _find_init(ast.parse(text, filename=where), class_name, where)
@@ -1281,7 +1321,7 @@ class CudaStruct:
 
     @property
     def fields(self) -> tuple[CudaParameter, ...]:
-        """The fields, in order."""
+        """The fields, as :class:`~cunumpy.cuda.CudaParameter` tuples in order."""
         return self._fields
 
     @property
@@ -1296,12 +1336,7 @@ class CudaStruct:
 
     @property
     def declaration(self) -> str:
-        """The C definition of the struct, to include in the CUDA source.
-
-        A struct with array view fields needs
-        ``#include "cunumpy/array_view.cuh"`` before the definition (see
-        :attr:`has_views`); :meth:`to_header` adds it.
-        """
+        """The C definition, to put after ``cunumpy/array_view.cuh`` if :attr:`has_views`."""
         lines = [
             f"    {f.ctype}{'*' if f.pointer else ''} {f.name};" for f in self._fields
         ]
@@ -1314,30 +1349,32 @@ class CudaStruct:
         guard: str | None = None,
         includes: Iterable[str] = (),
     ) -> str:
-        """The struct definition as a header file, with include guard.
+        """Return the struct definition as a header, with include guard.
 
         The header includes ``cunumpy/array_view.cuh`` if the struct has array
-        view fields, then any `includes`, then the definition. A generated
-        header committed next to the kernels stays in sync with the Python
-        definition through a test::
+        view fields, then any `includes`, then the definition. A test keeps a
+        committed header in sync with the Python definition::
 
             def test_header_is_up_to_date():
                 assert Path("pusher_args.cuh").read_text() == MarkerArgs.to_header()
 
         Parameters
         ----------
-        path : str | Path | None
+        path : str or Path, optional
             If given, the header is also written to this file.
-        guard : str | None
-            Include guard macro; by default ``<NAME>_CUH`` from the struct
-            name.
-        includes : Iterable[str]
-            Additional headers to include, as file names or ``#include`` lines.
+        guard : str, optional
+            Include guard macro; ``<NAME>_CUH`` by default.
+        includes : iterable of str, optional
+            Additional headers, as file names or ``#include`` lines.
 
         Returns
         -------
         str
             The header source.
+
+        See Also
+        --------
+        cunumpy.arguments.write_cuda_header : Several structs in one header.
         """
         source = _header_source(
             (self,),
@@ -1349,10 +1386,15 @@ class CudaStruct:
         return source
 
     def check_source(self, source: str) -> None:
-        """Check a definition of this struct in `source` against its fields.
+        """Check a definition of this struct in a CUDA source against its fields.
 
-        Does nothing if `source` does not define the struct (e.g. because it is
-        in a header).
+        Does nothing if `source` does not define the struct (e.g. it is in a
+        header).
+
+        Parameters
+        ----------
+        source : str
+            CUDA C source code.
 
         Raises
         ------
@@ -1382,17 +1424,22 @@ class CudaStruct:
             )
 
     def layout_source(self, include: str | None = None) -> str:
-        """The CUDA source of the kernel used by :meth:`verify_layout`.
+        """Return the CUDA source of the kernel used by :meth:`verify_layout`.
 
         The kernel ``cunumpy_layout_<name>(unsigned long long* out)`` writes
-        ``sizeof``, ``alignof`` and the offset of every field (in field order)
-        of the struct, as the compiler lays it out.
+        ``sizeof``, ``alignof`` and the offset of every field, as the compiler
+        lays out the struct.
 
         Parameters
         ----------
-        include : str | None
-            Header that defines the struct, as a file name or an ``#include``
-            line; by default the struct is defined by :attr:`declaration`.
+        include : str, optional
+            Header that defines the struct, as a file name or ``#include``
+            line; by default :attr:`declaration` is used.
+
+        Returns
+        -------
+        str
+            The CUDA source.
         """
         if include is None:
             lines = ['#include "cunumpy/array_view.cuh"'] if self.has_views else []
@@ -1423,38 +1470,41 @@ class CudaStruct:
         include_dirs: Sequence[str | Path] = (),
         options: Sequence[str] = (),
     ) -> dict[str, int]:
-        """Check the struct layout of the CUDA compiler against :attr:`dtype`.
+        """Check the CUDA compiler's struct layout against :attr:`dtype`.
 
-        Compiles and runs a one-thread kernel (:meth:`layout_source`) that
-        reports the size, alignment and field offsets of the struct, and
-        compares them with the NumPy dtype that values are packed into. A
-        difference means every kernel taking the struct reads some fields at
-        the wrong place, without any error. Run it once per struct in a GPU
-        test, especially with a hand-written or generated header (`include`)
-        and on a new compiler or platform (e.g. ROCm).
+        Compiles and runs a one-thread kernel (:meth:`layout_source`) and
+        compares size, alignment and field offsets with the dtype values are
+        packed into; a difference would make kernels silently read fields at
+        the wrong place. Run it once per struct in a GPU test, especially with
+        a hand-written header or a new compiler or platform (e.g. ROCm).
 
         Parameters
         ----------
-        include : str | None
+        include : str, optional
             Header that defines the struct (file name or ``#include`` line),
-            found in `include_dirs`; by default :attr:`declaration` is compiled.
-        include_dirs : Sequence[str | Path]
+            found in `include_dirs`; by default :attr:`declaration`.
+        include_dirs : sequence of str or Path, optional
             Directories searched for `include`.
-        options : Sequence[str]
+        options : sequence of str, optional
             Additional compiler options.
 
         Returns
         -------
-        dict[str, int]
+        dict of str to int
             ``"sizeof"``, ``"alignof"`` and the offset of each field, by name.
 
         Raises
         ------
         ValueError
-            If the compiled layout differs from :attr:`dtype` (the message lists
-            each difference).
+            If the compiled layout differs from :attr:`dtype` (the message
+            lists each difference).
         RuntimeError
             If CuPy is not available.
+
+        Examples
+        --------
+        >>> Vec.verify_layout()  # doctest: +SKIP
+        {'sizeof': 16, 'alignof': 8, 'data': 0, 'n': 8}
         """
         from cunumpy.xp import cupy_available, to_numpy
 
@@ -1491,18 +1541,29 @@ class CudaStruct:
         return layout
 
     def __call__(self, **values: Any) -> CudaStructValue:
-        """Pack values into the struct.
+        """Pack field values, given by name, into a struct value.
 
         Pointer fields take C-contiguous CuPy arrays of the declared dtype
-        (never copied), array view fields take CuPy arrays of the declared
-        dtype and number of dimensions (contiguous or not; their pointer, shape
-        and strides are packed), scalar fields are checked and cast like scalar kernel
-        arguments.
+        (never copied), array view fields CuPy arrays of the declared dtype
+        and ndim (contiguous or not), and scalars are checked and cast like
+        scalar kernel arguments.
+
+        Parameters
+        ----------
+        **values
+            One value per field.
+
+        Returns
+        -------
+        CudaStructValue
+            The packed value.
 
         Raises
         ------
         TypeError
-            A missing or unknown field, or a value of the wrong type.
+            If a field is missing or unknown, or a value has the wrong type.
+        OverflowError
+            If an integer is out of range of its field type.
         """
         missing = [f.name for f in self._fields if f.name not in values]
         unknown = [k for k in values if k not in self._checkers]
@@ -1521,10 +1582,25 @@ class CudaStruct:
 class CudaStructValue:
     """A value of a :class:`CudaStruct`, passed to kernels as one argument.
 
-    Holds the packed struct and references to the arrays it points to (the
-    struct itself only stores device addresses), and flattens into the packed
-    struct through ``__cuda_args__()``. Field values are available as
-    ``value["name"]``.
+    Created by calling the struct. Keeps the arrays it points to alive (the
+    packed struct only stores device addresses) and flattens into the packed
+    struct through ``__cuda_args__()``. Field values are ``value["name"]``.
+
+    Parameters
+    ----------
+    struct : CudaStruct
+        The struct type.
+    packed : numpy.void
+        The packed struct.
+    values : dict
+        The field values, by name.
+
+    Examples
+    --------
+    >>> Params = xp.arguments.CudaStruct("Params", [("dt", "double"), ("n", "int")])
+    >>> value = Params(dt=0.1, n=10)
+    >>> value["n"], value.packed["n"]
+    (10, np.int32(10))
     """
 
     def __init__(self, struct: CudaStruct, packed: np.void, values: dict) -> None:
@@ -1549,77 +1625,57 @@ class CudaStructValue:
         return self._values[field]
 
     def __cuda_args__(self) -> tuple[np.void]:
+        """Return the packed struct, the one kernel argument this value stands for."""
         return (self._packed,)
 
 
 class CudaStructArguments(CudaArguments):
-    """Base class for argument objects that are passed to CUDA kernels as one C struct.
+    """Base class for argument objects passed to CUDA kernels as one C struct.
 
-    The class form of :class:`CudaStruct`: a subclass names the struct
-    (:attr:`struct_name`) and lists its fields (:attr:`fields`), stores every
-    field as an attribute of the same name, and calls :meth:`pack` at the end
-    of its constructor. The object is then passed to a :class:`CudaKernel` as
-    it is and arrives as the packed struct.
+    The class form of :class:`CudaStruct`: a subclass sets ``struct_name``
+    and ``fields``, stores every field as an attribute of the same name
+    and calls :meth:`pack` at the end of its constructor. The object is
+    passed to a :class:`~cunumpy.kernels.CudaKernel` as is and arrives as the
+    packed struct. See :doc:`/kernels/arguments`.
 
-    The :class:`CudaStruct` is built once per subclass, when the class is
-    defined, and is available as :attr:`struct` (for ``CudaKernel(...,
-    structs=[...])``, :attr:`CudaStruct.declaration` and
-    :meth:`CudaStruct.to_header`). Packing checks every field like a kernel
-    argument: pointers need C-contiguous CuPy arrays of the declared dtype
-    (never copied), scalars are range-checked and cast.
-
-    The packed struct always reflects the current field attributes: at every
-    use (:attr:`packed`, :meth:`__cuda_args__`, so at every kernel launch) the
-    device address, shape and strides of every array field and the value of
-    every scalar field are compared with those that were packed, and the
-    struct is packed again if any changed. A field may therefore be a
-    property that reads the owner's current array, so that resizing the
-    owner's arrays never leaves the struct pointing at freed device memory
-    (see the second example). Copies (``copy.copy``, ``copy.deepcopy``) and
-    unpickled objects are packed again from their own arrays.
-
-    A subclass that sets neither :attr:`struct_name` nor :attr:`fields` is an
-    intermediate base class; a subclass that sets only one of them raises
-    ``TypeError``.
+    The struct is repacked whenever a field changed (another array, shape,
+    strides or scalar value), checked at every use, so a field may be a
+    property reading an owner's current array (second example). Copies and
+    unpickled objects are packed from their own arrays. A subclass setting
+    neither ``struct_name`` nor ``fields`` is an intermediate base
+    class; setting only one raises ``TypeError``.
 
     Attributes
     ----------
     struct_name : str
         Name of the C struct type.
-    fields : Sequence[tuple[str, str]]
-        ``(field name, C type)`` pairs, in declaration order, as for
-        :class:`CudaStruct`.
+    fields : sequence of (str, str)
+        ``(field name, C type)`` pairs, as for :class:`CudaStruct`.
     struct : CudaStruct
-        The struct type, built from :attr:`struct_name` and :attr:`fields`.
+        The struct type, built once when the subclass is defined.
 
     Examples
     --------
-    >>> class MarkerArguments(CudaStructArguments):
+    >>> class MarkerArguments(xp.arguments.CudaStructArguments):
     ...     struct_name = "MarkerArgs"
-    ...     fields = (
-    ...         ("markers", "Array2D<double>"),
-    ...         ("valid", "bool*"),
-    ...         ("n_markers", "int"),
-    ...     )
+    ...     fields = (("markers", "Array2D<double>"), ("n_markers", "int"))
     ...
-    ...     def __init__(self, markers, valid):
+    ...     def __init__(self, markers):
     ...         self.markers = markers
-    ...         self.valid = valid
     ...         self.n_markers = markers.shape[0]
     ...         self.pack()
-    >>> print(MarkerArguments.struct.declaration)
+    >>> print(MarkerArguments.struct.declaration, end="")
     struct MarkerArgs {
         Array2D<double> markers;
-        bool* valid;
         int n_markers;
     };
-    >>> push = CudaKernel(source, "push", structs=[MarkerArguments.struct])  # doctest: +SKIP
-    >>> push(MarkerArguments(markers, valid), 0.1, n_threads=markers.shape[0])  # doctest: +SKIP
+    >>> push = xp.kernels.CudaKernel(source, "push", structs=[MarkerArguments.struct])  # doctest: +SKIP
+    >>> push(MarkerArguments(markers), 0.1)  # doctest: +SKIP
 
     Fields as properties follow the arrays of an owner object, also after the
-    owner replaced them (e.g. when it resized its marker array):
+    owner replaced them (e.g. resized its marker array):
 
-    >>> class ParticleArguments(CudaStructArguments):
+    >>> class ParticleArguments(xp.arguments.CudaStructArguments):
     ...     struct_name = "ParticleArgs"
     ...     fields = (("markers", "Array2D<double>"), ("n_markers", "int"))
     ...
@@ -1655,16 +1711,14 @@ class CudaStructArguments(CudaArguments):
     def pack(self) -> None:
         """Pack the field attributes into the struct.
 
-        Called at the end of the constructor, so that invalid field values
-        raise there. Afterwards the struct is packed again automatically when
-        a field changes (see the class documentation); calling this method
-        again is never needed, but harmless.
+        Call it at the end of the constructor, so that invalid values raise
+        there; later changes are repacked automatically.
 
         Raises
         ------
         TypeError
-            If the class does not define a struct, or a field value has the
-            wrong type (see :meth:`CudaStruct.__call__`).
+            If the class defines no struct, or a field value has the wrong
+            type (see :meth:`CudaStruct.__call__ <cunumpy.arguments.CudaStruct.__call__>`).
         AttributeError
             If a field has no attribute of the same name.
         """
@@ -1678,7 +1732,7 @@ class CudaStructArguments(CudaArguments):
         self._packed_state = _field_state(struct, values)
 
     def _field_values(self, struct: CudaStruct) -> dict[str, Any]:
-        """The current value of every field attribute, by field name."""
+        """Return the current value of every field attribute, by field name."""
         values = {}
         for field in struct.fields:
             try:
@@ -1692,11 +1746,7 @@ class CudaStructArguments(CudaArguments):
 
     @property
     def packed(self) -> np.void:
-        """The packed struct, with the memory layout of the C struct.
-
-        Packed on first use, and again whenever a field attribute changed
-        since the last packing (a different array, or a different scalar).
-        """
+        """The packed struct, repacked first if a field attribute changed."""
         value = self.__dict__.get("_struct_value")
         if value is None:
             self.pack()
@@ -1709,7 +1759,7 @@ class CudaStructArguments(CudaArguments):
         return self._struct_value.packed
 
     def __cuda_args__(self) -> tuple[np.void]:
-        """The packed struct, as the one kernel argument this object stands for."""
+        """Return the packed struct, the one kernel argument this object stands for."""
         return (self.packed,)
 
     def __getstate__(self) -> dict[str, Any]:
@@ -1726,13 +1776,7 @@ class CudaStructArguments(CudaArguments):
 
 
 def _field_state(struct: CudaStruct, values: Mapping[str, Any]) -> tuple[Any, ...]:
-    """What the packed struct depends on, to detect changed field attributes.
-
-    For an array field the device address, shape and strides (the address
-    alone for a pointer field); for a scalar field its value. A value that is
-    neither (e.g. a host array in a pointer field) is identified by its id,
-    so replacing it triggers a repack, which then raises the type error.
-    """
+    """Return what the packed struct depends on, to detect changed fields."""
     state = []
     for field in struct.fields:
         value = values[field.name]
@@ -1759,7 +1803,7 @@ def _is_device_array(value: Any) -> bool:
 
 
 def _array_shapes_in(args: Sequence[Any]) -> Iterator[tuple[int, ...]]:
-    """Array shapes in argument order, including supported argument objects."""
+    """Yield array shapes in argument order, including those in argument objects."""
     for arg in args:
         shape = getattr(arg, "shape", None)
         if shape is not None and hasattr(arg, "dtype"):
@@ -1793,15 +1837,12 @@ def _first_array_shape(args: Sequence[Any], dimensions: int) -> int | tuple[int,
 
 
 def _first_array_length(args: tuple[Any, ...]) -> int:
-    """``n_threads_from="first_array"``: the first axis of the first array argument."""
+    """Return the first axis of the first array (``n_threads_from="first_array"``)."""
     return typing.cast(int, _first_array_shape(args, 1))
 
 
 def _last_axis_length(args: tuple[Any, ...]) -> int:
-    """``n_threads_from="last_axis"``: the last axis of the first array argument.
-
-    One thread per entry of a component-major array, ``(ncomp, N)`` or ``(N,)``.
-    """
+    """Return the last axis of the first array (``n_threads_from="last_axis"``)."""
     shape = next(_array_shapes_in(args), None)
     if shape is None:
         raise TypeError(
@@ -1819,12 +1860,7 @@ def _as_shape(value: int | Sequence[int], what: str) -> tuple[int, ...]:
 
 
 def _device_arrays_in(args: Sequence[Any]) -> Iterator[tuple[str, Any]]:
-    """``(label, array)`` for every device array among kernel arguments.
-
-    Arrays are found directly, in the fields of :class:`CudaStructArguments`
-    objects and struct values, and in the values of other ``__cuda_args__()``
-    objects.
-    """
+    """Yield ``(label, array)`` for every device array among the arguments."""
     for index, arg in enumerate(args):
         label = f"argument {index}"
         if _is_device_array(arg):
@@ -1848,75 +1884,81 @@ def _device_arrays_in(args: Sequence[Any]) -> Iterator[tuple[str, Any]]:
 class CudaKernel:
     """A CUDA C kernel, compiled with NVRTC through CuPy.
 
+    The ``__global__`` signature is parsed at construction (no GPU needed)
+    and every call is checked against it: arrays must be C-contiguous CuPy
+    arrays of the declared dtype (never copied), scalars are cast to the
+    declared C type or raise, argument objects with ``__cuda_args__()`` are
+    flattened. The kernel is compiled on the first call (or by
+    :meth:`compile`) and cached per device, also on disk by CuPy. See
+    :doc:`/kernels/cuda-kernel`.
+
     Parameters
     ----------
     source : str
-        CUDA C source code containing the ``__global__`` function `name`
-        (``extern "C"`` unless it is a template).
+        CUDA C source with the ``__global__`` function `name` (``extern "C"``
+        unless it is a template).
     name : str
-        Name of the kernel function in `source`.
-    block_size : int | Sequence[int]
-        Threads per block: an integer for 1D launches, or 1 to 3 integers
-        (at most 1024 threads in total).
-    options : Sequence[str]
-        Additional NVRTC compiler options, e.g. ``("-std=c++17",)``.
-    include_dirs : Sequence[str | Path]
-        Directories searched for ``#include`` files (passed as ``-I<dir>``).
-        The headers shipped with cunumpy (:func:`cuda_include_dir`) are always
-        found at compile time (see :meth:`compile_options`):
-        ``#include "cunumpy/array_view.cuh"`` gives the ``Array1D<T>`` to
-        ``Array16D<T>`` views, ``#include "cunumpy/index.cuh"`` the thread-index
-        macros, ``#include "cunumpy/atomic.cuh"`` atomic adds,
-        ``#include "cunumpy/reduce.cuh"`` warp and block reductions.
-    source_dir : str | Path | None
-        Directory the source was read from (set by :meth:`from_file`), where
-        ``#include "..."`` files are looked up first.
-    structs : Iterable[CudaStruct]
-        Struct types passed to the kernel by value.
-    template_args : Sequence | None
+        Name of the kernel function.
+    block_size : int or sequence of int, optional
+        Threads per block, 1 to 3 dimensions, at most 1024 in total; 128 by
+        default.
+    options : sequence of str, optional
+        Additional NVRTC options, e.g. ``("-std=c++17",)``.
+    include_dirs : sequence of str or Path, optional
+        Directories for ``#include`` (``-I<dir>``). cunumpy's own headers
+        (:func:`~cunumpy.cuda.cuda_include_dir`) are always found.
+    source_dir : str or Path, optional
+        Directory the source was read from, searched first for
+        ``#include "..."`` (set by :meth:`from_file`).
+    structs : iterable of CudaStruct, optional
+        Struct types the kernel takes by value.
+    template_args : sequence, optional
         Template arguments if `name` is a function template, e.g.
-        ``("double", 3)`` or ``(np.float64, 3)``; the kernel is then the
-        instantiation ``name<double, 3>``.
-    check_signature : bool
-        Parse the kernel signature and check (and cast) every call against it.
-        Raises ``ValueError`` at construction if the signature cannot be parsed
-        (e.g. macros in the parameter list); pass False to launch with the
-        arguments as they are, like ``cupy.RawKernel``.
-    debug : bool | None
-        Debug mode: compile with :data:`DEBUG_OPTIONS` (``-lineinfo`` and
-        ``-DCUNUMPY_BOUNDS_CHECK``) and synchronize after every launch, so
-        that an asynchronous CUDA error is raised as a ``RuntimeError`` naming
-        this kernel. None (the default) follows the global setting
-        (:func:`cunumpy.cuda.set_cuda_debug`, ``CUNUMPY_CUDA_DEBUG``) at every
-        launch; True or False fix it for this kernel. The compile options are
-        fixed when the kernel is compiled.
-    n_threads_from : {"auto", "first_array", "last_axis"} | callable | None
-        Default "auto" infers thread counts from the first array's leading
-        shape axes, matching the block dimensionality (1D: one thread per row).
-        Arrays in supported argument objects are included. "first_array"
-        always uses the first axis, "last_axis" the last one (one thread per
-        entry of a component-major ``(ncomp, N)`` or ``(N,)`` array). A callable receives the positional argument
-        tuple; None requires an explicit launch size. Explicit `n_threads` or
-        `grid` overrides inference.
+        ``(np.float64, 3)`` for ``name<double, 3>``.
+    check_signature : bool, optional
+        Check and cast every call against the signature (default). False
+        launches with the arguments as they are, like ``cupy.RawKernel``.
+    debug : bool, optional
+        Debug mode: compile with :data:`~cunumpy.cuda.DEBUG_OPTIONS` and
+        synchronize after every launch, raising a ``RuntimeError`` naming
+        this kernel. None (default) follows
+        :func:`~cunumpy.cuda.set_cuda_debug` at every launch. See
+        :doc:`/kernels/debugging`.
+    n_threads_from : {"auto", "first_array", "last_axis"}, callable or None, optional
+        Launch size when a call gives neither `n_threads` nor `grid`. "auto"
+        (default): the leading axes of the first array argument (also inside
+        argument objects), one per block dimension; "first_array": its first
+        axis; "last_axis": its last axis (component-major ``(ncomp, N)``); a
+        callable of the argument tuple, e.g. ``lambda args: args[0].size``;
+        None: no inference. Settable later as :attr:`n_threads_from`.
+    check_finite : bool, optional
+        After every launch, synchronize and raise ``RuntimeError`` if a
+        floating-point or complex array argument (struct fields included)
+        holds NaN or inf. Costs a pass over the arrays: for debugging only.
+
+    Raises
+    ------
+    ValueError
+        If the signature cannot be parsed (e.g. macros in the parameter
+        list) while `check_signature` is set, or `block_size` is invalid.
 
     Notes
     -----
-    CuPy caches compiled kernels on disk, keyed on the source and the compiler
-    options, but not on the files pulled in by ``#include "..."``. At compile
-    time the headers are resolved (:attr:`included_headers`) and a define with
-    the hash of their contents is added to the options
-    (:meth:`compile_options`), so editing a header recompiles the kernel; this
-    includes cunumpy's own headers (``#include <cunumpy/reduce.cuh>``), so an
-    upgrade that changes them recompiles too.
+    CuPy's disk cache is keyed on the source and options, not on included
+    files. :meth:`compile_options` therefore adds a define with the hash of
+    the :attr:`included_headers`, so editing a header (also one of cunumpy's)
+    recompiles the kernel.
 
     Examples
     --------
-    >>> axpy = CudaKernel(r'''
+    >>> axpy = xp.kernels.CudaKernel(r'''
     ... extern "C" __global__
     ... void axpy(double a, const double* x, double* y, int n) {
     ...     int i = blockDim.x * blockIdx.x + threadIdx.x;
     ...     if (i < n) y[i] += a * x[i];
     ... }''', "axpy")
+    >>> axpy.launch_shape(1000)
+    ((8,), (128,))
     >>> axpy(2.0, x, y, x.size, n_threads=x.size)  # doctest: +SKIP
     """
 
@@ -1974,20 +2016,34 @@ class CudaKernel:
         suffix: str = "_cuda.cu",
         **kwargs: Any,
     ) -> CudaKernel:
-        """Load the CUDA source from a file.
+        """Create a kernel from a CUDA source file.
 
         Parameters
         ----------
-        path : str | Path
+        path : str or Path
             Path of the CUDA source file.
-        name : str | None
+        name : str, optional
             Name of the kernel function; by default the file name without
             `suffix` (``axpy_cuda.cu`` -> ``axpy``).
-        suffix : str
-            File name suffix stripped to get the default kernel name.
+        suffix : str, optional
+            File name suffix stripped to get the default name.
         **kwargs
-            Passed on to :class:`CudaKernel`. The directory of the file is
-            always added to ``include_dirs`` and is the ``source_dir``.
+            Passed on to :class:`CudaKernel`. The file's directory is added
+            to `include_dirs` and is the `source_dir`.
+
+        Returns
+        -------
+        CudaKernel
+            The kernel.
+
+        Raises
+        ------
+        ValueError
+            If `name` is not given and the file name does not end in `suffix`.
+
+        Examples
+        --------
+        >>> push = xp.kernels.CudaKernel.from_file("push/push_cuda.cu")  # doctest: +SKIP
         """
         path = Path(path)
         if name is None:
@@ -2002,30 +2058,34 @@ class CudaKernel:
 
     @classmethod
     def all_from_file(cls, path: str | Path, **kwargs: Any) -> dict[str, CudaKernel]:
-        """Load every ``__global__`` function of a file as a kernel.
+        """Create one kernel per ``__global__`` function of a file.
 
-        For files that group several small kernels. The kernels share the
-        source (and the compile options), so CuPy compiles the file once and
-        the kernels are functions of the same compiled module.
+        The kernels share the source and options, so CuPy compiles the file
+        once.
 
         Parameters
         ----------
-        path : str | Path
+        path : str or Path
             Path of the CUDA source file.
         **kwargs
-            Passed on to :class:`CudaKernel` for every kernel. The directory of
-            the file is always added to ``include_dirs``.
+            Passed on to :class:`CudaKernel` for every kernel. The file's
+            directory is added to `include_dirs`.
 
         Returns
         -------
-        dict[str, CudaKernel]
-            One kernel per ``__global__`` function, by name, in the order of
-            the source (see :func:`cuda_kernel_names`).
+        dict of str to CudaKernel
+            The kernels by name, in source order (see
+            :func:`~cunumpy.cuda.cuda_kernel_names`).
 
         Raises
         ------
         ValueError
             If the file defines no ``__global__`` function.
+
+        Examples
+        --------
+        >>> kernels = xp.kernels.CudaKernel.all_from_file("small_kernels.cu")  # doctest: +SKIP
+        >>> kernels["scale"](x, 2.0, x.size)  # doctest: +SKIP
         """
         path = Path(path)
         source = path.read_text()
@@ -2059,7 +2119,7 @@ class CudaKernel:
 
     @property
     def expression(self) -> str:
-        """The compiled function: `name`, or its template instantiation."""
+        """The compiled function: `name`, or its instantiation such as ``"scale<double, 3>"``."""
         if self._template_args is None:
             return self._name
         args = ", ".join(_template_arg(a) for a in self._template_args)
@@ -2072,16 +2132,12 @@ class CudaKernel:
 
     @property
     def block_size(self) -> int | tuple[int, ...]:
-        """Threads per block: an integer for 1D blocks, else a tuple."""
+        """The threads per block: an integer for 1D blocks, else a tuple."""
         return self._block[0] if len(self._block) == 1 else self._block
 
     @property
     def options(self) -> tuple[str, ...]:
-        """NVRTC compiler options as given, including ``-I`` include directories.
-
-        The debug options and the header hash define are not part of them;
-        they are added at compile time, see :meth:`compile_options`.
-        """
+        """NVRTC options as given, with ``-I`` for `include_dirs` (see :meth:`compile_options`)."""
         return self._options
 
     @property
@@ -2090,11 +2146,13 @@ class CudaKernel:
         return self._debug
 
     def debug_active(self) -> bool:
-        """Whether debug mode applies to this kernel now.
+        """Return whether debug mode applies to this kernel now.
 
-        The kernel's own setting if it was created with ``debug=True`` or
-        ``debug=False``, else the global setting (:func:`cunumpy.cuda.get_cuda_debug`),
-        read at the time of the call.
+        Returns
+        -------
+        bool
+            The kernel's own `debug` setting, else the current global one
+            (:func:`~cunumpy.cuda.get_cuda_debug`).
         """
         if self._debug is not None:
             return self._debug
@@ -2104,7 +2162,7 @@ class CudaKernel:
 
     @property
     def include_dirs(self) -> tuple[Path, ...]:
-        """Directories searched for ``#include`` files."""
+        """The directories searched for ``#include`` files."""
         return self._include_dirs
 
     @property
@@ -2114,16 +2172,7 @@ class CudaKernel:
 
     @property
     def included_headers(self) -> tuple[Path, ...]:
-        """The header files the source includes, recursively.
-
-        Quoted includes (``#include "..."``) are resolved in `source_dir`,
-        `include_dirs` and cunumpy's header directory
-        (:func:`cuda_include_dir`); cunumpy's shipped headers are tracked
-        also when included in angle brackets (``#include <cunumpy/...>``).
-        Resolved at every access (see :func:`resolve_includes`), so the result
-        follows the files on disk. Empty if the source includes no project or
-        cunumpy headers.
-        """
+        """The header files the source includes, resolved at every access (see :func:`~cunumpy.cuda.resolve_includes`)."""
         return tuple(
             resolve_includes(
                 self._source,
@@ -2134,18 +2183,18 @@ class CudaKernel:
         )
 
     def compile_options(self) -> tuple[str, ...]:
-        """The NVRTC options a compilation now would use.
+        """Return the NVRTC options a compilation now would use.
 
-        :attr:`options`, followed by ``-I`` for cunumpy's own header directory
-        (:func:`cunumpy.cuda.cuda_include_dir`) unless already present, then
-        :data:`DEBUG_OPTIONS` (``-lineinfo`` and
-        ``-DCUNUMPY_BOUNDS_CHECK``) if :meth:`debug_active` and they are not
-        already among the options (``-G`` is not added: NVRTC does not support
-        it), and, if the source includes header files,
-        ``-DCUNUMPY_INCLUDE_HASH=0x<hash>`` with the hash of the contents of
-        :attr:`included_headers` (see :func:`include_hash`). CuPy keys its
-        kernel cache on the options, so a changed header means a recompile,
-        also for a header shipped with cunumpy that changed in an upgrade.
+        These are :attr:`options`, ``-I`` for cunumpy's header directory,
+        :data:`~cunumpy.cuda.DEBUG_OPTIONS` if :meth:`debug_active`, and, if
+        the source includes headers, ``-DCUNUMPY_INCLUDE_HASH=0x<hash>`` of
+        their contents (:func:`~cunumpy.cuda.include_hash`). CuPy keys its
+        kernel cache on the options, so a changed header means a recompile.
+
+        Returns
+        -------
+        tuple of str
+            The options.
         """
         options = self._options
         # cunumpy's own headers (<cunumpy/atomic.cuh>, ...) are always found
@@ -2166,20 +2215,7 @@ class CudaKernel:
 
     @property
     def n_threads_from(self) -> Callable[[tuple[Any, ...]], Any] | None:
-        """Default launch size: a function of the positional arguments, or None.
-
-        Called with the tuple of arguments of a launch that gives neither
-        `n_threads` nor `grid`, and returns `n_threads` (an integer or a
-        tuple), e.g. ``lambda args: args[2].n_markers`` for a kernel whose
-        third argument is a struct argument object with the marker count.
-        Default ``"auto"`` uses the first array's leading axes, matching the
-        launch block dimensions; 1D launches use its first axis, one thread per
-        row. Supported argument objects are searched in field/argument order.
-        ``"first_array"`` always uses its first axis, ``"last_axis"`` its last
-        one (one thread per entry of a component-major ``(ncomp, N)`` or
-        ``(N,)`` array). None disables inference.
-        Settable, also on the ``cuda_kernel`` of a :class:`~cunumpy.kernels.Kernel`.
-        """
+        """The launch size inference: a callable of the argument tuple, or None; settable as in the constructor."""
         return self._n_threads_from
 
     @n_threads_from.setter
@@ -2207,15 +2243,7 @@ class CudaKernel:
 
     @property
     def check_finite(self) -> bool:
-        """Whether every launch checks the floating-point arrays for NaN or inf.
-
-        After the launch (synchronized), every floating-point or complex array
-        among the arguments, including the array fields of struct argument
-        objects, is scanned, and a non-finite value raises ``RuntimeError``
-        naming the kernel and the argument. Costs a synchronization and one
-        pass over the arrays per launch; for debugging (e.g. a pusher writing
-        NaN velocities), not for production. Settable.
-        """
+        """Whether every launch synchronizes and raises on NaN or inf in its float arrays (debugging; settable)."""
         return self._check_finite
 
     @check_finite.setter
@@ -2238,21 +2266,22 @@ class CudaKernel:
         return bool(self._compiled) and _current_device() in self._compiled
 
     def compile(self, *, log_stream: Any = None) -> Any:
-        """Compile the kernel now (it is otherwise compiled on the first call).
+        """Compile the kernel on the current device now, instead of at the first call.
 
-        The options are :meth:`compile_options`, evaluated now: a kernel
-        compiled before debug mode was enabled keeps its options. Call
-        :meth:`recompile` to refresh headers/options explicitly. Compilation
-        and launch resources are cached separately on each CUDA device;
-        failed compilation remains retryable. ``log_stream`` receives compiler
-        output (a writable file object, or None).
+        Compiled once per device and cached (also on disk by CuPy) with the
+        :meth:`compile_options` of now: a kernel compiled before debug mode
+        was enabled keeps its options (see :meth:`recompile`). A failed
+        compilation can be retried.
+
+        Parameters
+        ----------
+        log_stream : file-like, optional
+            Writable file object that receives the compiler output.
 
         Returns
         -------
         cupy.RawKernel
-            The compiled kernel; compiled once and cached (also on disk by CuPy,
-            keyed on the source and :meth:`compile_options`). No launch is needed
-            to surface compiler errors.
+            The compiled kernel.
 
         Raises
         ------
@@ -2298,10 +2327,19 @@ class CudaKernel:
         return self._compiled[device].raw
 
     def recompile(self, *, log_stream: Any = None) -> Any:
-        """Recompile on the current device using current headers/debug options.
+        """Recompile on the current device with the current headers and options.
 
-        Other devices keep their compiled kernels. A failed rebuild remains
-        uncompiled and can be retried; in-flight launches must finish first.
+        Other devices keep their kernels; in-flight launches must finish first.
+
+        Parameters
+        ----------
+        log_stream : file-like, optional
+            Writable file object that receives the compiler output.
+
+        Returns
+        -------
+        cupy.RawKernel
+            The compiled kernel.
         """
         from cunumpy.xp import cupy_available
 
@@ -2310,24 +2348,39 @@ class CudaKernel:
         return self.compile(log_stream=log_stream)
 
     def prepare_args(self, *args: Any) -> tuple[Any, ...]:
-        """The arguments as passed to ``cupy.RawKernel``: flattened and checked.
+        """Return the arguments as passed to ``cupy.RawKernel``: flattened and checked.
 
-        Argument objects with ``__cuda_args__()`` (including struct values) are
-        flattened. If the signature is checked, the number of arguments, the
-        dtype and C-contiguity of every array, every struct and every scalar
-        are checked, Python scalars are cast to the declared C types, and arrays
-        for array view parameters (``Array2D<double>``) are packed into
-        (pointer, shape, strides).
+        Argument objects with ``__cuda_args__()`` are flattened. With a
+        checked signature, the argument count, every array's dtype and
+        contiguity, structs and scalars are checked, scalars are cast to the
+        declared C types and arrays for view parameters (``Array2D<double>``)
+        are packed into pointer, shape and strides.
+
+        Parameters
+        ----------
+        *args
+            The kernel arguments.
+
+        Returns
+        -------
+        tuple
+            The values to launch with.
 
         Raises
         ------
         TypeError
-            Wrong number of arguments, a host array, an array of the wrong
-            dtype or a non-contiguous array for a pointer parameter, an array of
-            the wrong dtype or number of dimensions for an array view, a value
-            of the wrong struct, or a scalar of an incompatible type.
+            If the argument count is wrong, an array is a host array, has the
+            wrong dtype, contiguity or ndim, a struct value is of another
+            struct, or a scalar has an incompatible type.
         OverflowError
-            A Python integer out of range of the declared integer type.
+            If an integer is out of range of the declared type.
+
+        Examples
+        --------
+        >>> scale = xp.kernels.CudaKernel(
+        ...     'extern "C" __global__ void scale(double a, int n) {}', "scale")
+        >>> scale.prepare_args(2, 10)
+        (np.float64(2.0), np.int32(10))
         """
         values: list[Any] = []
         for arg in args:
@@ -2354,11 +2407,37 @@ class CudaKernel:
         block: int | Sequence[int] | None = None,
         args: Sequence[Any] | None = None,
     ) -> tuple[tuple[int, ...], tuple[int, ...]]:
-        """The ``(grid, block)`` a call with these launch arguments uses.
+        """Return the ``(grid, block)`` a call with these launch arguments uses.
 
-        Pass `args` to use default thread-count inference when neither
-        `n_threads` nor `grid` is given. See :meth:`__call__`. A grid with a
-        zero dimension launches nothing.
+        Parameters
+        ----------
+        n_threads : int or sequence of int, optional
+            Number of threads, as for :meth:`~cunumpy.kernels.CudaKernel.__call__`.
+        grid : int or sequence of int, optional
+            Number of blocks, instead of `n_threads`.
+        block : int or sequence of int, optional
+            Block shape, instead of :attr:`block_size`.
+        args : sequence, optional
+            Call arguments, to infer the launch size (:attr:`n_threads_from`)
+            when neither `n_threads` nor `grid` is given.
+
+        Returns
+        -------
+        tuple of (tuple of int, tuple of int)
+            The grid and block shapes. A grid with a zero dimension launches
+            nothing.
+
+        Raises
+        ------
+        TypeError
+            If not exactly one of `n_threads` and `grid` is given or inferred.
+
+        Examples
+        --------
+        >>> kernel = xp.kernels.CudaKernel(
+        ...     'extern "C" __global__ void f(double* a) {}', "f", block_size=(16, 16))
+        >>> kernel.launch_shape((100, 50))
+        ((7, 4), (16, 16))
         """
         block_shape = (
             self._block
@@ -2401,41 +2480,38 @@ class CudaKernel:
         shared_mem: int = 0,
         stream: Any = None,
     ) -> None:
-        """Launch the kernel.
+        """Launch the kernel (asynchronously, unless in debug mode).
 
-        The launch shape is given either by `n_threads` (the grid is the number
-        of threads divided by the block size, rounded up, per dimension) or by
-        an explicit `grid`. With neither, it is inferred from the first array's
-        leading axes (or the configured `n_threads_from` callback).
+        The grid is `n_threads` divided by the block, rounded up, or an
+        explicit `grid`; with neither, the size is inferred
+        (:attr:`n_threads_from`).
 
         Parameters
         ----------
         *args
-            Kernel arguments: CuPy arrays, scalars and argument objects with
-            ``__cuda_args__()``, see :meth:`prepare_args`.
-        n_threads : int | Sequence[int] | None
-            Number of threads in 1 to 3 dimensions, e.g. ``n`` or ``(nx, ny)``.
-            With a 1D block size, the block is ``(block_size, 1, ...)``.
-        grid : int | Sequence[int] | None
+            Kernel arguments: CuPy arrays, scalars and argument objects, see
+            :meth:`prepare_args`.
+        n_threads : int or sequence of int, optional
+            Number of threads in 1 to 3 dimensions, e.g. ``(nx, ny)``. With a
+            1D block size the block is ``(block_size, 1, ...)``.
+        grid : int or sequence of int, optional
             Number of blocks in 1 to 3 dimensions, instead of `n_threads`.
-        block : int | Sequence[int] | None
-            Block shape for this call, instead of the kernel's `block_size`.
-        shared_mem : int
-            Dynamic shared memory per block, in bytes (``extern __shared__``).
-        stream : cupy.cuda.Stream | None
-            Stream to launch on; the current stream if None.
+        block : int or sequence of int, optional
+            Block shape for this call, instead of :attr:`block_size`.
+        shared_mem : int, optional
+            Dynamic shared memory per block in bytes (``extern __shared__``).
+        stream : cupy.cuda.Stream, optional
+            Stream to launch on; the current stream by default.
 
         Raises
         ------
         RuntimeError
-            In debug mode (see :meth:`debug_active`), an asynchronous CUDA
-            error found when synchronizing the stream after the launch, e.g. an
-            illegal memory access; the CuPy error is chained. Without debug
-            mode, such an error surfaces at a later synchronization (a
-            ``.get()``, an MPI call, ...), not necessarily in this kernel.
+            In debug mode, a CUDA error found by synchronizing after the
+            launch (CuPy's error chained); otherwise such errors surface at a
+            later synchronization. Also a NaN or inf with :attr:`check_finite`.
         ValueError
-            Dimensions, threads or static plus dynamic shared memory exceed
-            this device/kernel's limits, or arrays/stream belong to another device.
+            If the launch exceeds the device or kernel limits (dimensions,
+            threads, shared memory), or arrays or stream are on another device.
         """
         grid_shape, block_shape = self.launch_shape(
             n_threads, grid=grid, block=block, args=args
@@ -2542,13 +2618,7 @@ class CudaKernel:
         grid: tuple[int, ...],
         block: tuple[int, ...],
     ) -> None:
-        """Wait for the launch and re-raise a CUDA error naming this kernel.
-
-        Skipped while the stream is being captured into a CUDA graph: the
-        launch is only recorded then, and synchronizing would invalidate the
-        capture. Errors of the captured kernels surface when the graph is
-        launched (in debug mode, synchronize after ``graph.launch()``).
-        """
+        """Wait for the launch and re-raise a CUDA error naming this kernel (not while graph-capturing)."""
         if stream is None:
             import cupy as cp
 
@@ -2585,24 +2655,26 @@ def _is_capturing(stream: Any) -> bool:
 
 
 class CudaKernelVariants:
-    """Kernels generated per variant (e.g. per dtype and dimension), compiled once.
+    """Kernels generated per variant (e.g. per dtype and dimension), created once.
 
-    For kernels whose source is generated for each variant, e.g. a stencil
-    product for ``ndim`` in 1 to 3 and several dtypes. The `factory` is called
-    the first time a variant is requested; the kernel is cached per key.
+    For kernels whose source is generated per variant. The `factory` is called
+    the first time a key is requested, and the kernel is cached per key.
 
     Parameters
     ----------
-    factory : Callable[..., CudaKernel]
-        Creates the kernel for a variant from its key, e.g.
-        ``lambda ndim, dtype: CudaKernel(make_source(ndim, ctype_of(dtype)), "f")``.
+    factory : callable
+        Returns the :class:`CudaKernel` for a variant, called with the key.
 
     Examples
     --------
-    >>> matvec = CudaKernelVariants(
-    ...     lambda ndim, dtype: CudaKernel(source(ndim, ctype_of(dtype)), "matvec")
-    ... )
-    >>> matvec.get(3, np.float64)(mat, x, out, n_threads=out.size)  # doctest: +SKIP
+    >>> def make_scale(dtype):
+    ...     ctype = xp.cuda.ctype_of(dtype)
+    ...     return xp.kernels.CudaKernel(
+    ...         f'extern "C" __global__ void scale({ctype}* x, {ctype} a) {{}}', "scale")
+    >>> scale = xp.kernels.CudaKernelVariants(make_scale)
+    >>> scale.get(np.float32).signature[1].ctype
+    'float'
+    >>> scale.compile_all([(np.float64,)])  # doctest: +SKIP
     """
 
     def __init__(self, factory: Callable[..., CudaKernel]) -> None:
@@ -2613,7 +2685,23 @@ class CudaKernelVariants:
         return f"CudaKernelVariants({len(self._kernels)} variants)"
 
     def get(self, *key: Hashable) -> CudaKernel:
-        """The kernel for the variant `key`, created on first use."""
+        """Return the kernel for a variant, created on first use.
+
+        Parameters
+        ----------
+        *key
+            The variant key, passed to the factory.
+
+        Returns
+        -------
+        CudaKernel
+            The kernel.
+
+        Raises
+        ------
+        TypeError
+            If the factory does not return a :class:`CudaKernel`.
+        """
         kernel = self._kernels.get(key)
         if kernel is None:
             kernel = self._factory(*key)
@@ -2632,7 +2720,13 @@ class CudaKernelVariants:
         return iter(list(self._kernels))
 
     def keys(self) -> list[tuple[Hashable, ...]]:
-        """The keys of the variants created so far."""
+        """Return the keys of the variants created so far.
+
+        Returns
+        -------
+        list of tuple
+            The keys.
+        """
         return list(self._kernels)
 
     def compile_all(
@@ -2643,14 +2737,15 @@ class CudaKernelVariants:
     ) -> None:
         """Compile the given variants (created if needed) and all existing ones.
 
+        All are compiled even if one fails; the first error is raised after.
+
         Parameters
         ----------
-        keys : Iterable[Sequence]
-            Keys of variants to create and compile now, e.g. ``[(3, np.float64)]``.
-        jobs : int | None
+        keys : iterable of sequence, optional
+            Keys of variants to create now, e.g. ``[(3, np.float64)]``.
+        jobs : int or None, optional
             Number of variants compiled at a time, in threads (NVRTC releases
-            the GIL); None for the number of CPUs. See
-            :meth:`KernelCatalog.compile_all <cunumpy.kernels.KernelCatalog.compile_all>`.
+            the GIL); None for the number of CPUs. 1 by default.
         """
         for key in keys:
             self.get(*key)
