@@ -5,6 +5,7 @@ device array (`FakeDeviceArray`) takes the place of CuPy arrays. Launching
 kernels needs a GPU and is skipped without one.
 """
 
+import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Final
@@ -1082,9 +1083,14 @@ def test_from_signature():
 
 
 def test_from_signature_postponed_annotations():
-    from tests.unit.postponed_annotations import Args
+    # loaded by path: `tests` is not importable when pytest runs without the
+    # repository root on sys.path
+    path = Path(__file__).parent / "postponed_annotations.py"
+    spec = importlib.util.spec_from_file_location("postponed_annotations", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
 
-    struct = CudaStruct.from_signature(Args.__init__, "A")
+    struct = CudaStruct.from_signature(module.Args.__init__, "A")
     assert [f.ctype for f in struct.fields] == [
         "Array2D<double>",
         "Array1D<double>",
