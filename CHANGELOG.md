@@ -14,8 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   copies, fixed shapes, one synchronization per iteration).
 - The fake CuPy has `cupyx.scipy`: SciPy behind the CuPy rules (host arrays
   rejected, fake device arrays and proxy objects returned), so `xp.scipy` code
-  runs its CuPy path without a GPU. `cupyx.scipy.interpolate` has only the
-  names CuPy provides. `cupyx.empty_pinned`/`zeros_pinned` return NumPy arrays.
+  runs its CuPy path without a GPU. Every `cupyx.scipy` subpackage has only
+  the names CuPy v14.2.0 provides, so e.g. `special.jv` fails as on a GPU.
+  `cupyx.empty_pinned`/`zeros_pinned` return NumPy arrays.
+- `xp.scipy.linalg.solve_circulant` on the CuPy backend, which `cupyx.scipy`
+  lacks: SciPy's FFT solve and arguments, on the device.
 - Solvers guide: splines on the device with `xp.scipy.interpolate`, and
   batched root finding.
 - Compiled Pyccel regression coverage for F-ordered arrays and column-block

@@ -44,6 +44,12 @@ def periodic_poisson(rho, length):
 * `cupyx.scipy` has only part of SciPy. A missing name raises
   `AttributeError` saying which backend lacks it; check with
   `xp.scipy.special.available("erfcx")` where a fallback is possible.
+  Commonly missing: `special.jv` (only `j0`, `j1`, `yn`), `special.erfi`,
+  `linalg.solve`/`inv` (use `xp.linalg`), `RectBivariateSpline`, and all of
+  `integrate` and `optimize`.
+* cunumpy fills in `xp.scipy.linalg.solve_circulant` on the CuPy backend: an
+  FFT solve on the device, with SciPy's arguments (a circulant preconditioner
+  per iteration stays on the GPU).
 * Keyword arguments can differ between the two: SciPy's `cg` takes `rtol`
   (since SciPy 1.12), CuPy's takes `tol`. Pass tolerances only after checking
   both, or through a small wrapper.
@@ -54,8 +60,8 @@ def periodic_poisson(rho, length):
   (`erf`, `erfc`, Bessel functions `i0`, `i1`, `k0`, ...) are in
   `xp.scipy.special` on both backends.
 * On the fake CuPy (tests without a GPU), `xp.scipy` runs SciPy with the CuPy
-  rules: host arrays are rejected, results are fake device arrays, and
-  `interpolate` has only the names CuPy has.
+  rules: host arrays are rejected, results are fake device arrays, and each
+  subpackage has only the names CuPy has.
 
 ## Splines and interpolation
 

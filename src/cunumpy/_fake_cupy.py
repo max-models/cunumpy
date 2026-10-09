@@ -16,7 +16,7 @@ matters for finding host/device bugs:
   :class:`~cunumpy.arguments.CudaStruct` packing and the argument checks of
   :class:`~cunumpy.kernels.CudaKernel` work;
 * ``cupyx.scipy`` forwards to SciPy under the same rules, with the names of
-  ``cupyx.scipy.interpolate`` only (see :mod:`cunumpy._fake_cupyx`);
+  ``cupyx.scipy`` (see :mod:`cunumpy._fake_cupyx`);
 * CUDA kernels cannot run: ``RawKernel`` and friends raise
   ``NotImplementedError`` when called, and :func:`cunumpy.kernel_testing.requires_cupy`
   skips tests while the fake is active. Inside

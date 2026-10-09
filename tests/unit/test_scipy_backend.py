@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
+from cunumpy import _linalg
 from cunumpy import _scipy_backend as scipy_backend
 from cunumpy._scipy_backend import SUBMODULES, ScipyNamespace
 
@@ -83,6 +84,21 @@ def test_cupy_backend_forwards_to_cupyx(fake_cupyx):
     assert not xp.scipy.available("ndimage")
     with pytest.raises(ImportError, match="needs cupyx.scipy.ndimage"):
         xp.scipy.ndimage.resolve()
+
+
+def test_cupy_backend_fills_in_missing_functions(fake_cupyx):
+    modules = {"cupyx.scipy.linalg": types.ModuleType("cupyx.scipy.linalg")}
+    fake_cupyx["cupyx.scipy"].linalg = modules["cupyx.scipy.linalg"]
+    sys.modules.update(modules)
+    try:
+        assert xp.scipy.linalg.solve_circulant is _linalg.solve_circulant
+        assert xp.scipy.linalg.available("solve_circulant")
+        assert "solve_circulant" in dir(xp.scipy.linalg)
+        # a cupyx version would win over the fill
+        modules["cupyx.scipy.linalg"].solve_circulant = "device solve_circulant"
+        assert xp.scipy.linalg.solve_circulant == "device solve_circulant"
+    finally:
+        del sys.modules["cupyx.scipy.linalg"]
 
 
 def test_backend_switch_takes_effect_immediately(fake_cupyx, monkeypatch):

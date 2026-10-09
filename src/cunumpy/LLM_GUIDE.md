@@ -100,6 +100,7 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
 | CUDA struct from a Pyccel argument class | `xp.arguments.CudaStruct.from_signature(Cls.__init__, "Name")`, `xp.arguments.write_cuda_header(...)` |
 | SciPy (sparse, sparse.linalg, fft, special, ndimage, ...) on either backend | `xp.scipy.<subpackage>.<name>` (SciPy or `cupyx.scipy`); `xp.scipy.special.available(name)` |
 | splines on the device | `xp.scipy.interpolate.UnivariateSpline`, `make_interp_spline`, `NdBSpline` (no `RectBivariateSpline`: `make_interp_spline` per axis + `NdBSpline`) |
+| circulant solve (FFT preconditioner) on the device | `xp.scipy.linalg.solve_circulant(c, b)` (cunumpy fill-in on CuPy, SciPy's arguments) |
 | many independent scalar root problems (one per ray, per marker) | `xp.optimize.newton(func, x0_array, fprime=None)` (SciPy's array Newton/secant, on the device) |
 | chain of elementwise operations as one GPU kernel | `@xp.kernels.fuse` (`cupy.fuse` for CuPy arrays, plain call otherwise) |
 | PETSc solve on device arrays without copies | `xp.petsc.petsc_vec(array)` (CUDA/HIP petsc4py for CuPy arrays); `xp.synchronize()` around PETSc calls |
