@@ -14,6 +14,7 @@ from cunumpy import cuda as cuda
 from cunumpy import kernels as kernels
 from cunumpy import memory as memory
 from cunumpy import mpi as mpi
+from cunumpy import optimize as optimize
 from cunumpy import petsc as petsc
 from cunumpy import profiling as profiling
 from cunumpy import rng as rng

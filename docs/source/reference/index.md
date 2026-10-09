@@ -14,6 +14,7 @@ arguments
 cuda
 rng
 algorithms
+optimize
 mpi
 profiling
 memory

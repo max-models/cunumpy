@@ -49,6 +49,7 @@ The submodules are named so that they do not hide a NumPy name (`rng`, not
 | [`cunumpy.cuda`](reference/cuda.md) | CUDA only | device selection and memory, `stream`, streams/events, `pin_memory`, debug mode, CUDA headers and source tools (`cuda_include_dir`, `parse_cuda_signature`) |
 | [`cunumpy.rng`](reference/rng.md) | both | `random_streams`, `get_rng`, `philox_*` |
 | [`cunumpy.algorithms`](reference/algorithms.md) | both | `morton_*`, `sort_by_key`, `segment_sum`, `compact_by_mask` |
+| [`cunumpy.optimize`](reference/optimize.md) | both | `newton` (batched Newton/secant), `NewtonResult` |
 | [`cunumpy.mpi`](reference/mpi.md) | both | `mpi_buffer`, `MPIStaging`, CUDA-aware MPI detection, `synchronize_for_mpi`, and the MPI stand-ins of maybempi (`get_mpi`, `local_rank`, ...) |
 | [`cunumpy.profiling`](reference/profiling.md) | both | `timed_region`, `nvtx_range`, `count_transfers`, `assert_no_transfers`, `TransferBudget` |
 | [`cunumpy.memory`](reference/memory.md) | both | `HostStaging`, `HostCopy`, `DeviceMirror` |
