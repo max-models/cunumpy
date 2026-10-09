@@ -8,6 +8,7 @@ from typing import Any
 
 import array_api_compat.numpy as np
 
+from cunumpy import _fake_cupy
 from cunumpy.xp import assert_same_backend, get_array_backend, get_array_module
 
 
@@ -207,7 +208,9 @@ class SegmentPlan:
         Floating-point and complex dtypes are kept; integer and bool values give
         float64. CUDA supports float16/32/64 and complex64/128 (float16 accumulates
         in float32) and sums all components in one launch with atomics, so the
-        floating-point order is not deterministic.
+        floating-point order is not deterministic. On the fake CuPy, which cannot
+        compile CUDA kernels, the sum runs on the host buffers of the fake arrays,
+        so the CuPy path of a program works without a GPU.
 
         Parameters
         ----------
@@ -274,6 +277,14 @@ class SegmentPlan:
                 out,
                 self._keys[self._valid],
                 values[self._valid].astype(dtype, copy=False),
+            )
+        elif values.size and self.n_segments and _fake_cupy.is_active():
+            keys = _fake_cupy.host_buffer(self._keys)
+            valid = keys >= 0
+            np.add.at(
+                _fake_cupy.host_buffer(out),
+                keys[valid],
+                _fake_cupy.host_buffer(values)[valid].astype(dtype, copy=False),
             )
         elif values.size and self.n_segments:
             half = np.dtype(dtype) == np.dtype(np.float16)

@@ -30,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   warnings as errors. Docstring style: `docs/source/contributing.md`.
 
 ### Fixed
+- `xp.algorithms.segment_sum` and `SegmentPlan.sum` work on the fake CuPy: it
+  cannot compile the CUDA kernel, so the sum runs on the host buffers of the
+  fake arrays and the CuPy path of a program runs without a GPU.
 - The ordering guide identifies 0.6.3 as the first release preserving F order
   in CuPy-to-host conversions.
 - `CudaStruct.from_signature` accepts quoted pyccel annotations
