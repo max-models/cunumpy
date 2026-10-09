@@ -23,10 +23,11 @@ name: Sync to GitLab and Run GPU CI
 
 on:
   push:
-    branches: [main, devel]
+    branches: [devel]
   pull_request:
     branches: [main, devel]
   workflow_dispatch:
+  workflow_call:
 
 jobs:
   sync-and-test:
@@ -57,14 +58,14 @@ jobs:
             SAFE_REF="${SOURCE_REF//\//-}"
             TARGET_BRANCH="gpu-test-${SAFE_REF}"
           fi
-          echo "TARGET_BRANCH=$TARGET_BRANCH" >> $GITHUB_ENV
+          echo "TARGET_BRANCH=$TARGET_BRANCH" >> "$GITHUB_ENV"
 
           # 3. Add GitLab SSH remote
           git remote add gitlab git@gitlab.mpcdf.mpg.de:maxlin/cunumpy.git
 
           # 4. Force push (This automatically starts the GitLab Pipeline)
-          git push -f gitlab HEAD:refs/heads/$TARGET_BRANCH
-          echo "PUSHED_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          git push -f gitlab "HEAD:refs/heads/$TARGET_BRANCH"
+          echo "PUSHED_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
           # 5. Provide the direct link
           PIPELINE_URL="https://gitlab.mpcdf.mpg.de/maxlin/cunumpy/-/pipelines?ref=$TARGET_BRANCH"
@@ -84,7 +85,7 @@ jobs:
           # 1. GitLab creates the pipeline asynchronously after the push: wait until
           #    the pipeline for the pushed commit exists (asking right away finds none).
           PIPELINE=""
-          for i in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             PIPELINE=$(curl -sf "${AUTH[@]}" "$API/pipelines?ref=$TARGET_BRANCH&sha=$PUSHED_SHA&per_page=1" | jq -r '.[0].id // empty' || true)
             if [ -n "$PIPELINE" ]; then break; fi
             sleep 5

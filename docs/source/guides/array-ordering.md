@@ -55,9 +55,10 @@ Returning a C-ordered result from `host_call` does not make that result F-ordere
 just because an input was F-ordered.
 
 ```{note}
-Preserving F order in CuPy-to-host conversions is an unreleased fix. Earlier
-releases used `array.get()` and produced C-ordered host copies. Applications
-depending on F order at a host-kernel boundary need a release containing this fix.
+CuPy-to-host conversions preserve F order starting with **cuNumPy 0.6.3**.
+Earlier releases used `array.get()` and produced C-ordered host copies.
+Applications depending on F order at a host-kernel boundary require
+`cunumpy>=0.6.3`.
 ```
 
 ## Copies, masks, and assignment

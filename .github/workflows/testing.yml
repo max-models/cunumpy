@@ -3,14 +3,33 @@ name: Tests
 on:
   push:
     branches:
-      - main
       - devel
   pull_request:
     branches:
       - main
       - devel
+  workflow_call:
 
 jobs:
+  compiled-fake-cupy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install compilers and compiled-test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc gfortran
+          python -m pip install ".[test-compiled]"
+      - name: Test compiled host kernels with fake device arrays
+        env:
+          CUNUMPY_FAKE_CUPY: "1"
+          CUNUMPY_BACKEND: cupy
+          CUNUMPY_REQUIRE_PYCCEL: "1"
+        run: python -m pytest -q tests/unit/test_pyccel_kernel.py tests/unit/test_cupy.py
+
   build:
     runs-on: ubuntu-latest
 
@@ -22,17 +41,17 @@ jobs:
     steps:
       # Checkout the repository
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       # Set up Python
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
       # Cache pip dependencies
       - name: Cache pip
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('**/pyproject.toml') }}

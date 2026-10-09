@@ -55,13 +55,14 @@ extern "C" __global__ void scale(double* x, double f, int n) {
     if (i < n) x[i] *= f;
 }''', "scale")
 kernel = Kernel(lambda x, f, n: None, scale)
+before = xp.get_backend()  # CUNUMPY_BACKEND may already select CuPy
 with fake_cupy_session():
     assert xp.get_backend() == "cupy"
     KernelCatalog({"scale": kernel}).compile_all()
     x = xp.arange(4.0)
     kernel(x, 3.0, 4, n_threads=4)
     print(xp.to_numpy(x).tolist())
-assert xp.get_backend() == "numpy"
+assert xp.get_backend() == before
 """
     assert "[0.0, 3.0, 6.0, 9.0]" in run(code).stdout
 

@@ -6,15 +6,25 @@ on:
       - main
 
 jobs:
+  # Local reusable workflows check out this push's commit. Main validation is
+  # invoked here, so publishing cannot race independent CPU/GPU workflows.
+  cpu-tests:
+    uses: ./.github/workflows/testing.yml
+
+  gpu-tests:
+    uses: ./.github/workflows/gpu_ci_trigger.yml
+    secrets: inherit
+
   build-and-publish:
+    needs: [cpu-tests, gpu-tests]
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
@@ -25,6 +35,13 @@ jobs:
 
       - name: Build the package
         run: python -m build
+
+      - name: Check distributions and smoke-test the installed wheel
+        run: |
+          python -m twine check dist/*
+          python -m venv "$RUNNER_TEMP/wheel-smoke"
+          "$RUNNER_TEMP/wheel-smoke/bin/python" -m pip install dist/*.whl
+          "$RUNNER_TEMP/wheel-smoke/bin/python" -I testing/smoke_wheel.py
 
       - name: Publish to PyPI
         env:

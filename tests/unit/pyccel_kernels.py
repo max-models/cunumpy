@@ -20,6 +20,13 @@ def scale_inplace(x: "float[:]", factor: float):
         x[i] = x[i] * factor
 
 
+def scale_fortran_inplace(x: "float[:, :](order=F)", factor: float):  # noqa: F821
+    """Scale an F-ordered matrix, including complete column-block views."""
+    for j in range(x.shape[1]):
+        for i in range(x.shape[0]):
+            x[i, j] = x[i, j] * factor
+
+
 def dot(x: "float[:]", y: "float[:]") -> float:
     """Return the dot product of `x` and `y` (a scalar return value)."""
     result = 0.0
