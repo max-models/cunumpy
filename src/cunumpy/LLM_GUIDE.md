@@ -101,6 +101,7 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
 | SciPy (sparse, sparse.linalg, fft, special, ndimage, ...) on either backend | `xp.scipy.<subpackage>.<name>` (SciPy or `cupyx.scipy`); `xp.scipy.special.available(name)` |
 | splines on the device | `xp.scipy.interpolate.UnivariateSpline`, `make_interp_spline`, `NdBSpline` (no `RectBivariateSpline`: `make_interp_spline` per axis + `NdBSpline`) |
 | circulant solve (FFT preconditioner) on the device | `xp.scipy.linalg.solve_circulant(c, b)` (cunumpy fill-in on CuPy, SciPy's arguments) |
+| one root/minimization/integral/ODE at setup with an `xp` callback using device data | `xp.optimize.fsolve`/`root`/`minimize`, `xp.integrate.quad`/`odeint` (SciPy on the host, callback args and results on `x0`'s backend) |
 | many independent scalar root problems (one per ray, per marker) | `xp.optimize.newton(func, x0_array, fprime=None)` (SciPy's array Newton/secant, on the device) |
 | chain of elementwise operations as one GPU kernel | `@xp.kernels.fuse` (`cupy.fuse` for CuPy arrays, plain call otherwise) |
 | PETSc solve on device arrays without copies | `xp.petsc.petsc_vec(array)` (CUDA/HIP petsc4py for CuPy arrays); `xp.synchronize()` around PETSc calls |

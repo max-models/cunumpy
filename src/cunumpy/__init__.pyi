@@ -11,6 +11,7 @@ from numpy import *
 from cunumpy import algorithms as algorithms
 from cunumpy import arguments as arguments
 from cunumpy import cuda as cuda
+from cunumpy import integrate as integrate
 from cunumpy import kernels as kernels
 from cunumpy import memory as memory
 from cunumpy import mpi as mpi

@@ -46,7 +46,7 @@ def periodic_poisson(rho, length):
   `xp.scipy.special.available("erfcx")` where a fallback is possible.
   Commonly missing: `special.jv` (only `j0`, `j1`, `yn`), `special.erfi`,
   `linalg.solve`/`inv` (use `xp.linalg`), `RectBivariateSpline`, and all of
-  `integrate` and `optimize`.
+  `integrate` and `optimize` (see `xp.optimize` and `xp.integrate` below).
 * cunumpy fills in `xp.scipy.linalg.solve_circulant` on the CuPy backend: an
   FFT solve on the device, with SciPy's arguments (a circulant preconditioner
   per iteration stays on the GPU).
@@ -93,7 +93,7 @@ transfers.
 
 SciPy's optimizers run on the host, and `cupyx.scipy` has no `optimize`.
 Sequential scalar problems (one `fsolve`, a `quad` integral, an ODE) belong on
-the host at setup (see `xp.setup_on_host`). Many independent scalar equations
+the host at setup (see the next section and `xp.setup_on_host`). Many independent scalar equations
 (a flux surface on every ray, an inverse mapping at every marker) are one
 array problem: `xp.optimize.newton` runs Newton's method (with `fprime`) or
 the secant method on all of them at once, with the steps of
@@ -109,6 +109,30 @@ r = xp.optimize.newton(residual, xp.full(levels.shape, 0.3))
 
 Each iteration synchronizes once to test convergence.
 `full_output=True` returns `root`, `converged` and `zero_der` arrays.
+
+## SciPy solvers with device callbacks
+
+For a single problem, `xp.optimize.fsolve`, `root` and `minimize` and
+`xp.integrate.quad` and `odeint` run SciPy on the host with SciPy's
+arguments, so they work on both backends. With `x0` (`y0` for `odeint`) on
+the device, the callbacks get `x` on the device and the result comes back on
+the device, so a residual written with `xp` that uses device data needs no
+host copy of that data:
+
+```python
+B = equilibrium.b_field_on_grid()  # device array
+
+def residual(x):
+    return interpolate(B, x) - b_target
+
+x = xp.optimize.fsolve(residual, xp.asarray([0.5, 0.0]))  # device array
+```
+
+Every evaluation copies `x` to the device and the result to the host, so use
+them at setup, not in a time loop. `quad` calls its integrand with a Python
+float; a 0-d device array returned is copied to the host. Bounds and
+constraint matrices of `minimize` are host data; constraint functions get
+device arrays like `fun`.
 
 ## Fused elementwise updates: `xp.kernels.fuse`
 

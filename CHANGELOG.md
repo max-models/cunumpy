@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs its CuPy path without a GPU. Every `cupyx.scipy` subpackage has only
   the names CuPy v14.2.0 provides, so e.g. `special.jv` fails as on a GPU.
   `cupyx.empty_pinned`/`zeros_pinned` return NumPy arrays.
+- `xp.optimize.fsolve`, `root`, `minimize` and `xp.integrate.quad`, `odeint`
+  (`cupyx.scipy` has neither): SciPy on the host with SciPy's arguments, the
+  callbacks get their arrays on the backend of `x0`/`y0`, and results come
+  back on that backend.
 - `xp.scipy.linalg.solve_circulant` on the CuPy backend, which `cupyx.scipy`
   lacks: SciPy's FFT solve and arguments, on the device.
 - Solvers guide: splines on the device with `xp.scipy.interpolate`, and
