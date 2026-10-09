@@ -12,4 +12,5 @@ The NumPy/CuPy namespace (see the [API overview](../api.md)) plus backend select
 
 ```{eval-rst}
 .. autodata:: cunumpy.scipy
+.. autodata:: cunumpy.MIN_CUPY_VERSION
 ```

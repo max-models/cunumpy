@@ -20,7 +20,14 @@ example:
 
 ```bash
 python -m pip install cupy-cuda12x   # CUDA 12.x
+python -m pip install cupy-cuda13x   # CUDA 13.x
 ```
+
+CuNumpy supports CuPy 14.0 or newer (`xp.MIN_CUPY_VERSION`); the GPU CI tests
+14.0 and the newest release. CuPy 13 lacks parts of `cupyx.scipy` that
+CuNumpy relies on (`interpolate.UnivariateSpline`, `NdBSpline`,
+`CubicSpline`, ...): selecting the CuPy backend with an older CuPy warns.
+`xp.backend_info()` shows the installed and the minimum version.
 
 On HPC clusters, load the site's CUDA module first and check the CuPy
 installation guide for the matching package name. Then verify that CuNumpy can

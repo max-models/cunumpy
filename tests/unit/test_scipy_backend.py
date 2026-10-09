@@ -15,6 +15,10 @@ from cunumpy._scipy_backend import SUBMODULES, ScipyNamespace
 @pytest.fixture
 def fake_cupyx(monkeypatch):
     """A fake `cupyx.scipy` with `special.erf` and `sparse.linalg.cg`, as backend."""
+    # hide the real cupyx (imported by earlier tests on a GPU): its other
+    # subpackages, e.g. cupyx.scipy.ndimage, would stay importable
+    for name in [n for n in sys.modules if n.split(".")[0] == "cupyx"]:
+        monkeypatch.delitem(sys.modules, name)
     modules = {}
     for name in ("cupyx", "cupyx.scipy", "cupyx.scipy.special", "cupyx.scipy.sparse"):
         modules[name] = types.ModuleType(name)

@@ -33,10 +33,12 @@ from cunumpy._host import evaluate_on_host, host_call, setup_on_host
 from cunumpy._scipy_backend import scipy
 from cunumpy._staging import to_host_async
 from cunumpy.xp import (
+    MIN_CUPY_VERSION,
     as_device_array,
     assert_same_backend,
     backend_info,
     cupy_available,
+    cupy_version_supported,
     default_float_dtype,
     get_array_backend,
     get_array_module,
@@ -96,6 +98,7 @@ def require_version(minimum: str) -> None:
 
 
 __all__ = [
+    "MIN_CUPY_VERSION",
     "__version__",
     "algorithms",
     "arguments",
@@ -105,6 +108,7 @@ __all__ = [
     "cuda",
     "cupy_available",
     "cupy_backend",
+    "cupy_version_supported",
     "default_float_dtype",
     "evaluate_on_host",
     "get_array_backend",

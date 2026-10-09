@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 import warnings
 from collections.abc import Callable, Generator
@@ -46,6 +47,44 @@ _logger = logging.getLogger(__name__)
 _CUPY_AVAILABLE_CACHE = None
 _CUPY_UNAVAILABLE_REASON: str | None = None
 
+#: The oldest supported CuPy release. Older ones lack parts of ``cupyx.scipy``
+#: that cunumpy documents (``interpolate.UnivariateSpline``, ``NdBSpline``,
+#: ``CubicSpline``, ...); the fake ``cupyx.scipy`` lists the names of this
+#: release. The GPU CI tests this release and the newest one.
+MIN_CUPY_VERSION = "14.0.0"
+
+
+def cupy_version_supported(cupy_version: str) -> bool:
+    """Return whether a CuPy version is :data:`MIN_CUPY_VERSION` or newer.
+
+    Pre-releases of the minimum itself (``14.0.0rc1``) are older than it.
+
+    Parameters
+    ----------
+    cupy_version : str
+        A version string, e.g. ``cupy.__version__``.
+
+    Returns
+    -------
+    bool
+        False also for a string that is not a version.
+
+    Examples
+    --------
+    >>> xp.cupy_version_supported("13.6.0")
+    False
+    >>> xp.cupy_version_supported("14.2.0")
+    True
+    """
+    match = re.match(r"(\d+)\.(\d+)(?:\.(\d+))?(.*)", cupy_version)
+    if match is None:
+        return False
+    release = tuple(int(part or 0) for part in match.groups()[:3])
+    minimum = tuple(int(part) for part in MIN_CUPY_VERSION.split("."))
+    if release != minimum:
+        return release > minimum
+    return re.match(r"\.?(a|b|rc|dev)", match.group(4)) is None
+
 
 def cupy_available() -> bool:
     """Return whether CuPy can be imported and reports a usable CUDA device.
@@ -71,6 +110,16 @@ def cupy_available() -> bool:
     try:
         import cupy as cp
 
+        cupy_version = getattr(cp, "__version__", "")
+        fake = getattr(cp, "__cunumpy_fake__", False)
+        if cupy_version and not fake and not cupy_version_supported(cupy_version):
+            warnings.warn(
+                f"CuPy {cupy_version} is older than the oldest version cunumpy "
+                f"supports ({MIN_CUPY_VERSION}); parts of xp.scipy (e.g. "
+                "interpolate.UnivariateSpline) are missing on the GPU",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         # Check if a GPU is available
         _CUPY_AVAILABLE_CACHE = cp.is_available()
         _CUPY_UNAVAILABLE_REASON = (
@@ -321,7 +370,8 @@ def backend_info() -> dict[str, Any]:
     -------
     dict
         Keys ``backend``, ``cupy_available``, ``cuda_unavailable_reason``,
-        ``versions``, ``device`` (None without CUDA) and
+        ``versions``, ``min_cupy_version`` (:data:`MIN_CUPY_VERSION`),
+        ``device`` (None without CUDA) and
         ``cuda_visible_devices``, plus ``cuda_inspection_error`` on failure.
 
     Examples
@@ -342,6 +392,7 @@ def backend_info() -> dict[str, Any]:
         "cupy_available": available,
         "cuda_unavailable_reason": None if available else _CUPY_UNAVAILABLE_REASON,
         "versions": versions,
+        "min_cupy_version": MIN_CUPY_VERSION,
         "device": None,
         "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
     }
