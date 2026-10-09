@@ -1,5 +1,7 @@
 """Grouping and reusable reductions on CPU and (when available) CUDA."""
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -10,7 +12,9 @@ from cunumpy.algorithms import (
     segment_boundaries,
     segment_sum,
 )
-from cunumpy.kernel_testing import BACKENDS
+from cunumpy.kernel_testing import BACKENDS, run_in_fake_cupy_subprocess
+
+SRC = str(Path(__file__).resolve().parents[2] / "src")
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
@@ -160,3 +164,28 @@ def test_fused_sum_kernel_matches_reference_in_cpu_emulation(dtype):
     expected = np.zeros_like(out)
     np.add.at(expected, keys[keys >= 0], values[keys >= 0])
     np.testing.assert_array_equal(out, expected)
+
+
+def test_segment_sum_runs_on_the_fake_cupy():
+    """The fake CuPy cannot compile the CUDA kernel; the sum uses its host buffers."""
+    code = """
+import numpy as np
+import cunumpy as xp
+xp.set_backend("cupy")
+keys = xp.asarray([0, 2, 0, -1, 2])
+values = xp.asarray(np.arange(15.0).reshape(5, 3))
+total = xp.algorithms.segment_sum(values, keys, 3)
+assert xp.is_gpu(total)
+expected = np.array([[6.0, 8.0, 10.0], [0.0, 0.0, 0.0], [15.0, 17.0, 19.0]])
+np.testing.assert_array_equal(xp.to_numpy(total), expected)
+plan = xp.algorithms.SegmentPlan(keys, 3)
+out = xp.empty((3, 3))
+assert plan.sum(values, out=out) is out
+np.testing.assert_array_equal(xp.to_numpy(out), expected)
+counts = xp.algorithms.segment_sum(xp.asarray([True, True, False, True, True]), keys, 3)
+np.testing.assert_array_equal(xp.to_numpy(counts), [1.0, 0.0, 2.0])
+complex_sum = xp.algorithms.segment_sum(xp.asarray([1 + 2j, 3j]), xp.asarray([1, 1]), 2)
+np.testing.assert_array_equal(xp.to_numpy(complex_sum), [0, 1 + 5j])
+print("ok")
+"""
+    assert "ok" in run_in_fake_cupy_subprocess(code, env={"PYTHONPATH": SRC}).stdout
