@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Compiled Pyccel regression coverage for F-ordered arrays and column-block
+  copy-back, run in CPU CI with fake CuPy and required compilation.
+- Publishing now requires CPU and GPU validation of the release commit, checks
+  the built distributions, and smoke-tests the wheel in a fresh environment.
+
+### Fixed
+- The ordering guide identifies 0.6.3 as the first release preserving F order
+  in CuPy-to-host conversions.
+
 ## [0.6.3] - 2026-10-08
 
 ### Fixed

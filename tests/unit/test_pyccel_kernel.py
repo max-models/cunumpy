@@ -6,12 +6,14 @@ Two groups of tests live here:
   run everywhere;
 * end-to-end tests, which compile `pyccel_kernels.py` with pyccel and drive the
   compiled kernels through `PyccelKernel`. They are skipped when pyccel (or a
-  working compiler) is unavailable.
+  working compiler) is unavailable, unless `CUNUMPY_REQUIRE_PYCCEL=1` makes
+  missing dependencies and compilation failures errors in compiled-test CI.
 
-The CuPy-side assertions can only be exercised on a machine with a GPU; the
-NumPy-side assertions run everywhere.
+The CuPy-side assertions run on a GPU or with `CUNUMPY_FAKE_CUPY=1`; the
+NumPy-side assertions run everywhere with the compiled-test dependencies.
 """
 
+import os
 import shutil
 from pathlib import Path
 
@@ -36,7 +38,15 @@ def kernels(tmp_path_factory):
     The source is copied into a temporary directory first so that pyccel's
     build artefacts (`__pyccel__/`) never land in the repository.
     """
-    pyccel = pytest.importorskip("pyccel", reason="pyccel is not installed")
+    require_pyccel = os.environ.get("CUNUMPY_REQUIRE_PYCCEL", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if require_pyccel:
+        import pyccel
+    else:
+        pyccel = pytest.importorskip("pyccel", reason="pyccel is not installed")
 
     import importlib.util
     import sys
@@ -52,7 +62,9 @@ def kernels(tmp_path_factory):
 
     try:
         return pyccel.epyccel(module, language="c")
-    except Exception as exc:  # noqa: BLE001 - no compiler / broken toolchain
+    except Exception as exc:
+        if require_pyccel:
+            raise
         pytest.skip(f"pyccel could not compile the example kernels: {exc}")
     finally:
         sys.modules.pop(source.stem, None)
@@ -447,6 +459,30 @@ def test_outputs_is_ignored_on_the_numpy_path():
 # ---------------------------------------------------------------------------
 # End-to-end with real pyccel-compiled kernels
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("backend", ["numpy", "cupy"])
+@pytest.mark.parametrize("column_block", [False, True])
+def test_compiled_fortran_order_and_copyback(kernels, backend, column_block):
+    if backend == "cupy":
+        _skip_without_cupy()
+
+    expected = np.array(np.arange(30.0).reshape(5, 6), order="F")
+    with xp.use_backend(backend, strict=True):
+        storage = xp.array(expected, order="F", copy=True)
+        target = storage[:, 1:4] if column_block else storage
+        assert target.flags.f_contiguous and not target.flags.c_contiguous
+
+        PyccelKernel(kernels.scale_fortran_inplace, outputs=(0,))(target, 3.0)
+
+        if column_block:
+            expected[:, 1:4] *= 3.0
+        else:
+            expected *= 3.0
+        # Check the parent as well: copy-back must update the view without
+        # changing the adjacent columns or replacing the caller's storage.
+        np.testing.assert_array_equal(xp.to_numpy(storage), expected)
+        assert storage.flags.f_contiguous and target.flags.f_contiguous
 
 
 @pytest.mark.parametrize("backend", ["numpy", "cupy"])
