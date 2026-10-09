@@ -171,6 +171,9 @@ with xp.mpi.mpi_buffer(a) as buf:
 with xp.mpi.mpi_buffer(a, send=False, recv=True) as buf:
     ...  # array, or pinned staging copy
 xp.mpi.set_mpi_cuda_aware(True | False | None), xp.mpi.get_mpi_cuda_aware()
+xp.mpi.exchange(
+    comm, sends=[(send, dest, tag)], receives=[(recv, source, tag)]
+)  # waits for all transfers and GPU copy-back; MPI posting/wait errors abort comm
 xp.algorithms.segment_sum(
     values, keys, n_segments
 )  # out[k] = sum(values[keys == k]); keys < 0 dropped

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import logging
 import operator
-from collections.abc import Generator
-from contextlib import contextmanager
+from collections.abc import Generator, Iterable
+from contextlib import ExitStack, contextmanager
 from typing import Any
 
 import array_api_compat
@@ -364,6 +364,91 @@ def mpi_buffer(
             if _COUNTERS:
                 _record_sync("mpi_buffer() staging for recv")
             cp.cuda.get_current_stream().synchronize()
+
+
+def exchange(
+    comm: Any,
+    *,
+    sends: Iterable[tuple[Any, int, int]] = (),
+    receives: Iterable[tuple[Any, int, int]] = (),
+    cuda_aware: bool | None = None,
+) -> None:
+    """Exchange array buffers and wait for all transfers to finish.
+
+    Prepare buffers with :func:`mpi_buffer`, post all receives and sends,
+    then wait before closing any buffer context. On successful return,
+    received data is ready, including any copies back to the GPU.
+
+    Parameters
+    ----------
+    comm : MPI communicator
+        Communicator providing ``Irecv``, ``Isend`` and ``Abort``.
+    sends : iterable of (array, destination_rank, tag), optional
+        Outgoing buffers and their destinations.
+    receives : iterable of (array, source_rank, tag), optional
+        Incoming buffers and their sources.
+    cuda_aware : bool or None, optional
+        Passed to :func:`mpi_buffer`. None uses the recorded MPI capability.
+
+    See Also
+    --------
+    mpi_buffer : Manage a single buffer around caller-provided MPI operations.
+
+    Notes
+    -----
+    Receive buffers must not overlap each other or send buffers. Buffers
+    must be contiguous when passed directly to MPI. Each device buffer is
+    staged separately when MPI is not CUDA-aware. Empty iterables do no
+    communication; zero-length arrays still post MPI messages and require
+    matching operations on the peer. Self-transfers are supported when
+    matching sends and receives are supplied.
+
+    All local buffers are prepared before posting any requests. Preparation
+    errors propagate normally. Once posting starts, an exception during
+    posting or waiting calls ``comm.Abort(1)``: outstanding requests may
+    still use the buffers, so ordinary context cleanup is unsafe. This
+    helper does not provide recovery from MPI errors or return statuses.
+
+    Examples
+    --------
+    >>> comm = xp.mpi.get_mpi().COMM_WORLD
+    >>> send, recv = np.arange(3.0), np.empty(3)
+    >>> xp.mpi.exchange(
+    ...     comm,
+    ...     sends=[(send, (comm.rank + 1) % comm.size, 0)],
+    ...     receives=[(recv, (comm.rank - 1) % comm.size, 0)],
+    ... )
+    """
+    with ExitStack() as buffers:
+        prepared_receives = [
+            (
+                buffers.enter_context(
+                    mpi_buffer(array, send=False, recv=True, cuda_aware=cuda_aware)
+                ),
+                source,
+                tag,
+            )
+            for array, source, tag in receives
+        ]
+        prepared_sends = [
+            (
+                buffers.enter_context(mpi_buffer(array, cuda_aware=cuda_aware)),
+                destination,
+                tag,
+            )
+            for array, destination, tag in sends
+        ]
+        requests = []
+        try:
+            for buf, source, tag in prepared_receives:
+                requests.append(comm.Irecv(buf, source=source, tag=tag))
+            for buf, destination, tag in prepared_sends:
+                requests.append(comm.Isend(buf, dest=destination, tag=tag))
+            for request in requests:
+                request.Wait()
+        except BaseException:
+            comm.Abort(1)
+            raise
 
 
 def _device_buffers_in_use() -> bool:

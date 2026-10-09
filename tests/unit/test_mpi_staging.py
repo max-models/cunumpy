@@ -170,6 +170,111 @@ def test_host_arrays_are_passed_through_and_invalid_staging_is_rejected():
         MPIStaging(2, object)
 
 
+@pytest.mark.parametrize("cuda_aware", [False, True])
+def test_exchange_device_buffers_stay_open_until_all_requests_finish(
+    device, cuda_aware
+):
+    Array, log = device
+    sends = [Array([1.0, 2.0]), Array([3.0, 4.0])]
+    receives = [Array([0.0, 0.0]), Array([0.0, 0.0])]
+    posted = []
+
+    class Comm:
+        def Irecv(self, buf, source, tag):
+            posted.append(("recv", source, tag, buf))
+
+            def wait():
+                assert len(posted) == 4
+                assert not any(entry[0] == "set" for entry in log)
+                values = buf.values if cuda_aware else buf
+                values[:] = [source, tag]
+
+            return SimpleNamespace(Wait=wait)
+
+        def Isend(self, buf, dest, tag):
+            posted.append(("send", dest, tag, buf))
+
+            def wait():
+                assert not any(entry[0] == "set" for entry in log)
+                values = buf.values if cuda_aware else buf
+                np.testing.assert_array_equal(values, sends[dest - 1].values)
+
+            return SimpleNamespace(Wait=wait)
+
+        def Abort(self, code):
+            pytest.fail("successful exchange must not abort")
+
+    with xp.profiling.count_transfers() as counter:
+        xp.mpi.exchange(
+            Comm(),
+            sends=((array, i + 1, 10 + i) for i, array in enumerate(sends)),
+            receives=((array, i + 1, 20 + i) for i, array in enumerate(receives)),
+            cuda_aware=cuda_aware,
+        )
+    assert [entry[:3] for entry in posted] == [
+        ("recv", 1, 20),
+        ("recv", 2, 21),
+        ("send", 1, 10),
+        ("send", 2, 11),
+    ]
+    for i, array in enumerate(receives):
+        np.testing.assert_array_equal(array.values, [i + 1, 20 + i])
+    assert counter.to_host == counter.to_device == (0 if cuda_aware else 2)
+    if cuda_aware:
+        assert posted[0][3] is receives[0]
+        assert posted[2][3] is sends[0]
+
+
+def test_exchange_prepares_every_buffer_before_posting(device):
+    Array, log = device
+    recv = Array([7.0])
+    # A later invalid descriptor must fail before touching the communicator,
+    # and unwinding preparation must not copy an uninitialized receive buffer.
+    with pytest.raises(ValueError):
+        xp.mpi.exchange(
+            object(),
+            receives=[(recv, 1, 0)],
+            sends=[(Array([1.0]), 1)],
+            cuda_aware=False,
+        )
+    np.testing.assert_array_equal(recv.values, [7])
+    assert not any(entry[0] == "set" for entry in log)
+
+
+@pytest.mark.parametrize("failure", ["receive", "send", "wait"])
+def test_exchange_aborts_on_communication_failure(device, failure):
+    Array, log = device
+    events = []
+
+    class Comm:
+        def Irecv(self, buf, source, tag):
+            if failure == "receive":
+                raise RuntimeError("MPI failure")
+            return SimpleNamespace(Wait=self.wait)
+
+        def Isend(self, buf, dest, tag):
+            if failure == "send":
+                raise RuntimeError("MPI failure")
+            return SimpleNamespace(Wait=self.wait)
+
+        def wait(self):
+            raise RuntimeError("MPI failure")
+
+        def Abort(self, code):
+            assert not any(entry[0] == "set" for entry in log)
+            events.append(("abort", code))
+
+    with pytest.raises(RuntimeError, match="MPI failure"):
+        xp.mpi.exchange(
+            Comm(),
+            sends=[(Array([1.0]), 1, 0)],
+            receives=[(Array([0.0]), 1, 0)],
+            cuda_aware=False,
+        )
+    assert events == [("abort", 1)]
+    assert not any(entry[0] == "set" for entry in log)
+
+
 @pytest.mark.skipif(not xp.cupy_available(), reason="requires CUDA")
 @pytest.mark.parametrize("layout", ["C", "F", "strided"])
 def test_real_device_staging_reuses_host_storage_after_nondefault_producer(layout):
