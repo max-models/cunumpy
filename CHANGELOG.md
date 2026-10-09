@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Supported CuPy versions: 14.0 or newer (`xp.MIN_CUPY_VERSION`,
+  `xp.cupy_version_supported`); an older CuPy warns when the CuPy backend is
+  first checked, and `backend_info()` reports the minimum. The GPU CI runs the
+  whole suite on CuPy 14.0.0 too (`gpu_tests_min_cupy`).
 - MIT license (`LICENSE.txt`, referenced by `pyproject.toml`).
 - `xp.optimize.newton`: Newton's method or the secant method on many
   independent scalar equations at once, with the steps of
@@ -16,7 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The fake CuPy has `cupyx.scipy`: SciPy behind the CuPy rules (host arrays
   rejected, fake device arrays and proxy objects returned), so `xp.scipy` code
   runs its CuPy path without a GPU. Every `cupyx.scipy` subpackage has only
-  the names CuPy v14.2.0 provides, so e.g. `special.jv` fails as on a GPU.
+  the names the oldest supported CuPy (14.0.0) provides, so e.g. `special.jv`
+  or `sparse.csr_array` fails as on a GPU. `testing/cupyx_names.py` and
+  `tests/unit/test_cupyx_names.py` check these names against the installed
+  CuPy in the GPU CI.
   `cupyx.empty_pinned`/`zeros_pinned` return NumPy arrays.
 - `xp.optimize.fsolve`, `root`, `minimize` and `xp.integrate.quad`, `odeint`
   (`cupyx.scipy` has neither): SciPy on the host with SciPy's arguments, the

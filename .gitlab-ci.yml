@@ -3,6 +3,8 @@ variables:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   CUNUMPY_BACKEND: "cupy"
   CUNUMPY_REQUIRE_CUDA: "1"
+  # empty: the newest CuPy; gpu_tests_min_cupy pins the oldest supported one
+  CUPY_PIN: ""
 
 stages:
   - test
@@ -19,7 +21,7 @@ stages:
     - module load fftw-serial/3.3.10
     - nvidia-smi
     # Keep NVRTC, CUDA libraries and headers on the same toolkit generation.
-    - python3 -m pip install --user "cupy-cuda13x[ctk]" "cuda-toolkit==13.2.*"
+    - python3 -m pip install --user "cupy-cuda13x[ctk]${CUPY_PIN}" "cuda-toolkit==13.2.*"
     - python3 -m pip install --user -e ".[test]"
     - export PATH="$HOME/.local/bin:$PATH"
     - python3 -c "import cupy; cupy.show_config()"
@@ -28,6 +30,18 @@ gpu_tests:
   extends: .gpu_job
   script:
     - python3 -m pytest -q tests
+    - python3 testing/cupyx_names.py
+
+# The oldest supported CuPy (cunumpy.MIN_CUPY_VERSION): the whole suite, and the
+# fake cupyx.scipy must list exactly its names (_fake_cupyx.NAMES).
+gpu_tests_min_cupy:
+  extends: .gpu_job
+  variables:
+    CUPY_PIN: "==14.0.0"
+  script:
+    - python3 -c "import cupy, cunumpy; assert cupy.__version__ == cunumpy.MIN_CUPY_VERSION, cupy.__version__"
+    - python3 -m pytest -q tests
+    - python3 testing/cupyx_names.py --exact
 
 gpu_sanitizers:
   extends: .gpu_job

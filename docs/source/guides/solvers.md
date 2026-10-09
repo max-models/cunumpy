@@ -61,7 +61,9 @@ def periodic_poisson(rho, length):
   `xp.scipy.special` on both backends.
 * On the fake CuPy (tests without a GPU), `xp.scipy` runs SciPy with the CuPy
   rules: host arrays are rejected, results are fake device arrays, and each
-  subpackage has only the names CuPy has.
+  subpackage has only the names of the oldest supported CuPy
+  (`xp.MIN_CUPY_VERSION`), so code that passes there runs on every supported
+  CuPy.
 
 ## Splines and interpolation
 
