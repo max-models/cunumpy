@@ -12,10 +12,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   copy-back, run in CPU CI with fake CuPy and required compilation.
 - Publishing now requires CPU and GPU validation of the release commit, checks
   the built distributions, and smoke-tests the wheel in a fresh environment.
+- NumPy-format docstrings with runnable examples for the whole public API. The
+  API reference is generated from them (`docs/source/reference/`); the
+  hand-written `api.md` is now a short overview, and the CUDA headers have
+  their own page. CI checks the docstrings (ruff `D` rules, numpydoc
+  validation), runs their examples as doctests, and builds the docs with
+  warnings as errors. Docstring style: `docs/source/contributing.md`.
 
 ### Fixed
 - The ordering guide identifies 0.6.3 as the first release preserving F order
   in CuPy-to-host conversions.
+- `CudaStruct.from_signature` accepts quoted pyccel annotations
+  (`markers: "float[:, :]"`) in modules with `from __future__ import annotations`.
 
 ## [0.6.3] - 2026-10-08
 

@@ -45,7 +45,8 @@ result independent of how the markers were ordered before.
 the reordering of several arrays in one call.
 
 For a tree code, or for better locality in 2D and 3D, sort by Morton key
-(`xp.algorithms.morton_keys`, see the API page) instead of by cell: the markers of every
+(`xp.algorithms.morton_keys`, see [CUDA headers](../kernels/cuda-headers.md) for
+the key layout and the kernel version) instead of by cell: the markers of every
 quadtree or octree node are then a contiguous range of the sorted arrays.
 
 ## Deposit without atomics: sort, then reduce
@@ -152,7 +153,12 @@ for step in range(n_steps):
 
 `copy()` snapshots the array on the device and copies the snapshot to pinned
 host memory on its own stream, so the next steps overwrite `rho` while the copy
-runs. See `HostStaging` in the [API reference](../api.md).
+runs. With `buffers=2` (the default) one copy runs while the previous result is
+written out; `copy()` waits only if the buffer it reuses is still being copied.
+A `result()` is the staging buffer itself, valid until it is reused, and a
+stale result raises `RuntimeError`. See
+{class}`~cunumpy.memory.HostStaging` and [Execution
+helpers](execution-helpers.md) for producer streams and devices.
 
 ## Run a time step as a CUDA graph
 

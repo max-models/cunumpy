@@ -91,6 +91,10 @@ Tests that need a GPU are skipped automatically where CuPy is not functional.
 | `CUNUMPY_FAKE_CUPY=1` | install the strict CPU stand-in for CuPy for tests |
 | `CUNUMPY_REQUIRE_CUDA=1` | require a real usable GPU when starting the test suite (CI guard) |
 
+The two kernel implementation variables are case-insensitive and stripped of
+whitespace; an unset or empty value means the default (automatic) selection,
+and an unsupported value raises `ValueError` when CuNumpy is imported.
+
 Use `CUNUMPY_BACKEND` in job scripts; the former `ARRAY_BACKEND` setting is no
 longer read. Standard toolchain/device variables such as `CXX` and
 `CUDA_VISIBLE_DEVICES` keep their standard meanings.
