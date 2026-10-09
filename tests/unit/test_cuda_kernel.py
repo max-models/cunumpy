@@ -1081,6 +1081,18 @@ def test_from_signature():
     ]
 
 
+def test_from_signature_postponed_annotations():
+    from tests.unit.postponed_annotations import Args
+
+    struct = CudaStruct.from_signature(Args.__init__, "A")
+    assert [f.ctype for f in struct.fields] == [
+        "Array2D<double>",
+        "Array1D<double>",
+        "long long",
+        "double",
+    ]
+
+
 def test_from_signature_errors():
     def missing(x, n: int):
         pass
