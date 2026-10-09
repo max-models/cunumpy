@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- MIT license (`LICENSE.txt`, referenced by `pyproject.toml`).
 - `xp.optimize.newton`: Newton's method or the secant method on many
   independent scalar equations at once, with the steps of
   `scipy.optimize.newton` for an array `x0`, on the array's backend (no host
