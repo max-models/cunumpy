@@ -390,6 +390,10 @@ def exchange(
     cuda_aware : bool or None, optional
         Passed to :func:`mpi_buffer`. None uses the recorded MPI capability.
 
+    See Also
+    --------
+    mpi_buffer : Manage a single buffer around caller-provided MPI operations.
+
     Notes
     -----
     Receive buffers must not overlap each other or send buffers. Buffers
@@ -404,10 +408,6 @@ def exchange(
     posting or waiting calls ``comm.Abort(1)``: outstanding requests may
     still use the buffers, so ordinary context cleanup is unsafe. This
     helper does not provide recovery from MPI errors or return statuses.
-
-    See Also
-    --------
-    mpi_buffer : Manage a single buffer around caller-provided MPI operations.
 
     Examples
     --------
