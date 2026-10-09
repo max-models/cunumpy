@@ -15,6 +15,8 @@ matters for finding host/device bugs:
 * arrays have ``data.ptr``, ``device`` and ``__cuda_array_interface__``, so
   :class:`~cunumpy.arguments.CudaStruct` packing and the argument checks of
   :class:`~cunumpy.kernels.CudaKernel` work;
+* ``cupyx.scipy`` forwards to SciPy under the same rules, with the names of
+  ``cupyx.scipy.interpolate`` only (see :mod:`cunumpy._fake_cupyx`);
 * CUDA kernels cannot run: ``RawKernel`` and friends raise
   ``NotImplementedError`` when called, and :func:`cunumpy.kernel_testing.requires_cupy`
   skips tests while the fake is active. Inside
@@ -36,6 +38,8 @@ from __future__ import annotations
 import sys
 import types
 from pathlib import Path
+
+from cunumpy import _fake_cupyx
 
 __all__ = ["host_buffer", "install", "is_active", "uninstall"]
 
@@ -105,6 +109,7 @@ def install() -> types.ModuleType:
     sys.modules["cupy"] = module
     try:
         exec(code, module.__dict__)  # noqa: S102 - our own file, classes named cupy.*
+        _fake_cupyx.install(module)
     except BaseException:
         uninstall()
         raise
@@ -115,7 +120,7 @@ def uninstall() -> None:
     """Remove the fake ``cupy`` package from ``sys.modules`` (no-op otherwise)."""
     if not is_active():
         return
-    for name in [n for n in sys.modules if n == "cupy" or n.startswith("cupy.")]:
+    for name in [n for n in sys.modules if n.split(".")[0] in ("cupy", "cupyx")]:
         del sys.modules[name]
     for name in [n for n in sys.modules if n.startswith("array_api_compat.cupy")]:
         del sys.modules[name]

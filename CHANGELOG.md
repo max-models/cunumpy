@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `xp.optimize.newton`: Newton's method or the secant method on many
+  independent scalar equations at once, with the steps of
+  `scipy.optimize.newton` for an array `x0`, on the array's backend (no host
+  copies, fixed shapes, one synchronization per iteration).
+- The fake CuPy has `cupyx.scipy`: SciPy behind the CuPy rules (host arrays
+  rejected, fake device arrays and proxy objects returned), so `xp.scipy` code
+  runs its CuPy path without a GPU. `cupyx.scipy.interpolate` has only the
+  names CuPy provides. `cupyx.empty_pinned`/`zeros_pinned` return NumPy arrays.
+- Solvers guide: splines on the device with `xp.scipy.interpolate`, and
+  batched root finding.
 - Compiled Pyccel regression coverage for F-ordered arrays and column-block
   copy-back, run in CPU CI with fake CuPy and required compilation.
 - Publishing now requires CPU and GPU validation of the release commit, checks

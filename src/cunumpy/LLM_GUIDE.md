@@ -99,6 +99,8 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
 | group arrays/scalars into one kernel argument | `xp.arguments.CudaArguments` (flattened), `xp.arguments.CudaStruct` (C struct), `xp.arguments.CudaStructArguments` (C struct as a class); host kernels take their own argument objects, the caller picks one per backend |
 | CUDA struct from a Pyccel argument class | `xp.arguments.CudaStruct.from_signature(Cls.__init__, "Name")`, `xp.arguments.write_cuda_header(...)` |
 | SciPy (sparse, sparse.linalg, fft, special, ndimage, ...) on either backend | `xp.scipy.<subpackage>.<name>` (SciPy or `cupyx.scipy`); `xp.scipy.special.available(name)` |
+| splines on the device | `xp.scipy.interpolate.UnivariateSpline`, `make_interp_spline`, `NdBSpline` (no `RectBivariateSpline`: `make_interp_spline` per axis + `NdBSpline`) |
+| many independent scalar root problems (one per ray, per marker) | `xp.optimize.newton(func, x0_array, fprime=None)` (SciPy's array Newton/secant, on the device) |
 | chain of elementwise operations as one GPU kernel | `@xp.kernels.fuse` (`cupy.fuse` for CuPy arrays, plain call otherwise) |
 | PETSc solve on device arrays without copies | `xp.petsc.petsc_vec(array)` (CUDA/HIP petsc4py for CuPy arrays); `xp.synchronize()` around PETSc calls |
 | reduction inside a CUDA kernel (energy, max velocity) | `<cunumpy/reduce.cuh>`: `cunumpy_block_sum_to(out, v)`, `cunumpy_block_min/max`, `cunumpy_warp_sum` |
