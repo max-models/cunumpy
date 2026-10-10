@@ -1102,10 +1102,10 @@ def kernel_output(
     strided : bool, optional
         As for :func:`~cunumpy.kernels.as_kernel_array`. Default False.
 
-    Yields
-    ------
-    array
-        The buffer to pass to the kernel.
+    Returns
+    -------
+    context manager
+        Yields the buffer to pass to the kernel.
 
     Examples
     --------
