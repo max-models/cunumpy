@@ -14,7 +14,7 @@ variables:
 stages:
   - test
 
-.gpu_job:
+.gpu_job_nvidia:
   stage: test
   image: ${CUDA_IMAGE}
   tags:
@@ -54,8 +54,8 @@ stages:
     - python3 -c "import cupy; cupy.show_config()"
     - python3 -c "import cupy; assert cupy.cuda.runtime.is_hip, 'expected a HIP build of CuPy'"
 
-gpu_tests:
-  extends: .gpu_job
+gpu_tests_nvidia:
+  extends: .gpu_job_nvidia
   script:
     - python3 -m pytest -q tests
     - python3 testing/cupyx_names.py
@@ -71,8 +71,8 @@ gpu_tests_amd:
 
 # The oldest supported CuPy (cunumpy.MIN_CUPY_VERSION): the whole suite, and the
 # fake cupyx.scipy must list exactly its names (_fake_cupyx.NAMES).
-gpu_tests_min_cupy:
-  extends: .gpu_job
+gpu_tests_min_cupy_nvidia:
+  extends: .gpu_job_nvidia
   variables:
     CUPY_PIN: "==14.0.0"
   script:
@@ -80,8 +80,8 @@ gpu_tests_min_cupy:
     - python3 -m pytest -q tests
     - python3 testing/cupyx_names.py --exact
 
-gpu_sanitizers:
-  extends: .gpu_job
+gpu_sanitizers_nvidia:
+  extends: .gpu_job_nvidia
   timeout: 45 minutes
   parallel:
     matrix:
