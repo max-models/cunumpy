@@ -29,6 +29,7 @@ from types import ModuleType
 from typing import Any
 
 import array_api_compat
+import numpy as np
 
 from cunumpy._cuda_kernel import CudaKernel, _compile_in_threads
 from cunumpy._kernel import (
@@ -51,8 +52,15 @@ _DISPATCH = ("backend", "arrays")
 _is_device_array = array_api_compat.is_cupy_array
 
 
+#: Argument types that are never on the device: checked first, since a kernel
+#: call tests every argument and most are host arrays or scalars.
+_HOST_TYPES = frozenset({np.ndarray, float, int, bool, np.float64, np.int64, np.bool_})
+
+
 def _on_device(arg: Any) -> bool:
     """Whether `arg` is a CuPy array or a CUDA argument object (``__cuda_args__``)."""
+    if type(arg) in _HOST_TYPES:
+        return False
     return _is_device_array(arg) or callable(getattr(type(arg), "__cuda_args__", None))
 
 

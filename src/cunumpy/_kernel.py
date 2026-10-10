@@ -19,9 +19,9 @@ import importlib
 import inspect
 import os
 import warnings
-from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from types import ModuleType
+from types import ModuleType, TracebackType
 from typing import Any
 
 import array_api_compat
@@ -1000,6 +1000,17 @@ def as_kernel_array(
     >>> xp.kernels.as_kernel_array([1, 2], like=grid, dtype=float)
     array([1., 2.])
     """
+    # fast path: a C-contiguous NumPy array of the dtype for a host kernel, the
+    # common case, without the conversions below (subclasses take the full path)
+    if (
+        type(value) is np.ndarray
+        and (type(like) is np.ndarray or not is_gpu(like))
+        and (dtype is None or value.dtype == dtype)
+        and value.flags.c_contiguous
+        and value.ndim > 0
+        and (value.ndim == 1 or 1 not in value.shape)
+    ):
+        return value
     if is_gpu(like):
         import cupy
 
@@ -1041,10 +1052,39 @@ def _same_memory(buffer: Any, out: Any) -> bool:
     )
 
 
-@contextmanager
+class _KernelOutput:
+    """The context manager of :func:`kernel_output` (a class: cheaper than a generator)."""
+
+    __slots__ = ("_buffer", "_out")
+
+    def __init__(self, out: Any, buffer: Any) -> None:
+        self._out = out
+        self._buffer = buffer
+
+    def __enter__(self) -> Any:
+        return self._buffer
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        if exc_type is not None:
+            return
+        buffer, out = self._buffer, self._out
+        if not _same_memory(buffer, out):
+            if is_gpu(out) and not is_gpu(buffer):
+                out[...] = to_cupy(buffer)
+            elif not is_gpu(out) and is_gpu(buffer):
+                out[...] = to_numpy(buffer)
+            else:
+                out[...] = buffer
+
+
 def kernel_output(
     out: Any, like: Any, dtype: Any = None, *, strided: bool = False
-) -> Generator[Any]:
+) -> _KernelOutput:
     """Provide the output buffer for the kernel chosen for `like`, copied into `out`.
 
     The buffer is `out` itself if :func:`~cunumpy.kernels.as_kernel_array`
@@ -1075,15 +1115,7 @@ def kernel_output(
     >>> out
     array([1.5, 1.5], dtype=float32)
     """
-    buffer = as_kernel_array(out, like, dtype, strided=strided)
-    yield buffer
-    if not _same_memory(buffer, out):
-        if is_gpu(out) and not is_gpu(buffer):
-            out[...] = to_cupy(buffer)
-        elif not is_gpu(out) and is_gpu(buffer):
-            out[...] = to_numpy(buffer)
-        else:
-            out[...] = buffer
+    return _KernelOutput(out, as_kernel_array(out, like, dtype, strided=strided))
 
 
 _SCALAR_ANNOTATIONS = {"int", "float", "bool", "complex", "str"}
