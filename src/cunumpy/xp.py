@@ -21,6 +21,11 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import array_api_compat
 import array_api_compat.numpy as np
+import numpy
+
+#: The exact type of a host array; a fast path checks ``type(a) is _NDARRAY`` before
+#: the slower ``array_api_compat`` tests (subclasses take the full path).
+_NDARRAY = numpy.ndarray
 
 from cunumpy._transfers import _ACTIVE as _COUNTERS
 from cunumpy._transfers import (
@@ -493,6 +498,8 @@ def synchronize() -> None:
 
 def _to_numpy(array: Any) -> np.ndarray:
     """`to_numpy` without transfer counting, for internal use."""
+    if type(array) is _NDARRAY:
+        return array
     if get_array_backend(array) == "cupy":
         return array.get(order="A")
 
@@ -533,6 +540,8 @@ def to_numpy(array: Any) -> np.ndarray:
     >>> xp.to_numpy([1, 2])
     array([1, 2])
     """
+    if type(array) is _NDARRAY:
+        return array
     result = _to_numpy(array)
     if _COUNTERS and get_array_backend(array) == "cupy":
         _record("to_host", f"to_numpy({_describe(array)})", nbytes=_nbytes(result))
@@ -719,6 +728,8 @@ def get_array_backend(array: Any) -> BackendType:
     >>> xp.get_array_backend(np.zeros(3))
     'numpy'
     """
+    if type(array) is _NDARRAY:
+        return "numpy"
     return "cupy" if array_api_compat.is_cupy_array(array) else "numpy"
 
 

@@ -185,12 +185,16 @@ same box form a contiguous range, the starting point of tree builds on the
 GPU. On the host:
 
 ```python
-keys = xp.algorithms.morton_keys(positions, lower, upper, levels)  # (n, 2|3) -> (n,) uint64
+keys = xp.algorithms.morton_keys(
+    positions, lower, upper, levels
+)  # (n, 2|3) -> (n,) uint64
 keys, order, positions = xp.algorithms.sort_by_key(keys, positions)
 node = keys >> np.uint64(ndim * (levels - level))  # node index at `level`
 cells = xp.algorithms.morton_decode(node, ndim)  # its integer coordinates
 key = xp.algorithms.morton_encode(ix, iy)  # from integer cells
-scales = xp.algorithms.morton_scales(lower, upper, levels)  # 2**levels / (upper - lower)
+scales = xp.algorithms.morton_scales(
+    lower, upper, levels
+)  # 2**levels / (upper - lower)
 ```
 
 In a kernel:
