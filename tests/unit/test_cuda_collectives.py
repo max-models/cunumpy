@@ -7,9 +7,8 @@ import pytest
 
 import cunumpy as xp
 from cunumpy.kernel_testing import emulate_cuda_kernel, emulation_compiler
+from cunumpy.kernel_testing import requires_warp_shuffle as requires_cuda
 from cunumpy.kernels import CudaKernel
-
-requires_cuda = pytest.mark.skipif(not xp.cupy_available(), reason="requires CUDA")
 
 TYPED_SOURCE = r"""
 #include <cunumpy/scan.cuh>

@@ -19,6 +19,30 @@ in [Writing CUDA kernels](cuda-kernel.md)).
 | `cunumpy/random.cuh` | counter-based random numbers, equal to `xp.rng.philox_*` |
 | `cunumpy/morton.cuh` | Morton (Z-order) keys, equal to `xp.algorithms.morton_*` |
 
+**AMD/ROCm.** CuPy's own API is the same on a ROCm build, so `xp.set_backend("cupy")`
+and the device/memory/stream helpers of `xp.cuda` work unchanged; check
+`xp.cuda.is_hip()` to tell the two apart where it matters. `CudaKernel`
+compiles plain CUDA C through `cupy.RawKernel`, which HIPRTC accepts for
+most kernels. Three known gaps, found on real HIP/ROCm hardware (an AMD
+Instinct MI210) and all raising `NotImplementedError` at
+`CudaKernel.compile()` on HIP rather than silently misbehaving, none yet
+root-caused:
+
+* `cunumpy/reduce.cuh` (and `cunumpy/scan.cuh`, which includes it), see below.
+* A kernel taking an `Array5D`/`CArray5D` view or higher (`Array1D` to
+  `Array4D` are unaffected): launching reliably corrupts the device, even for
+  an in-bounds access (a HIP code-generation or by-value struct-argument
+  issue in the generic, variadic-template `ArrayView<T, N>` is suspected).
+* A kernel that includes `cunumpy/array_view.cuh` and compiles with
+  `CUNUMPY_BOUNDS_CHECK` (directly, or via debug mode, which adds it): merely
+  compiling the resulting `printf()` and trap reliably corrupts the device on
+  any launch, even one that never takes an out-of-bounds index (a HIP
+  device-`printf` or trap-instruction issue is suspected).
+
+Use `cunumpy.kernel_testing`'s `requires_warp_shuffle`, `requires_high_dim_cuda_views`
+and `requires_bounds_check_views` markers (or their `*_available()` functions)
+to skip tests that hit these on HIP, the way cunumpy's own test suite does.
+
 ## `cunumpy/index.cuh`
 
 ```c
@@ -112,6 +136,14 @@ gets the result.
   the named lanes participate, and all of them call with the same mask. The
   default requires all 32 lanes. These rules follow [NVIDIA's warp intrinsic
   constraints](https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/cpp-language-extensions.html).
+
+**Not ported to HIP/ROCm.** This header hardcodes a 32-lane warp and CUDA's
+`_sync` shuffle intrinsics; AMD wavefronts are commonly 64 lanes wide (CDNA:
+MI100/MI200/MI300), and HIP's shuffles have no mask argument. Rather than
+compile silently-wrong reductions, `CudaKernel.compile()` raises
+`NotImplementedError` for a kernel that includes `cunumpy/reduce.cuh` (or
+`cunumpy/scan.cuh`, which includes it) when the active CuPy build targets
+HIP (`xp.cuda.is_hip()` is True).
 
 ```c
 extern "C" __global__ void kinetic_energy(const double* v, long long n,

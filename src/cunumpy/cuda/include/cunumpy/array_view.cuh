@@ -42,13 +42,23 @@
 #define CUNUMPY_ARRAY_VIEW_CUH
 
 #ifdef CUNUMPY_BOUNDS_CHECK
+// __trap() is a CUDA device builtin, found unchanged by NVRTC and (deliberately
+// shadowable) by the C++ compiler used for CPU emulation (cunumpy._emulation
+// defines its own host __trap()). HIPRTC has no such builtin; only a real HIP
+// device compile (never the CPU emulation path, which never defines these
+// macros) uses __builtin_trap() instead.
+#if defined(__HIP_DEVICE_COMPILE__) || defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+#define CUNUMPY_TRAP() __builtin_trap()
+#else
+#define CUNUMPY_TRAP() __trap()
+#endif
 #define CUNUMPY_CHECK_INDEX(index, axis, extent)                                 \
     do {                                                                         \
         if ((index) < 0 || (index) >= (extent)) {                                \
             printf("cunumpy: index %lld is out of bounds for axis %d with size " \
                    "%lld\n",                                                     \
                    (long long)(index), (int)(axis), (long long)(extent));        \
-            __trap();                                                            \
+            CUNUMPY_TRAP();                                                      \
         }                                                                        \
     } while (0)
 #else

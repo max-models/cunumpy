@@ -857,6 +857,17 @@ def _struct_checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
     return check
 
 
+def _max_view_ndim(params: Iterable[CudaParameter]) -> int:
+    """Return the largest `view_ndim` among `params` and their struct fields (0 if none)."""
+    best = 0
+    for p in params:
+        if p.view_ndim is not None:
+            best = max(best, p.view_ndim)
+        if p.struct is not None:
+            best = max(best, _max_view_ndim(p.struct.fields))
+    return best
+
+
 def _checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
     if param.struct is not None:
         return _struct_checker(param, index)
@@ -2183,13 +2194,15 @@ class CudaKernel:
         )
 
     def compile_options(self) -> tuple[str, ...]:
-        """Return the NVRTC options a compilation now would use.
+        """Return the compiler options a compilation now would use.
 
         These are :attr:`options`, ``-I`` for cunumpy's header directory,
-        :data:`~cunumpy.cuda.DEBUG_OPTIONS` if :meth:`debug_active`, and, if
-        the source includes headers, ``-DCUNUMPY_INCLUDE_HASH=0x<hash>`` of
-        their contents (:func:`~cunumpy.cuda.include_hash`). CuPy keys its
-        kernel cache on the options, so a changed header means a recompile.
+        :data:`~cunumpy.cuda.DEBUG_OPTIONS` if :meth:`debug_active` (minus
+        ``-lineinfo`` on a HIP/ROCm build, an NVRTC-only flag HIPRTC does not
+        accept), and, if the source includes headers,
+        ``-DCUNUMPY_INCLUDE_HASH=0x<hash>`` of their contents
+        (:func:`~cunumpy.cuda.include_hash`). CuPy keys its kernel cache on
+        the options, so a changed header means a recompile.
 
         Returns
         -------
@@ -2202,7 +2215,12 @@ class CudaKernel:
         if cunumpy_include not in options:
             options += (cunumpy_include,)
         if self.debug_active():
-            options += tuple(o for o in DEBUG_OPTIONS if o not in options)
+            from cunumpy._device import is_hip
+
+            debug_options = DEBUG_OPTIONS
+            if is_hip():
+                debug_options = tuple(o for o in debug_options if o != "-lineinfo")
+            options += tuple(o for o in debug_options if o not in options)
         headers = self.included_headers
         if headers:
             options += (f"-DCUNUMPY_INCLUDE_HASH=0x{include_hash(headers)}",)
@@ -2287,6 +2305,27 @@ class CudaKernel:
         ------
         RuntimeError
             If CuPy or a GPU is not available.
+        NotImplementedError
+            If the source includes ``cunumpy/reduce.cuh`` or
+            ``cunumpy/scan.cuh`` and the active CuPy build targets HIP/ROCm:
+            their warp-level shuffles assume a 32-lane warp and CUDA's
+            ``_sync`` intrinsics, neither of which hold on AMD wavefronts
+            (commonly 64 lanes on CDNA GPUs), so compiling them as-is would
+            silently reduce or scan the wrong set of threads. Also raised, on
+            a HIP/ROCm build, for a kernel using an ``Array5D``/``CArray5D``
+            view or higher: launching one reliably corrupts the device there
+            (observed as ``hipErrorIllegalState`` on a later launch), even for
+            an in-bounds access; ``Array1D`` to ``Array4D`` are unaffected.
+            Not yet root-caused (looks like a HIP code-generation or
+            by-value-struct-argument issue in the generic, variadic-template
+            ``ArrayView<T, N>`` that implements dimensions 5 and up, see
+            ``cunumpy/array_view.cuh``). Also raised, on a HIP/ROCm build,
+            for a kernel that includes ``cunumpy/array_view.cuh`` and
+            compiles with ``-DCUNUMPY_BOUNDS_CHECK`` (directly or via debug
+            mode): merely compiling the resulting ``printf()`` and trap
+            reliably corrupts the device on any launch of that kernel, even
+            one that never takes an out-of-bounds index; also not yet
+            root-caused.
         """
         from cunumpy.xp import cupy_available
 
@@ -2297,9 +2336,56 @@ class CudaKernel:
             )
         import cupy as cp
 
+        from cunumpy._device import is_hip
+
         device = _current_device()
         if device not in self._compiled:
+            if is_hip():
+                unported = {"reduce.cuh", "scan.cuh"} & {
+                    h.name for h in self.included_headers
+                }
+                if unported:
+                    names = ", ".join(sorted(f"cunumpy/{n}" for n in unported))
+                    raise NotImplementedError(
+                        f"CUDA kernel {self.expression!r} includes {names}, which are "
+                        "not yet ported to HIP/ROCm: their warp-level shuffles assume "
+                        "a 32-lane warp and CUDA's `_sync` intrinsics, neither of "
+                        "which hold on AMD wavefronts (commonly 64 lanes on CDNA "
+                        "GPUs). Compiling them as-is would silently reduce/scan the "
+                        "wrong set of threads rather than fail loudly.",
+                    )
+                if self._signature is not None:
+                    max_view = _max_view_ndim(self._signature)
+                    if max_view >= 5:
+                        raise NotImplementedError(
+                            f"CUDA kernel {self.expression!r} uses an "
+                            f"Array{max_view}D/CArray{max_view}D view: on this "
+                            "HIP/ROCm build, launching a kernel with a 5+ "
+                            "dimensional array view reliably corrupts the device "
+                            "(hipErrorIllegalState on a later launch), even for an "
+                            "in-bounds access. Array1D to Array4D are unaffected; "
+                            "this is not yet root-caused (likely a HIP code "
+                            "generation or by-value struct argument issue in the "
+                            "generic ArrayView<T, N> template, not something "
+                            "cunumpy can safely paper over).",
+                        )
             options = self.compile_options()
+            if (
+                is_hip()
+                and "-DCUNUMPY_BOUNDS_CHECK" in options
+                and "array_view.cuh" in {h.name for h in self.included_headers}
+            ):
+                raise NotImplementedError(
+                    f"CUDA kernel {self.expression!r} includes cunumpy/array_view.cuh "
+                    "and compiles with -DCUNUMPY_BOUNDS_CHECK (directly, or via debug "
+                    "mode) on this HIP/ROCm build: merely compiling the resulting "
+                    "printf() + trap in its bounds check reliably corrupts the "
+                    "device on any launch of that kernel, even one that never takes "
+                    "an out-of-bounds index. Not yet root-caused (a HIP "
+                    "device-printf or trap-instruction issue is suspected); compile "
+                    "without CUNUMPY_BOUNDS_CHECK (and without debug mode, which adds "
+                    "it) for a kernel using array views on this build.",
+                )
             if self._template_args is None:
                 raw = cp.RawKernel(
                     self._source,

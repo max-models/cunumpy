@@ -64,6 +64,38 @@ def device_count() -> int:
         return 0
 
 
+def is_hip() -> bool:
+    """Return whether the active CuPy build targets AMD ROCm/HIP.
+
+    CuPy's own API (``cp.cuda.Device``, ``memory_info``, streams, ...) is the
+    same on a ROCm build; this only distinguishes the GPU vendor for the
+    parts that differ, such as :meth:`~cunumpy.kernels.CudaKernel.compile_options`
+    (NVRTC-only flags) and the warp-level primitives of
+    ``cunumpy/reduce.cuh`` and ``cunumpy/scan.cuh`` (not yet ported to HIP,
+    see :doc:`/kernels/cuda-headers`).
+
+    Returns
+    -------
+    bool
+        True if CuPy is available and reports a HIP runtime, False for a
+        CUDA build or when CuPy/a GPU is unavailable.
+
+    Examples
+    --------
+    >>> xp.cuda.is_hip()  # on a CUDA build, or without CuPy
+    False
+    """
+    if not cupy_available():
+        return False
+
+    import cupy as cp
+
+    try:
+        return bool(cp.cuda.runtime.is_hip)
+    except Exception:  # noqa: BLE001 - tolerate any driver/runtime failure
+        return False
+
+
 def set_device_for_rank(rank: int, devices_per_node: int | None = None) -> int:
     """Select device ``rank % devices_per_node`` for an MPI rank.
 
@@ -200,9 +232,21 @@ def max_shared_memory_per_block(
         return DEFAULT_SHARED_MEMORY_PER_BLOCK
     import cupy as cp
 
-    dev = cp.cuda.Device() if device is None else cp.cuda.Device(device)
-    key = "MaxSharedMemoryPerBlockOptin" if opt_in else "MaxSharedMemoryPerBlock"
-    return int(dev.attributes.get(key, DEFAULT_SHARED_MEMORY_PER_BLOCK))
+    # `cp.cuda.Device().attributes` is unreliable here on a HIP/ROCm build (it
+    # can report 0 for these keys); `getDeviceProperties()`'s `sharedMemPerBlock`
+    # and `sharedMemPerBlockOptin` fields are the ones `CudaKernel` itself
+    # already relies on for the real launch-time check, on both backends.
+    dev_id = cp.cuda.Device().id if device is None else device
+    properties = cp.cuda.runtime.getDeviceProperties(dev_id)
+    base = (
+        int(properties.get("sharedMemPerBlock", 0)) or DEFAULT_SHARED_MEMORY_PER_BLOCK
+    )
+    if not opt_in:
+        return base
+    # The "opt in" larger dynamic-shared-memory limit is an NVIDIA concept
+    # (cudaFuncAttributeMaxDynamicSharedMemorySize); on a HIP build there is no
+    # larger limit to opt into, so the base limit is also the opt-in one.
+    return max(base, int(properties.get("sharedMemPerBlockOptin", 0)))
 
 
 def free_memory() -> None:
