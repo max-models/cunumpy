@@ -30,6 +30,10 @@ from cunumpy.cuda import (
     parse_cuda_signature,
     resolve_includes,
 )
+from cunumpy.kernel_testing import (
+    requires_bounds_check_views,
+    requires_high_dim_cuda_views,
+)
 from cunumpy.kernels import CudaKernel, CudaKernelVariants
 
 AXPY = r"""
@@ -987,6 +991,7 @@ def test_struct_with_view_fields_on_gpu():
     assert np.array_equal(base.get(), expected)
 
 
+@requires_bounds_check_views
 def test_bounds_check_traps_on_gpu():
     _skip_without_cupy()
     import cupy as cp
@@ -2486,6 +2491,7 @@ def test_high_dimensional_views_pack_and_generate_structs(ndim, contiguous):
 
 @pytest.mark.parametrize("ndim", [5, 6, 10, 16])
 @pytest.mark.parametrize("contiguous", [False, True])
+@requires_high_dim_cuda_views
 def test_high_dimensional_struct_layout_and_execution_on_gpu(ndim, contiguous):
     _skip_without_cupy()
     import cupy as cp

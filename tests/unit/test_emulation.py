@@ -435,6 +435,12 @@ def test_high_dimensional_view_indexing_and_conversion(ndim, contiguous, backend
 
         if not xp.cupy_available():
             pytest.skip("CuPy not installed or not functional")
+        if xp.cuda.is_hip():
+            pytest.skip(
+                "launching a kernel with an Array5D/CArray5D view or higher "
+                "reliably corrupts the device on this HIP/ROCm build (not yet "
+                "root-caused)",
+            )
         import cupy as cp
 
         device_base = cp.asarray(base)

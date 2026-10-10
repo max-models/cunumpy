@@ -232,9 +232,19 @@ def max_shared_memory_per_block(
         return DEFAULT_SHARED_MEMORY_PER_BLOCK
     import cupy as cp
 
-    dev = cp.cuda.Device() if device is None else cp.cuda.Device(device)
-    key = "MaxSharedMemoryPerBlockOptin" if opt_in else "MaxSharedMemoryPerBlock"
-    return int(dev.attributes.get(key, DEFAULT_SHARED_MEMORY_PER_BLOCK))
+    # `cp.cuda.Device().attributes` is unreliable here on a HIP/ROCm build (it
+    # can report 0 for these keys); `getDeviceProperties()`'s `sharedMemPerBlock`
+    # and `sharedMemPerBlockOptin` fields are the ones `CudaKernel` itself
+    # already relies on for the real launch-time check, on both backends.
+    dev_id = cp.cuda.Device().id if device is None else device
+    properties = cp.cuda.runtime.getDeviceProperties(dev_id)
+    base = int(properties.get("sharedMemPerBlock", 0)) or DEFAULT_SHARED_MEMORY_PER_BLOCK
+    if not opt_in:
+        return base
+    # The "opt in" larger dynamic-shared-memory limit is an NVIDIA concept
+    # (cudaFuncAttributeMaxDynamicSharedMemorySize); on a HIP build there is no
+    # larger limit to opt into, so the base limit is also the opt-in one.
+    return max(base, int(properties.get("sharedMemPerBlockOptin", 0)))
 
 
 def free_memory() -> None:

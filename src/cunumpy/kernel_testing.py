@@ -22,11 +22,20 @@ without it. See :doc:`/kernels/testing`.
   ``requires_warp_shuffle``
       A ``skipif`` marker for tests that compile ``cunumpy/reduce.cuh`` or
       ``cunumpy/scan.cuh``, see :func:`warp_shuffle_available`.
+  ``requires_high_dim_cuda_views``
+      A ``skipif`` marker for tests that launch a kernel using an
+      ``Array5D``/``CArray5D`` view or higher, see
+      :func:`high_dim_cuda_views_available`.
+  ``requires_bounds_check_views``
+      A ``skipif`` marker for tests that compile a kernel including
+      ``cunumpy/array_view.cuh`` with ``CUNUMPY_BOUNDS_CHECK`` (directly or
+      via debug mode), see :func:`bounds_check_views_available`.
 
   With ``CUNUMPY_REQUIRE_CUDA=1`` (:func:`cuda_required`) ``requires_cupy``
   and ``requires_device_backend`` fail instead of skipping;
-  ``requires_warp_shuffle`` always skips on HIP, a known gap rather than a
-  broken GPU/driver.
+  ``requires_warp_shuffle``, ``requires_high_dim_cuda_views`` and
+  ``requires_bounds_check_views`` always skip on HIP, known gaps rather than
+  a broken GPU/driver.
 * Test ``__device__`` helpers: :func:`device_function_kernel`.
 * Run CUDA kernels on the CPU, without a GPU (from ``cunumpy._emulation``):
   :func:`emulate_cuda_kernel`, :func:`emulated_launches`,
@@ -89,6 +98,7 @@ __all__ = [
     "BACKENDS",  # noqa: F822
     "assert_kernels_agree",
     "backend",  # noqa: F822
+    "bounds_check_views_available",
     "check_parity",
     "compile_for_emulation",
     "cuda_required",
@@ -100,11 +110,14 @@ __all__ = [
     "emulation_compiler",
     "fake_cupy_active",
     "fake_cupy_session",
+    "high_dim_cuda_views_available",
     "host_buffer",
     "install_fake_cupy",
     "parity_cases",
+    "requires_bounds_check_views",  # noqa: F822
     "requires_cupy",  # noqa: F822
     "requires_device_backend",  # noqa: F822
+    "requires_high_dim_cuda_views",  # noqa: F822
     "requires_warp_shuffle",  # noqa: F822
     "run_in_fake_cupy_subprocess",
     "warp_shuffle_available",
@@ -117,6 +130,16 @@ DEVICE_SKIP_REASON = (
 FAKE_SKIP_REASON = "the fake CuPy cannot run CUDA kernels"
 WARP_HIP_SKIP_REASON = (
     "cunumpy/reduce.cuh and cunumpy/scan.cuh are not yet ported to HIP/ROCm"
+)
+HIGH_DIM_VIEW_HIP_SKIP_REASON = (
+    "launching a kernel with an Array5D/CArray5D view or higher reliably "
+    "corrupts the device on this HIP/ROCm build (not yet root-caused)"
+)
+BOUNDS_CHECK_VIEW_HIP_SKIP_REASON = (
+    "compiling a kernel that includes cunumpy/array_view.cuh with "
+    "CUNUMPY_BOUNDS_CHECK (directly or via debug mode) reliably corrupts the "
+    "device on this HIP/ROCm build, even without an out-of-bounds access "
+    "(not yet root-caused)"
 )
 
 
@@ -234,6 +257,69 @@ def warp_shuffle_available() -> bool:
     --------
     >>> from cunumpy.kernel_testing import warp_shuffle_available
     >>> warp_shuffle_available()  # doctest: +SKIP
+    True
+    """
+    if not _can_launch():
+        return False
+    from cunumpy._device import is_hip
+
+    return not is_hip()
+
+
+def high_dim_cuda_views_available() -> bool:
+    """Whether a CUDA kernel using an ``Array5D``/``CArray5D`` view or higher can run here.
+
+    False on CuPy's HIP/ROCm build, even with a working GPU: launching such a
+    kernel there reliably corrupts the device (observed as
+    ``hipErrorIllegalState`` on a later launch), even for an in-bounds
+    access, and is not yet root-caused (see
+    :meth:`~cunumpy.kernels.CudaKernel.compile`). ``Array1D`` to ``Array4D``
+    are unaffected. The marker ``requires_high_dim_cuda_views`` skips tests
+    where this is false; like ``requires_warp_shuffle``, it always skips on
+    HIP (even under ``CUNUMPY_REQUIRE_CUDA``), since this is a known gap, not
+    a broken GPU/driver.
+
+    Returns
+    -------
+    bool
+        True if CUDA kernels can be launched and the backend is not HIP.
+
+    Examples
+    --------
+    >>> from cunumpy.kernel_testing import high_dim_cuda_views_available
+    >>> high_dim_cuda_views_available()  # doctest: +SKIP
+    True
+    """
+    if not _can_launch():
+        return False
+    from cunumpy._device import is_hip
+
+    return not is_hip()
+
+
+def bounds_check_views_available() -> bool:
+    """Whether a kernel using ``cunumpy/array_view.cuh`` can compile with ``CUNUMPY_BOUNDS_CHECK`` here.
+
+    False on CuPy's HIP/ROCm build, even with a working GPU: merely
+    compiling such a kernel with bounds checking on (directly, or via debug
+    mode, which adds it) reliably corrupts the device on any launch, even
+    one that never takes an out-of-bounds index, and is not yet root-caused
+    (see :meth:`~cunumpy.kernels.CudaKernel.compile`). A kernel that does not
+    include ``cunumpy/array_view.cuh`` is unaffected. The marker
+    ``requires_bounds_check_views`` skips tests where this is false; like
+    ``requires_warp_shuffle``, it always skips on HIP (even under
+    ``CUNUMPY_REQUIRE_CUDA``), since this is a known gap, not a broken
+    GPU/driver.
+
+    Returns
+    -------
+    bool
+        True if CUDA kernels can be launched and the backend is not HIP.
+
+    Examples
+    --------
+    >>> from cunumpy.kernel_testing import bounds_check_views_available
+    >>> bounds_check_views_available()  # doctest: +SKIP
     True
     """
     if not _can_launch():
@@ -482,6 +568,14 @@ def _build_lazy() -> None:
         not warp_shuffle_available(),
         reason=SKIP_REASON if not _can_launch() else WARP_HIP_SKIP_REASON,
     )
+    requires_high_dim_cuda_views = pytest.mark.skipif(
+        not high_dim_cuda_views_available(),
+        reason=SKIP_REASON if not _can_launch() else HIGH_DIM_VIEW_HIP_SKIP_REASON,
+    )
+    requires_bounds_check_views = pytest.mark.skipif(
+        not bounds_check_views_available(),
+        reason=SKIP_REASON if not _can_launch() else BOUNDS_CHECK_VIEW_HIP_SKIP_REASON,
+    )
     backends = ["numpy", pytest.param("cupy", marks=requires_cupy)]
 
     @pytest.fixture(params=backends)
@@ -508,6 +602,8 @@ def _build_lazy() -> None:
         requires_cupy=requires_cupy,
         requires_device_backend=requires_device_backend,
         requires_warp_shuffle=requires_warp_shuffle,
+        requires_high_dim_cuda_views=requires_high_dim_cuda_views,
+        requires_bounds_check_views=requires_bounds_check_views,
         BACKENDS=backends,
         backend=backend,
     )
@@ -518,6 +614,8 @@ def __getattr__(name: str) -> Any:
         "requires_cupy",
         "requires_device_backend",
         "requires_warp_shuffle",
+        "requires_high_dim_cuda_views",
+        "requires_bounds_check_views",
         "BACKENDS",
         "backend",
     ):
