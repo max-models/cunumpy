@@ -19,9 +19,14 @@ without it. See :doc:`/kernels/testing`.
   ``requires_device_backend``
       A ``skipif`` marker for tests that need a GPU or the fake CuPy, see
       :func:`device_backend_available`.
+  ``requires_warp_shuffle``
+      A ``skipif`` marker for tests that compile ``cunumpy/reduce.cuh`` or
+      ``cunumpy/scan.cuh``, see :func:`warp_shuffle_available`.
 
-  With ``CUNUMPY_REQUIRE_CUDA=1`` (:func:`cuda_required`) they fail
-  instead of skipping.
+  With ``CUNUMPY_REQUIRE_CUDA=1`` (:func:`cuda_required`) ``requires_cupy``
+  and ``requires_device_backend`` fail instead of skipping;
+  ``requires_warp_shuffle`` always skips on HIP, a known gap rather than a
+  broken GPU/driver.
 * Test ``__device__`` helpers: :func:`device_function_kernel`.
 * Run CUDA kernels on the CPU, without a GPU (from ``cunumpy._emulation``):
   :func:`emulate_cuda_kernel`, :func:`emulated_launches`,
@@ -100,7 +105,9 @@ __all__ = [
     "parity_cases",
     "requires_cupy",  # noqa: F822
     "requires_device_backend",  # noqa: F822
+    "requires_warp_shuffle",  # noqa: F822
     "run_in_fake_cupy_subprocess",
+    "warp_shuffle_available",
 ]
 
 SKIP_REASON = "CuPy/GPU not available"
@@ -108,6 +115,9 @@ DEVICE_SKIP_REASON = (
     "neither a GPU nor the fake CuPy (CUNUMPY_FAKE_CUPY=1) is available"
 )
 FAKE_SKIP_REASON = "the fake CuPy cannot run CUDA kernels"
+WARP_HIP_SKIP_REASON = (
+    "cunumpy/reduce.cuh and cunumpy/scan.cuh are not yet ported to HIP/ROCm"
+)
 
 
 def fake_cupy_active() -> bool:
@@ -201,6 +211,36 @@ def cuda_gate() -> bool:
         reason = FAKE_SKIP_REASON if fake_cupy_active() else SKIP_REASON
         _pytest().fail(f"CUNUMPY_REQUIRE_CUDA is set, but {reason}", pytrace=False)
     return False
+
+
+def warp_shuffle_available() -> bool:
+    """Whether CUDA kernels using ``cunumpy/reduce.cuh`` or ``cunumpy/scan.cuh`` can run here.
+
+    False on CuPy's HIP/ROCm build, even with a working GPU: their warp
+    shuffles assume a 32-lane warp and CUDA's ``_sync`` mask intrinsics,
+    which are not yet ported to HIP (see
+    :meth:`~cunumpy.kernels.CudaKernel.compile`). The marker
+    ``requires_warp_shuffle`` skips tests where this is false; unlike
+    ``requires_cupy``, it always skips on HIP (even under
+    ``CUNUMPY_REQUIRE_CUDA``), since that is an intentional, known gap and
+    not a broken GPU/driver.
+
+    Returns
+    -------
+    bool
+        True if CUDA kernels can be launched and the backend is not HIP.
+
+    Examples
+    --------
+    >>> from cunumpy.kernel_testing import warp_shuffle_available
+    >>> warp_shuffle_available()  # doctest: +SKIP
+    True
+    """
+    if not _can_launch():
+        return False
+    from cunumpy._device import is_hip
+
+    return not is_hip()
 
 
 def device_backend_available() -> bool:
@@ -436,6 +476,12 @@ def _build_lazy() -> None:
         requires_device_backend = pytest.mark.skipif(
             not device_backend_available(), reason=DEVICE_SKIP_REASON
         )
+    # Always skips on HIP (never fails under CUNUMPY_REQUIRE_CUDA): the gap is a
+    # known, intentional one, not a broken GPU/driver that CI should catch.
+    requires_warp_shuffle = pytest.mark.skipif(
+        not warp_shuffle_available(),
+        reason=SKIP_REASON if not _can_launch() else WARP_HIP_SKIP_REASON,
+    )
     backends = ["numpy", pytest.param("cupy", marks=requires_cupy)]
 
     @pytest.fixture(params=backends)
@@ -461,13 +507,20 @@ def _build_lazy() -> None:
     _LAZY.update(
         requires_cupy=requires_cupy,
         requires_device_backend=requires_device_backend,
+        requires_warp_shuffle=requires_warp_shuffle,
         BACKENDS=backends,
         backend=backend,
     )
 
 
 def __getattr__(name: str) -> Any:
-    if name in ("requires_cupy", "requires_device_backend", "BACKENDS", "backend"):
+    if name in (
+        "requires_cupy",
+        "requires_device_backend",
+        "requires_warp_shuffle",
+        "BACKENDS",
+        "backend",
+    ):
         if not _LAZY:
             _build_lazy()
         return _LAZY[name]

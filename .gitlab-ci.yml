@@ -1,10 +1,15 @@
 variables:
   CUDA_IMAGE: "gitlab-registry.mpcdf.mpg.de/mpcdf/ci-module-image/nvhpcsdk_26:2026"
+  ROCM_IMAGE: "gitlab-registry.mpcdf.mpg.de/mpcdf/ci-module-image/gcc_15-openmpi_5_0-rocm_7_1:2026"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   CUNUMPY_BACKEND: "cupy"
   CUNUMPY_REQUIRE_CUDA: "1"
   # empty: the newest CuPy; gpu_tests_min_cupy pins the oldest supported one
   CUPY_PIN: ""
+  # MI210 (MPCDF-GPU-05) is CDNA2, offload architecture gfx90a; also covers
+  # MI200/MI250(X). Change this (and the gpu-amd-gfx* tag below) for another
+  # AMD GPU generation.
+  HCC_AMDGPU_TARGET: "gfx90a"
 
 stages:
   - test
@@ -26,8 +31,40 @@ stages:
     - export PATH="$HOME/.local/bin:$PATH"
     - python3 -c "import cupy; cupy.show_config()"
 
+# CuPy has no prebuilt ROCm wheel for recent ROCm (the old cupy-rocm-*
+# packages stop at ROCm 4.3), so this builds it from source against the
+# module-provided ROCm. HCC_AMDGPU_TARGET above must match the runner's GPU.
+.gpu_job_amd:
+  stage: test
+  image: ${ROCM_IMAGE}
+  tags:
+    - gpu-amd
+    - gpu-amd-gfx90a
+  before_script:
+    - module load gcc/15
+    - module load openmpi/5.0
+    - module load rocm/7.1
+    - module load python-waterboa/2025.06
+    - rocm-smi
+    - export ROCM_HOME="${ROCM_PATH:-/opt/rocm}"
+    - export CUPY_INSTALL_USE_HIP=1
+    - python3 -m pip install --user "cupy${CUPY_PIN}"
+    - python3 -m pip install --user -e ".[test]"
+    - export PATH="$HOME/.local/bin:$PATH"
+    - python3 -c "import cupy; cupy.show_config()"
+    - python3 -c "import cupy; assert cupy.cuda.runtime.is_hip, 'expected a HIP build of CuPy'"
+
 gpu_tests:
   extends: .gpu_job
+  script:
+    - python3 -m pytest -q tests
+    - python3 testing/cupyx_names.py
+
+# cunumpy/reduce.cuh and cunumpy/scan.cuh are not yet ported to HIP: tests that
+# need them use `requires_warp_shuffle`, which skips (not fails) here even
+# though CUNUMPY_REQUIRE_CUDA is set, see cunumpy.kernel_testing.
+gpu_tests_amd:
+  extends: .gpu_job_amd
   script:
     - python3 -m pytest -q tests
     - python3 testing/cupyx_names.py

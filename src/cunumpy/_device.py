@@ -64,6 +64,38 @@ def device_count() -> int:
         return 0
 
 
+def is_hip() -> bool:
+    """Return whether the active CuPy build targets AMD ROCm/HIP.
+
+    CuPy's own API (``cp.cuda.Device``, ``memory_info``, streams, ...) is the
+    same on a ROCm build; this only distinguishes the GPU vendor for the
+    parts that differ, such as :meth:`~cunumpy.kernels.CudaKernel.compile_options`
+    (NVRTC-only flags) and the warp-level primitives of
+    ``cunumpy/reduce.cuh`` and ``cunumpy/scan.cuh`` (not yet ported to HIP,
+    see :doc:`/kernels/cuda-headers`).
+
+    Returns
+    -------
+    bool
+        True if CuPy is available and reports a HIP runtime, False for a
+        CUDA build or when CuPy/a GPU is unavailable.
+
+    Examples
+    --------
+    >>> xp.cuda.is_hip()  # on a CUDA build, or without CuPy
+    False
+    """
+    if not cupy_available():
+        return False
+
+    import cupy as cp
+
+    try:
+        return bool(cp.cuda.runtime.is_hip)
+    except Exception:  # noqa: BLE001 - tolerate any driver/runtime failure
+        return False
+
+
 def set_device_for_rank(rank: int, devices_per_node: int | None = None) -> int:
     """Select device ``rank % devices_per_node`` for an MPI rank.
 

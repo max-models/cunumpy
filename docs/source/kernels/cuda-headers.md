@@ -19,6 +19,13 @@ in [Writing CUDA kernels](cuda-kernel.md)).
 | `cunumpy/random.cuh` | counter-based random numbers, equal to `xp.rng.philox_*` |
 | `cunumpy/morton.cuh` | Morton (Z-order) keys, equal to `xp.algorithms.morton_*` |
 
+**AMD/ROCm.** CuPy's own API is the same on a ROCm build, so `xp.set_backend("cupy")`
+and the device/memory/stream helpers of `xp.cuda` work unchanged; check
+`xp.cuda.is_hip()` to tell the two apart where it matters. `CudaKernel`
+compiles plain CUDA C through `cupy.RawKernel`, which HIPRTC accepts for
+most kernels; the one shipped header that is not yet portable is
+`cunumpy/reduce.cuh` (and `cunumpy/scan.cuh`, which includes it), see below.
+
 ## `cunumpy/index.cuh`
 
 ```c
@@ -112,6 +119,14 @@ gets the result.
   the named lanes participate, and all of them call with the same mask. The
   default requires all 32 lanes. These rules follow [NVIDIA's warp intrinsic
   constraints](https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/cpp-language-extensions.html).
+
+**Not ported to HIP/ROCm.** This header hardcodes a 32-lane warp and CUDA's
+`_sync` shuffle intrinsics; AMD wavefronts are commonly 64 lanes wide (CDNA:
+MI100/MI200/MI300), and HIP's shuffles have no mask argument. Rather than
+compile silently-wrong reductions, `CudaKernel.compile()` raises
+`NotImplementedError` for a kernel that includes `cunumpy/reduce.cuh` (or
+`cunumpy/scan.cuh`, which includes it) when the active CuPy build targets
+HIP (`xp.cuda.is_hip()` is True).
 
 ```c
 extern "C" __global__ void kinetic_energy(const double* v, long long n,
