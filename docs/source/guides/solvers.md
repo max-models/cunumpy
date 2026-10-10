@@ -77,8 +77,8 @@ least-squares variants), `BSpline`, `make_interp_spline`, `make_lsq_spline`,
 
 ```python
 interp = xp.scipy.interpolate
-bx = interp.make_interp_spline(x, values, k=3)       # fit along x (axis 0)
-by = interp.make_interp_spline(y, bx.c.T, k=3)       # then along y
+bx = interp.make_interp_spline(x, values, k=3)  # fit along x (axis 0)
+by = interp.make_interp_spline(y, bx.c.T, k=3)  # then along y
 spline = interp.NdBSpline((bx.t, by.t), by.c.T, (3, 3))
 # RectBivariateSpline clamps points to the grid; NdBSpline extrapolates
 points = xp.stack([xp.clip(R, x[0], x[-1]), xp.clip(Z, y[0], y[-1])], axis=-1)
@@ -106,6 +106,7 @@ the secant method on all of them at once, with the steps of
 def residual(r):
     return psi(R0 + r * cos_theta, Z0 + r * sin_theta) - levels
 
+
 r = xp.optimize.newton(residual, xp.full(levels.shape, 0.3))
 ```
 
@@ -124,8 +125,10 @@ host copy of that data:
 ```python
 B = equilibrium.b_field_on_grid()  # device array
 
+
 def residual(x):
     return interpolate(B, x) - b_target
+
 
 x = xp.optimize.fsolve(residual, xp.asarray([0.5, 0.0]))  # device array
 ```

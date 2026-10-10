@@ -42,7 +42,10 @@ def _defining_comment(name, obj):
     from sphinx.pycode import ModuleAnalyzer
 
     for modname, module in list(sys.modules.items()):
-        if not modname.startswith("cunumpy._") or getattr(module, name, None) is not obj:
+        if (
+            not modname.startswith("cunumpy._")
+            or getattr(module, name, None) is not obj
+        ):
             continue
         try:
             docs = ModuleAnalyzer.for_module(modname).find_attr_docs()
