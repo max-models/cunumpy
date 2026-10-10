@@ -21,6 +21,7 @@ CuPy's (which are backed by pinned memory).
 
 from __future__ import annotations
 
+import copy
 import importlib
 import sys
 import types
@@ -262,6 +263,14 @@ class _Proxy:
 
     def __repr__(self) -> str:
         return f"<fake cupyx {self._obj!r}>"
+
+    # copies wrap a copy of the SciPy object and share the fake CuPy module (a
+    # module cannot be copied), as real CuPy splines can be copied
+    def __copy__(self) -> _Proxy:
+        return _Proxy(copy.copy(self._obj), self._cupy)
+
+    def __deepcopy__(self, memo: dict) -> _Proxy:
+        return _Proxy(copy.deepcopy(self._obj, memo), self._cupy)
 
 
 class _ProxyClass:

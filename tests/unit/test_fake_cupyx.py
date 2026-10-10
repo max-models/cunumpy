@@ -48,6 +48,26 @@ print("ok")
     assert "ok" in run(code)
 
 
+def test_splines_can_be_copied():
+    code = """
+import copy
+import numpy as np
+import cunumpy as xp
+xp.set_backend("cupy")
+x = xp.linspace(0.0, 1.0, 11)
+spl = xp.scipy.interpolate.UnivariateSpline(x, xp.sin(3 * x), k=3, s=0.0, ext=3)
+for c in (copy.copy(spl), copy.deepcopy(spl), copy.deepcopy({"spline": spl})["spline"]):
+    assert isinstance(c, xp.scipy.interpolate.UnivariateSpline)
+    assert xp.is_gpu(c(x))
+    assert np.array_equal(xp.to_numpy(c(x)), xp.to_numpy(spl(x)))
+# a deep copy is independent of the original
+c = copy.deepcopy(spl)
+assert c._obj is not spl._obj
+print("ok")
+"""
+    assert "ok" in run(code)
+
+
 def test_host_arrays_are_rejected_like_cupy():
     code = """
 import numpy as np
