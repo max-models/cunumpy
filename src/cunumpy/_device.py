@@ -238,7 +238,9 @@ def max_shared_memory_per_block(
     # already relies on for the real launch-time check, on both backends.
     dev_id = cp.cuda.Device().id if device is None else device
     properties = cp.cuda.runtime.getDeviceProperties(dev_id)
-    base = int(properties.get("sharedMemPerBlock", 0)) or DEFAULT_SHARED_MEMORY_PER_BLOCK
+    base = (
+        int(properties.get("sharedMemPerBlock", 0)) or DEFAULT_SHARED_MEMORY_PER_BLOCK
+    )
     if not opt_in:
         return base
     # The "opt in" larger dynamic-shared-memory limit is an NVIDIA concept
