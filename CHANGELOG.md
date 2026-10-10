@@ -45,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   warnings as errors. Docstring style: `docs/source/contributing.md`.
 
 ### Fixed
+- Splines and other objects of the fake `cupyx.scipy` can be copied with
+  `copy.copy` and `copy.deepcopy` (also inside a copied container), as real
+  CuPy splines can.
 - `xp.algorithms.segment_sum` and `SegmentPlan.sum` work on the fake CuPy: it
   cannot compile the CUDA kernel, so the sum runs on the host buffers of the
   fake arrays and the CuPy path of a program runs without a GPU.
