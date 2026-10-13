@@ -411,13 +411,18 @@ def test_max_shared_memory_per_block_reads_the_device(monkeypatch):
 
     class Device:
         def __init__(self, device_id=0):
-            self.attributes = {
-                "MaxSharedMemoryPerBlock": 49152 + device_id,
-                "MaxSharedMemoryPerBlockOptin": 232448,
-            }
+            self.id = device_id
+
+    properties = {
+        0: {"sharedMemPerBlock": 49152, "sharedMemPerBlockOptin": 232448},
+        1: {"sharedMemPerBlock": 49153, "sharedMemPerBlockOptin": 232449},
+    }
 
     cupy = types.ModuleType("cupy")
-    cupy.cuda = types.SimpleNamespace(Device=Device)
+    cupy.cuda = types.SimpleNamespace(
+        Device=Device,
+        runtime=types.SimpleNamespace(getDeviceProperties=properties.__getitem__),
+    )
     monkeypatch.setitem(sys.modules, "cupy", cupy)
     monkeypatch.setattr(device_module, "cupy_available", lambda: True)
     assert xp.cuda.max_shared_memory_per_block() == 49152

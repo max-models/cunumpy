@@ -6,12 +6,12 @@
 host and device that cunumpy makes inside a block, and :class:`TransferBudget`
 counts them per phase of a program and checks a rule for each phase::
 
-    import cunumpy as xp
-
     with xp.profiling.timed_region("push") as t, xp.profiling.nvtx_range("push"):
         push(positions, velocities, dt)
     with xp.profiling.assert_no_transfers():
         step()
+
+See :doc:`/guides/profiling`.
 """
 
 from cunumpy._profiling import Timing, nvtx_range, timed_region

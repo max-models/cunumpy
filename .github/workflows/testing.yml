@@ -72,11 +72,15 @@ jobs:
         run: |
           pytest .
 
+      - name: Run docstring examples
+        run: |
+          pytest --doctest-modules src/cunumpy
+
       - name: Test docs build
         run: |
           pip install ".[docs]"
           cd docs
           make clean
-          make html
+          make html SPHINXOPTS="-W --keep-going"
           cd ..
           ls docs/build/html/index.html

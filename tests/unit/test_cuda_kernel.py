@@ -5,6 +5,7 @@ device array (`FakeDeviceArray`) takes the place of CuPy arrays. Launching
 kernels needs a GPU and is skipped without one.
 """
 
+import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Final
@@ -28,6 +29,10 @@ from cunumpy.cuda import (
     include_hash,
     parse_cuda_signature,
     resolve_includes,
+)
+from cunumpy.kernel_testing import (
+    requires_bounds_check_views,
+    requires_high_dim_cuda_views,
 )
 from cunumpy.kernels import CudaKernel, CudaKernelVariants
 
@@ -61,6 +66,14 @@ def _user_options(kernel):
     return tuple(
         o for o in kernel.compile_options() if o != f"-I{xp.cuda.cuda_include_dir()}"
     )
+
+
+def _debug_options():
+    """``DEBUG_OPTIONS`` as actually added by ``compile_options()``: no ``-lineinfo``
+    on a HIP/ROCm build, an NVRTC-only flag HIPRTC does not accept."""
+    if xp.cuda.is_hip():
+        return tuple(o for o in xp.cuda.DEBUG_OPTIONS if o != "-lineinfo")
+    return xp.cuda.DEBUG_OPTIONS
 
 
 class FakeDeviceArray:
@@ -98,6 +111,14 @@ class FakeDeviceArray:
 def _skip_without_cupy():
     if not xp.cupy_available():
         pytest.skip("CuPy not installed or not functional")
+
+
+def _skip_without_warp_shuffle():
+    """Like `_skip_without_cupy`, also skipping on HIP: reduce.cuh/scan.cuh are
+    not yet ported (see `CudaKernel.compile`)."""
+    _skip_without_cupy()
+    if xp.cuda.is_hip():
+        pytest.skip("cunumpy/reduce.cuh is not yet ported to HIP/ROCm")
 
 
 # ---------------------------------------------------------------------------
@@ -970,6 +991,7 @@ def test_struct_with_view_fields_on_gpu():
     assert np.array_equal(base.get(), expected)
 
 
+@requires_bounds_check_views
 def test_bounds_check_traps_on_gpu():
     _skip_without_cupy()
     import cupy as cp
@@ -1078,6 +1100,23 @@ def test_from_signature():
     assert [f.ctype for f in CudaStruct.from_signature(kernel_args, "A").fields] == [
         "Array1D<double>",
         "long long",
+    ]
+
+
+def test_from_signature_postponed_annotations():
+    # loaded by path: `tests` is not importable when pytest runs without the
+    # repository root on sys.path
+    path = Path(__file__).parent / "postponed_annotations.py"
+    spec = importlib.util.spec_from_file_location("postponed_annotations", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    struct = CudaStruct.from_signature(module.Args.__init__, "A")
+    assert [f.ctype for f in struct.fields] == [
+        "Array2D<double>",
+        "Array1D<double>",
+        "long long",
+        "double",
     ]
 
 
@@ -1460,11 +1499,7 @@ def test_compile_options_follow_the_global_setting(debug_off):
     with xp.cuda.cuda_debug():
         # decided at call time: the kernel created before is affected
         assert kernel.debug_active() is True
-        assert _user_options(kernel) == (
-            "-std=c++17",
-            "-lineinfo",
-            "-DCUNUMPY_BOUNDS_CHECK",
-        )
+        assert _user_options(kernel) == ("-std=c++17", *_debug_options())
     assert _user_options(kernel) == ("-std=c++17",)
     assert kernel.options == ("-std=c++17",)  # the given options are unchanged
 
@@ -1482,18 +1517,18 @@ def test_explicit_debug_overrides_the_global_setting(debug_off):
     assert on.debug is True and off.debug is False
     assert on.debug_active() is True
     assert off.debug_active() is False
-    assert set(xp.cuda.DEBUG_OPTIONS) <= set(on.compile_options())
+    assert set(_debug_options()) <= set(on.compile_options())
 
     with xp.cuda.cuda_debug():
         assert off.debug_active() is False
         assert _user_options(off) == ()
-        assert _user_options(on) == xp.cuda.DEBUG_OPTIONS
+        assert _user_options(on) == _debug_options()
 
 
 def test_debug_options_include_dirs_and_from_file(tmp_path, debug_off):
     (tmp_path / "axpy_cuda.cu").write_text(AXPY)
     kernel = CudaKernel.from_file(tmp_path / "axpy_cuda.cu", debug=True)
-    assert _user_options(kernel) == (f"-I{tmp_path}", *xp.cuda.DEBUG_OPTIONS)
+    assert _user_options(kernel) == (f"-I{tmp_path}", *_debug_options())
 
 
 def test_debug_option_is_not_G():
@@ -1547,6 +1582,13 @@ def test_out_of_bounds_write_on_gpu(debug):
     """Under debug, the error is a RuntimeError naming the kernel and its shape;
     without debug, it is CuPy's own error (raised at the synchronization)."""
     _skip_without_cupy()
+    if xp.cuda.is_hip():
+        pytest.skip(
+            "on HIP/ROCm an illegal device write is a fatal GPU memory-protection "
+            "fault that terminates the process (the driver prints it directly), "
+            "unlike NVIDIA's sticky CUDA context error that surfaces as a "
+            "catchable exception at the next synchronization",
+        )
     output = "".join(
         _run_python(
             OUT_OF_BOUNDS.replace("DEBUG", str(debug)),
@@ -2196,7 +2238,7 @@ def test_reduce_header_is_shipped():
 
 @pytest.mark.parametrize("block_size", [32, 128, 1024])
 def test_reductions_on_gpu(block_size):
-    _skip_without_cupy()
+    _skip_without_warp_shuffle()
     import cupy as cp
 
     n = 5000  # not a multiple of the block size: the last block is partial
@@ -2449,6 +2491,7 @@ def test_high_dimensional_views_pack_and_generate_structs(ndim, contiguous):
 
 @pytest.mark.parametrize("ndim", [5, 6, 10, 16])
 @pytest.mark.parametrize("contiguous", [False, True])
+@requires_high_dim_cuda_views
 def test_high_dimensional_struct_layout_and_execution_on_gpu(ndim, contiguous):
     _skip_without_cupy()
     import cupy as cp

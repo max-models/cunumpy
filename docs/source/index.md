@@ -27,7 +27,8 @@ CUDA version for GPU use. Start with the [Quickstart](quickstart.md).
 * **Porting compiled kernels to CUDA**: start at [Porting kernels to the
   GPU](kernels/overview.md).
 * **Complete programs**: [Worked examples](examples/index.md).
-* **Looking up a function**: the [API reference](api.md).
+* **Looking up a function**: the [API reference](reference/index.md), and
+  the [API overview](api.md) for the module layout.
 * **Using an AI assistant**: point it at [the guide for AI
   assistants](ai-assistants.md), which ships with the package as
   `cunumpy/LLM_GUIDE.md`.
@@ -64,6 +65,7 @@ array-api-compat
 kernels/overview
 kernels/pyccel-kernel
 kernels/cuda-kernel
+kernels/cuda-headers
 kernels/metal-kernel
 kernels/dispatch
 kernels/arguments
@@ -88,4 +90,6 @@ troubleshooting
 pyodide
 ai-assistants
 api
+reference/index
+contributing
 ```

@@ -1,15 +1,10 @@
 """Host buffers owned by other libraries, mirrored on the device.
 
-Accumulation kernels write into buffers that another library owns and keeps
-using on the host (e.g. a stencil vector's ``_data`` that is then exchanged
-over MPI). On the GPU the kernel writes into a device array instead, and one
-transfer per accumulation is unavoidable; :class:`DeviceMirror` makes that
-transfer explicit and keeps the host array's identity, so the owning library
-still sees its own buffer.
-
-Every host/device copy of a mirror goes through ``xp.to_cupy`` or the
-mirror's own ``to_device()``/``to_host()`` calls, so that transfers are easy
-to find (and to account for) in application code.
+Accumulation kernels may have to write into a buffer that another library owns
+and keeps using on the host (e.g. a stencil vector's ``_data`` exchanged over
+MPI). :class:`~cunumpy.memory.DeviceMirror` makes the one transfer per
+accumulation explicit and keeps the host array's identity. See
+:doc:`/guides/data-movement`.
 """
 
 from __future__ import annotations
@@ -28,21 +23,17 @@ __all__ = ["DeviceMirror"]
 class DeviceMirror:
     """A host NumPy array paired with a lazily created device copy.
 
-    On the CuPy backend, `device` is a CuPy array of the same shape and dtype
-    as the host array, allocated (and filled from the host) on first use.
-    On the NumPy backend, `device` is the host array itself, so a kernel that
-    is given ``mirror.device`` writes straight into the host buffer, without
-    any copy.
-
-    Transfers are explicit: `to_device()` copies host to device and
-    `to_host()` copies device to host, in place, so the host array keeps its
-    identity. Both are no-ops on the NumPy backend. `zero()` clears the
-    buffer the kernel writes into.
+    On the CuPy backend, :attr:`device` is a CuPy array of the same shape and
+    dtype, allocated as a copy of the host on first use. On the NumPy backend
+    it is the host array itself, so kernels write straight into it. Transfers
+    are explicit and in place (:meth:`to_device`, :meth:`to_host`, no-ops on
+    NumPy) and counted by :func:`~cunumpy.profiling.count_transfers`. Make the
+    mirror's CUDA device current before using it.
 
     Parameters
     ----------
     host : numpy.ndarray
-        The host buffer, owned by the caller (or by another library).
+        The host buffer, owned by the caller or another library.
 
     Raises
     ------
@@ -51,12 +42,10 @@ class DeviceMirror:
 
     Examples
     --------
-    >>> data = np.zeros((4, 3))  # owned by another library
-    >>> mirror = DeviceMirror(data)
-    >>> mirror.zero()  # doctest: +SKIP
-    >>> accumulate(mirror.device, n_threads=n)  # doctest: +SKIP
-    >>> mirror.to_host()  # doctest: +SKIP
-    >>> mirror.host is data
+    >>> data = np.ones((4, 3))  # owned by another library
+    >>> mirror = xp.memory.DeviceMirror(data)
+    >>> accumulate(mirror.zero().device, n_threads=n)  # doctest: +SKIP
+    >>> mirror.to_host().host is data  # same object, new values
     True
     """
 
@@ -98,12 +87,7 @@ class DeviceMirror:
 
     @property
     def device(self) -> Any:
-        """The array kernels write into: a CuPy array, or the host on NumPy.
-
-        On the CuPy backend the device array is allocated on first access, as
-        a copy of the host array. On the NumPy backend this is the host array
-        itself.
-        """
+        """The array kernels write into: CuPy (copied from the host on first use), or the host on NumPy."""
         if not _cupy_backend():
             return self._host
         self._check_bound()
@@ -137,9 +121,9 @@ class DeviceMirror:
     def rebind(self, host: np.ndarray) -> DeviceMirror:
         """Bind to a new host array, e.g. after its owner reallocated it.
 
-        The device buffer is kept if the shape and dtype are unchanged (it
-        is not refreshed: call `to_device()` for that), otherwise it is
-        dropped and allocated again on the next use.
+        The device array is kept if shape and dtype are unchanged (not
+        refreshed: call :meth:`to_device`), otherwise it is allocated again on
+        the next use.
 
         Parameters
         ----------
@@ -159,12 +143,18 @@ class DeviceMirror:
         return self
 
     def to_device(self) -> DeviceMirror:
-        """Copy the host array to the device (no-op on the NumPy backend).
+        """Copy the host array into the device array (no-op on the NumPy backend).
+
+        Returns
+        -------
+        DeviceMirror
+            `self`, for chaining.
 
         Raises
         ------
         ValueError
-            If the host array was reallocated with another shape or dtype.
+            If the host array was reallocated with another shape or dtype
+            (call :meth:`rebind`).
         """
         self._check_bound()
         if not _cupy_backend():
@@ -184,21 +174,31 @@ class DeviceMirror:
         return self
 
     def to_host(self, *, stream: Any = None, event: Any = None) -> DeviceMirror:
-        """Copy the device array into the host array, in place.
+        """Copy the device array into the host array, in place, and wait for it.
 
-        The host array keeps its identity, so a library that holds the buffer
-        sees the new values. No-op on the NumPy backend, and if no device
-        array has been created yet.
+        The host array keeps its identity, so the library that holds it sees
+        the new values. No-op on the NumPy backend and before the device array
+        exists.
 
-        Make the mirror's device current. Pass ``stream=`` to copy on a known
-        producer stream, or ``event=`` to wait for production on the current
-        stream. With neither, only the current stream's work is ordered.
-        The method blocks until the host copy is complete.
+        Parameters
+        ----------
+        stream : cupy.cuda.Stream, optional
+            Producer stream to copy on; by default only the current stream's
+            work is ordered before the copy.
+        event : cupy.cuda.Event, optional
+            Producer event the current stream waits for before the copy. Pass
+            at most one of `stream` and `event`.
+
+        Returns
+        -------
+        DeviceMirror
+            `self`, for chaining.
 
         Raises
         ------
         ValueError
-            If the host array was reallocated with another shape or dtype.
+            If the host array was reallocated with another shape or dtype
+            (call :meth:`rebind`), or for both `stream` and `event`.
         """
         if stream is not None and event is not None:
             raise ValueError("pass only one of stream and event")
@@ -235,7 +235,13 @@ class DeviceMirror:
         return self
 
     def zero(self) -> DeviceMirror:
-        """Zero the array kernels write into (the device array, or the host on NumPy)."""
+        """Zero the array kernels write into (the device array, or the host on NumPy).
+
+        Returns
+        -------
+        DeviceMirror
+            `self`, for chaining.
+        """
         self._check_bound()
         if not _cupy_backend():
             self._host.fill(0)

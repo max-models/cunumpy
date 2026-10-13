@@ -4,6 +4,7 @@
 // every thread must call a block function, including padding threads (value 0).
 // Supports CUDA shuffle arithmetic types, arbitrary masks and partial warps.
 // Block scans use 32 shared values per type; calls must be collective.
+// Not yet ported to HIP/ROCm, see cunumpy/reduce.cuh.
 #ifndef CUNUMPY_SCAN_CUH
 #define CUNUMPY_SCAN_CUH
 

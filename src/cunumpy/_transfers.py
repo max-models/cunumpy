@@ -1,58 +1,16 @@
 """Counting host/device transfers made through cunumpy.
 
-Moving data between the host and the device is the classic performance bug of
-a GPU port: a single ``to_numpy()`` inside a time loop makes every step wait for
-the device and copy an array. :func:`count_transfers` records every transfer
-that goes through cunumpy while the block runs, together with the call site
-that caused it, so a test can verify that a time step does not transfer at
-all::
+:func:`count_transfers` records every transfer that goes through cunumpy while
+a block runs, with the call site that caused it, :func:`assert_no_transfers`
+rejects them, and :class:`TransferBudget` checks them per phase of a program.
+All are public in :mod:`cunumpy.profiling`; see :doc:`/guides/profiling`.
 
-    with xp.profiling.count_transfers() as counter:
-        propagator(dt)
-    assert counter.total == 0, counter.report()
-
-or, to reject host/device copies and host execution on the GPU backend::
-
-    with xp.profiling.assert_no_transfers():
-        propagator(dt)
-
-Counted are
-
-* ``to_host``: :func:`~cunumpy.to_numpy` (and :func:`~cunumpy.to_cunumpy`)
-  called with a device array;
-* ``to_device``: :func:`~cunumpy.to_cupy` (and :func:`~cunumpy.to_cunumpy`)
-  called with anything that is not already a device array;
-* ``kernel_conversion``: a :class:`~cunumpy.kernels.PyccelKernel` call that copied
-  device arrays to the host (and back), one event per call;
-* ``fallback``: a :class:`~cunumpy.kernels.Kernel` without CUDA kernel calling its host
-  kernel on the CuPy backend (``missing_cuda="fallback"``), one event per call;
-* ``device_copy``: device-only dtype/layout conversions in CuNumpy helpers;
-* ``sync``: the host waited for the device: :func:`~cunumpy.synchronize`, the
-  waits of the MPI helpers and of the CUDA debug mode, and, on the fake CuPy,
-  a scalar read of a device array (``float(a)``, ``int(a)``, ``bool(a)``,
-  ``a.item()``, ``a.tolist()``). Syncs are listed in :attr:`TransferCounter.syncs`
-  and the report but not in :attr:`~TransferCounter.total`, and
-  :func:`assert_no_transfers` accepts them unless called with ``syncs=True``.
-
-Mirror refreshes, argument conversions, staging, serial MPI and kernel output
-copy-back are also counted. Each physical host/device copy is recorded with its
-payload size; conversion/fallback markers have no byte count. ``total`` counts
-all observations, including markers. ``assert_no_transfers`` allows device-only
-copies and rejects host/device copies and host fallback/conversion markers.
-
-Limitations
------------
-Only transfers made *through cunumpy* are seen. Raw ``cupy.ndarray.get()``,
-``cupy.asarray(numpy_array)``, ``numpy.asarray(cupy_array)``, ``float(device_array)``
-(an implicit sync of the real CuPy, which cannot be observed from Python; the fake
-CuPy reports it),
-forwarded backend operations such as ``xp.asarray`` and implicit conversions
-inside other libraries are not counted; use ``nsys``
-(or CuPy's own profiling hooks) to find those.
-
-Like the backend selection, the set of active counters is process-wide state
-and not thread-safe: counters started in one thread see the transfers of every
-thread.
+Only transfers made *through cunumpy* are seen: raw ``cupy.ndarray.get()``,
+``cupy.asarray(numpy_array)``, ``numpy.asarray(cupy_array)``, forwarded
+backend operations such as ``xp.asarray`` and conversions inside other
+libraries are not, nor is ``float(device_array)`` on the real CuPy (the fake
+CuPy reports it); use ``nsys`` for those. Like the backend selection, the set
+of active counters is process-wide and not thread-safe.
 """
 
 from __future__ import annotations
@@ -95,26 +53,34 @@ _PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 @dataclass(frozen=True)
 class TransferEvent:
-    """One recorded transfer.
+    """One transfer recorded by :func:`count_transfers`.
 
     Attributes
     ----------
     kind : str
-        One of ``"to_host"``, ``"to_device"``, ``"kernel_conversion"`` or
-        ``"fallback"``, or ``"device_copy"``.
+        ``"to_host"``, ``"to_device"``, ``"kernel_conversion"``,
+        ``"fallback"``, ``"device_copy"`` or ``"sync"`` (see
+        :func:`count_transfers`).
     description : str
         What was transferred, e.g. ``"to_numpy(shape=(1000,), dtype=float64)"``
         or ``"PyccelKernel 'push': 3 array(s) copied to the host"``.
     where : str
         The call site outside cunumpy, as ``"file:line"``.
-    nbytes : int | None
-        Payload bytes of a physical copy. None for markers or unknown sizes.
+    nbytes : int or None
+        Payload bytes of a physical copy; None for markers or unknown sizes.
     blocking : bool
-        Whether the host waited for the copy. False for the copies started by
-        :func:`~cunumpy.to_host_async`.
+        Whether the host waited for the copy. False for the copies of
+        :func:`~cunumpy.to_host_async` and
+        :meth:`HostStaging.copy <cunumpy.memory.HostStaging.copy>`.
     implicit : bool
         Whether the event was not asked for explicitly: a scalar read of a
         device array (``float(a)``) on the fake CuPy, recorded as a ``sync``.
+
+    Examples
+    --------
+    >>> event = xp.profiling.TransferEvent("to_host", "x", "step.py:12", nbytes=8)
+    >>> print(event)
+    step.py:12: to_host: x
     """
 
     kind: str
@@ -137,12 +103,23 @@ class TransferEvent:
 
 
 class TransferCounter:
-    """Transfers recorded while a :func:`count_transfers` block runs.
+    """The transfers recorded while a :func:`count_transfers` block runs.
+
+    The properties count the events by kind; :meth:`report` lists them by
+    call site. Usually created by :func:`count_transfers`.
 
     Attributes
     ----------
-    events : list[TransferEvent]
+    events : list of TransferEvent
         Every recorded transfer, in order.
+
+    Examples
+    --------
+    >>> counter = xp.profiling.TransferCounter()
+    >>> event = xp.profiling.TransferEvent("to_host", "x", "step.py:12", nbytes=8)
+    >>> counter.events.append(event)
+    >>> counter.to_host, counter.bytes_to_host, counter.total
+    (1, 8, 1)
     """
 
     def __init__(self) -> None:
@@ -156,46 +133,68 @@ class TransferCounter:
         self.events.append(event)
 
     def count(self, kind: str) -> int:
-        """Number of events of `kind`."""
+        """Return the number of events of one kind.
+
+        Parameters
+        ----------
+        kind : str
+            An event kind, e.g. ``"to_host"``.
+
+        Returns
+        -------
+        int
+            The number of events of `kind`.
+        """
         return sum(1 for event in self.events if event.kind == kind)
 
     @property
     def to_host(self) -> int:
-        """Number of device-to-host copies (`to_numpy`, `to_cunumpy`)."""
+        """Number of device-to-host copies (``to_host`` events)."""
         return self.count("to_host")
 
     @property
     def to_device(self) -> int:
-        """Number of host-to-device copies (`to_cupy`, `to_cunumpy`)."""
+        """Number of host-to-device copies (``to_device`` events)."""
         return self.count("to_device")
 
     @property
     def kernel_conversions(self) -> int:
-        """Number of `PyccelKernel` calls that copied device arrays to the host."""
+        """Number of ``PyccelKernel`` calls that copied device arrays to the host."""
         return self.count("kernel_conversion")
 
     @property
     def kernel_conversion_calls(self) -> list[TransferEvent]:
-        """The `PyccelKernel` conversion events: kernel name, arrays, call site."""
+        """The ``kernel_conversion`` events: kernel name, arrays, call site."""
         return [event for event in self.events if event.kind == "kernel_conversion"]
 
     @property
     def fallbacks(self) -> int:
-        """Number of `Kernel` calls that fell back to the host kernel on CuPy."""
+        """Number of ``Kernel`` calls that fell back to the host kernel on CuPy."""
         return self.count("fallback")
 
     @property
     def syncs(self) -> int:
-        """Number of times the host waited for the device (see the module documentation)."""
+        """Number of times the host waited for the device (``sync`` events)."""
         return self.count("sync")
 
     @property
     def total(self) -> int:
-        """Number of observations, including conversion/fallback markers (not syncs)."""
+        """Number of events except syncs, including conversion/fallback markers."""
         return sum(1 for event in self.events if event.kind != "sync")
 
     def bytes(self, kind: str) -> int:
-        """Known bytes copied for `kind`; markers and unknown sizes add zero."""
+        """Return the known bytes copied by the events of one kind.
+
+        Parameters
+        ----------
+        kind : str
+            An event kind, e.g. ``"to_host"``.
+
+        Returns
+        -------
+        int
+            The sum of `nbytes`; markers and unknown sizes add zero.
+        """
         return sum(e.nbytes or 0 for e in self.events if e.kind == kind)
 
     @property
@@ -210,11 +209,18 @@ class TransferCounter:
 
     @property
     def device_copies(self) -> int:
-        """Device-only conversions recorded by CuNumpy helpers."""
+        """Number of device-only conversions (``device_copy`` events)."""
         return self.count("device_copy")
 
     def report(self) -> str:
-        """A readable summary: events grouped by kind and call site, with counts."""
+        """Return a readable summary, grouped by kind and call site.
+
+        Returns
+        -------
+        str
+            One header line with the counts per kind, then one line per call
+            site and description, e.g. ``"step.py:12: to_numpy(...) (x3)"``.
+        """
         counts = ", ".join(f"{self.count(kind)} {kind}" for kind in KINDS)
         lines = [f"{self.total} transfer(s) through cunumpy ({counts})"]
         for kind in KINDS:
@@ -233,7 +239,7 @@ class TransferCounter:
 
 
 def _caller() -> str:
-    """The innermost ``file:line`` on the stack that is outside cunumpy."""
+    """Return the innermost ``file:line`` on the stack outside cunumpy."""
     frame = sys._getframe(1)
     while frame is not None:
         filename = frame.f_code.co_filename
@@ -302,27 +308,55 @@ def count_transfers(
 ) -> Generator[TransferCounter, None, None]:
     """Count the host/device transfers made through cunumpy in the block.
 
-    Yields a :class:`TransferCounter` that records every ``to_numpy``,
-    ``to_cupy`` and ``to_cunumpy`` call that actually copies, every
-    :class:`~cunumpy.kernels.PyccelKernel` call that converts device arrays and every
-    :class:`~cunumpy.kernels.Kernel` fallback to the host kernel, with the call site of
-    each. Nothing is counted for calls that do not copy, e.g. ``to_numpy`` of a
-    NumPy array.
+    Records every transfer cunumpy makes while the block runs, with its call
+    site. Calls that do not copy record nothing (e.g. ``to_numpy`` of a NumPy
+    array); with no counter active, a call costs one truth test. Blocks can
+    be nested; each active counter sees the transfers made inside it. Like any
+    :func:`contextlib.contextmanager`, it is also a decorator. Transfers that
+    bypass cunumpy (raw ``cupy.ndarray.get()``, conversions inside other
+    libraries) are not seen. Process-wide state, not thread-safe.
 
-    Blocks can be nested; each active counter sees the transfers made inside
-    it. With `into`, the events are added to that counter (e.g. to accumulate
-    over several calls); a counter that is already active is not added again,
-    so nested blocks with the same counter count each event once. Like any
-    context manager made with :func:`contextlib.contextmanager`, it is also a
-    decorator: ``@count_transfers(counter)``. Transfers that bypass cunumpy (raw ``cupy.ndarray.get()``,
-    ``cupy.asarray(numpy_array)``, conversions inside other libraries) are not
-    seen; see the module documentation.
+    Parameters
+    ----------
+    into : TransferCounter, optional
+        Add the events to this counter instead of a new one (e.g. to
+        accumulate over calls). A counter that is already active is not added
+        again, so each event is counted once.
+
+    Yields
+    ------
+    TransferCounter
+        The counter, filled while the block runs.
+
+    See Also
+    --------
+    assert_no_transfers : Fail if the block transfers.
+    TransferBudget : Count and check transfers per phase.
+
+    Notes
+    -----
+    The event kinds are:
+
+    * ``to_host`` / ``to_device``: a physical copy between host and device
+      (conversions such as :func:`~cunumpy.to_numpy` and
+      :func:`~cunumpy.to_cupy`, mirrors, staging, serial MPI, kernel output
+      copy-back), with its size in bytes;
+    * ``kernel_conversion``: a :class:`~cunumpy.kernels.PyccelKernel` call that
+      copied device arrays to the host and back, one marker per call;
+    * ``fallback``: a :class:`~cunumpy.kernels.Kernel` without CUDA version
+      that ran its host kernel on the CuPy backend, one marker per call;
+    * ``device_copy``: a device-only dtype/layout conversion;
+    * ``sync``: the host waited for the device (:func:`~cunumpy.synchronize`,
+      the MPI helpers, the CUDA debug mode and, on the fake CuPy, scalar
+      reads such as ``float(a)``). Not included in
+      :attr:`TransferCounter.total`.
 
     Examples
     --------
     >>> with xp.profiling.count_transfers() as counter:
-    ...     propagator(dt)
-    >>> assert counter.total == 0, counter.report()
+    ...     y = xp.to_numpy(xp.ones(3))  # a NumPy array: no copy
+    >>> counter.total
+    0
     """
     counter = TransferCounter() if into is None else into
     if any(active is counter for active in _ACTIVE):
@@ -339,21 +373,38 @@ def count_transfers(
 def assert_no_transfers(
     *, syncs: bool = False
 ) -> Generator[TransferCounter, None, None]:
-    """Raise ``AssertionError`` if the block makes a transfer through cunumpy.
+    """Fail if the block makes a host/device transfer through cunumpy.
 
-    Syncs (the host waiting for the device) are accepted unless `syncs` is
-    True, e.g. ``assert_no_transfers(syncs=True)`` for a time step that must
-    never stall on the device.
+    A :func:`count_transfers` block that, on exit, rejects host/device copies
+    and host conversion/fallback markers. Device-only conversions are allowed.
+    Only checked if the block exits normally; an exception raised inside
+    propagates as it is.
 
-    A :func:`count_transfers` block that, on exit, raises with the counter's
-    :meth:`~TransferCounter.report` if a host/device copy or host conversion/
-    fallback was counted. Device-only conversions are allowed. Only checked if
-    the block exits normally; an exception raised inside propagates as it is.
+    Parameters
+    ----------
+    syncs : bool, optional
+        Also reject syncs (the host waiting for the device), e.g. for a time
+        step that must never stall. Default False.
+
+    Yields
+    ------
+    TransferCounter
+        The counter of the block.
+
+    Raises
+    ------
+    AssertionError
+        If a transfer was counted; the message is the counter's
+        :meth:`~TransferCounter.report`.
+
+    See Also
+    --------
+    count_transfers : Count without failing.
 
     Examples
     --------
     >>> with xp.profiling.assert_no_transfers():
-    ...     propagator(dt)
+    ...     y = 2.0 * xp.ones(3)
     """
     with count_transfers() as counter:
         yield counter
@@ -366,8 +417,7 @@ def assert_no_transfers(
 
 
 class _PhaseRouter(TransferCounter):
-    """The counter a :class:`TransferBudget` keeps active: it adds every event
-    to the innermost phase of the budget only."""
+    """Counter that adds every event to the innermost phase of a budget."""
 
     def __init__(self, budget: TransferBudget) -> None:
         super().__init__()
@@ -388,40 +438,44 @@ class _Rule:
 
 
 class TransferBudget:
-    """Transfers counted per phase of a program, checked against rules per phase.
+    """Count transfers per phase of a program and check a rule for each phase.
 
-    A time loop typically has phases with different budgets: the time step must
-    not copy arrays between host and device at all, the diagnostics may copy a
-    few scalars to the host, the output each saved array once. A budget counts
-    the transfers of each phase (with :func:`count_transfers`) and checks them::
-
-        budget = TransferBudget(started=False)
-        model.integrate = budget.count("integrate")(model.integrate)
-        ...                       # setup: not counted
-        budget.start()
-        for step in range(n_steps):
-            model.integrate(dt)
-            with budget.phase("output"):
-                save(model)
-        budget.require("integrate", allow={"to_host": dict(max_nbytes=8)}, calls=n_steps)
-        budget.require("output", allow={"to_host": dict(max_count=n, max_total_bytes=b)})
-        budget.check()            # AssertionError with report() if a rule is broken
-
-    Phases nest: an event is counted in the innermost phase only, and a phase
-    entered again inside itself (recursion) counts each event and call once.
+    E.g. the time step must not copy between host and device, the diagnostics
+    may copy a few scalars, the output each saved array once. Mark phases with
+    :meth:`phase` or :meth:`count`, set rules with :meth:`require` and call
+    :meth:`check`. Events of a phase accumulate over its calls. Phases nest:
+    an event is counted in the innermost phase only, and a phase re-entered
+    inside itself (recursion) counts each event and call once.
 
     Parameters
     ----------
-    started : bool
-        Whether to count from the start; otherwise phases run uncounted until
-        :meth:`start`.
+    started : bool, optional
+        Count from the start (default); with False, phases run uncounted
+        until :meth:`start`.
 
     Attributes
     ----------
-    phases : dict[str, TransferCounter]
+    phases : dict of str to TransferCounter
         The events of each phase, accumulated over its calls.
-    calls : dict[str, int]
+    calls : dict of str to int
         How many times each phase was entered while counting.
+    started : bool
+        Whether phases are counted.
+
+    See Also
+    --------
+    count_transfers : Count the transfers of one block.
+
+    Examples
+    --------
+    >>> budget = xp.profiling.TransferBudget()
+    >>> for step in range(3):
+    ...     with budget.phase("step"):
+    ...         x = 2.0 * xp.ones(4)
+    >>> budget.require("step", allow={"to_host": {"max_nbytes": 8}}, calls=3)
+    >>> budget.check()
+    >>> budget.violations()
+    []
     """
 
     def __init__(self, *, started: bool = True) -> None:
@@ -433,7 +487,7 @@ class TransferBudget:
         self._router = _PhaseRouter(self)
 
     def __getitem__(self, phase: str) -> TransferCounter:
-        """The counter of `phase` (empty if it has not run)."""
+        """Return the counter of `phase` (empty if it has not run)."""
         return self.phases.setdefault(phase, TransferCounter())
 
     def start(self) -> None:
@@ -446,7 +500,18 @@ class TransferBudget:
 
     @contextmanager
     def phase(self, name: str) -> Generator[TransferCounter, None, None]:
-        """Count the transfers of the block in phase `name` (accumulated)."""
+        """Count the transfers of the block in a phase.
+
+        Parameters
+        ----------
+        name : str
+            The phase; its events accumulate over calls.
+
+        Yields
+        ------
+        TransferCounter
+            The counter of the phase (``budget[name]``).
+        """
         counter = self[name]
         if not self.started:
             yield counter
@@ -461,7 +526,18 @@ class TransferBudget:
             self._stack.pop()
 
     def count(self, name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        """A decorator: every call of the function is counted in phase `name`."""
+        """Return a decorator that counts every call of a function in a phase.
+
+        Parameters
+        ----------
+        name : str
+            The phase.
+
+        Returns
+        -------
+        callable
+            The decorator, e.g. ``f = budget.count("integrate")(f)``.
+        """
 
         def decorate(function: Callable[..., Any]) -> Callable[..., Any]:
             @functools.wraps(function)
@@ -481,25 +557,29 @@ class TransferBudget:
         ignore: Sequence[str] = ("device_copy", "sync"),
         calls: int | None = None,
     ) -> None:
-        """Set the rule of `phase`, checked by :meth:`check`.
+        """Set the rule of a phase, checked by :meth:`check`.
 
         Parameters
         ----------
         phase : str
             The phase.
-        allow : Mapping[str, Mapping | None] | None
+        allow : mapping, optional
             The event kinds the phase may have, each with its limits (None or
-            ``{}``: any number). Every other kind is forbidden, except those in
-            `ignore`. Limits: ``max_nbytes`` (of each event; events of unknown
-            size break it), ``max_count`` and ``max_total_bytes`` (over the
-            whole phase), ``blocking`` and ``implicit`` (the events must have
-            this value of :attr:`TransferEvent.blocking` / ``implicit``), e.g.
-            ``{"to_host": dict(max_nbytes=8, blocking=False)}``.
-        ignore : Sequence[str]
-            Kinds that are not checked unless they are in `allow`: by default
-            device-only copies and syncs (the host waiting for the device).
-        calls : int | None
+            ``{}``: any number); every other kind is forbidden unless in
+            `ignore`. Limits: ``max_nbytes`` (each event; an unknown size
+            breaks it), ``max_count`` and ``max_total_bytes`` (whole phase),
+            ``blocking`` and ``implicit`` (required value of the event field),
+            e.g. ``{"to_host": {"max_nbytes": 8, "blocking": False}}``.
+        ignore : sequence of str, optional
+            Kinds not checked unless in `allow`; by default ``device_copy``
+            and ``sync``.
+        calls : int, optional
             The number of times the phase must have been entered.
+
+        Raises
+        ------
+        ValueError
+            If `allow` has an unknown kind or limit.
         """
         allow = {kind: dict(limits or {}) for kind, limits in (allow or {}).items()}
         for kind, limits in allow.items():
@@ -513,7 +593,14 @@ class TransferBudget:
         self._rules[phase] = _Rule(allow, tuple(ignore), calls)
 
     def violations(self) -> list[str]:
-        """The broken rules, one line each, with the offending events."""
+        """Return the broken rules.
+
+        Returns
+        -------
+        list of str
+            One line per broken rule, with the offending event and its call
+            site.
+        """
         found = []
         for name, rule in self._rules.items():
             events = self[name].events
@@ -550,7 +637,14 @@ class TransferBudget:
         return found
 
     def report(self) -> str:
-        """The events of every phase (see :meth:`TransferCounter.report`) and the broken rules."""
+        """Return the events of every phase and the broken rules.
+
+        Returns
+        -------
+        str
+            :meth:`TransferCounter.report` of each phase, then the
+            :meth:`violations`.
+        """
         lines = []
         for name, counter in self.phases.items():
             lines.append(f"{name} ({self.calls.get(name, 0)} call(s)):")
@@ -562,6 +656,12 @@ class TransferBudget:
         return "\n".join(lines)
 
     def check(self) -> None:
-        """Raise ``AssertionError`` with :meth:`report` if a rule is broken."""
+        """Raise if a rule is broken.
+
+        Raises
+        ------
+        AssertionError
+            If a rule is broken; the message is :meth:`report`.
+        """
         if self.violations():
             raise AssertionError("transfer budget exceeded:\n" + self.report())

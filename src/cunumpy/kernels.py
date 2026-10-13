@@ -5,17 +5,16 @@ Python, wrapped in a :class:`PyccelKernel`) with an optional CUDA version (a
 :class:`CudaKernel`) and runs the one matching the arrays it
 is given; a :class:`KernelCatalog` loads every kernel of a package::
 
-    import cunumpy as xp
-
     push = xp.kernels.Kernel.from_folder("my_code.kernels.push")
     push(positions, velocities, dt)
 
 Which host implementation runs is set with :func:`set_host_kernel_implementation`
-or :func:`use_host_kernel_implementation`. :func:`as_kernel_array` and
-:func:`kernel_output` bring the arguments of a kernel to the side of its main
-array. :func:`fuse` turns an elementwise function into one CuPy kernel.
-Device dispatch can require CUDA with :func:`set_device_kernel_implementation`
-or temporarily with :func:`use_device_kernel_implementation`.
+or :func:`use_host_kernel_implementation` (one of ``HOST_IMPLEMENTATIONS``);
+device dispatch can require CUDA with :func:`set_device_kernel_implementation`
+or :func:`use_device_kernel_implementation` (``DEVICE_IMPLEMENTATIONS``).
+:func:`as_kernel_array` and :func:`kernel_output` bring the arguments of a
+kernel to the side of its main array. :func:`fuse` turns an elementwise
+function into one CuPy kernel. See :doc:`/kernels/overview`.
 
 A :class:`MetalKernel` runs a Metal Shading Language kernel on the GPU of an
 Apple silicon Mac through MLX (``pip install 'cunumpy[metal]'``), on NumPy

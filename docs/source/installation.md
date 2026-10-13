@@ -20,7 +20,14 @@ example:
 
 ```bash
 python -m pip install cupy-cuda12x   # CUDA 12.x
+python -m pip install cupy-cuda13x   # CUDA 13.x
 ```
+
+CuNumpy supports CuPy 14.0 or newer (`xp.MIN_CUPY_VERSION`); the GPU CI tests
+14.0 and the newest release. CuPy 13 lacks parts of `cupyx.scipy` that
+CuNumpy relies on (`interpolate.UnivariateSpline`, `NdBSpline`,
+`CubicSpline`, ...): selecting the CuPy backend with an older CuPy warns.
+`xp.backend_info()` shows the installed and the minimum version.
 
 On HPC clusters, load the site's CUDA module first and check the CuPy
 installation guide for the matching package name. Then verify that CuNumpy can
@@ -90,6 +97,10 @@ Tests that need a GPU are skipped automatically where CuPy is not functional.
 | `MAYBEMPI=1` / `0` | require MPI / use serial MPI regardless of launcher detection (read by [maybempi](https://max-models.github.io/maybempi/)) |
 | `CUNUMPY_FAKE_CUPY=1` | install the strict CPU stand-in for CuPy for tests |
 | `CUNUMPY_REQUIRE_CUDA=1` | require a real usable GPU when starting the test suite (CI guard) |
+
+The two kernel implementation variables are case-insensitive and stripped of
+whitespace; an unset or empty value means the default (automatic) selection,
+and an unsupported value raises `ValueError` when CuNumpy is imported.
 
 Use `CUNUMPY_BACKEND` in job scripts; the former `ARRAY_BACKEND` setting is no
 longer read. Standard toolchain/device variables such as `CXX` and

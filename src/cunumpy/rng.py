@@ -1,12 +1,10 @@
 """Random numbers on either backend.
 
 :data:`random_streams` is one seeded generator per process and backend, with a
-separate stream on every MPI rank; :func:`get_rng` returns a fresh NumPy or
-CuPy ``Generator`` for the active backend; the ``philox_*`` functions return
-the counter-based random numbers of ``cunumpy/random.cuh`` on the host, the
-same as a CUDA kernel draws::
-
-    import cunumpy as xp
+separate stream on every MPI rank (bit generator one of ``BIT_GENERATORS``);
+:func:`get_rng` returns a fresh NumPy or CuPy ``Generator`` for the active
+backend; the ``philox_*`` functions return the counter-based random numbers
+of ``cunumpy/random.cuh`` on the host, the same as a CUDA kernel draws::
 
     xp.rng.random_streams.seed(42, rank=comm.Get_rank())
     v = xp.rng.random_streams.normal(0.0, v_th, (n, 3))

@@ -27,6 +27,12 @@
 //
 // The warp size is 32, as on all NVIDIA GPUs.
 //
+// Not yet ported to HIP/ROCm: AMD wavefronts are commonly 64 lanes (CDNA:
+// MI100/MI200/MI300) rather than 32, and HIP's shuffle intrinsics have no
+// `_sync`/mask variant. `CudaKernel.compile()` raises `NotImplementedError`
+// for a kernel that includes this header on a HIP build, instead of silently
+// reducing/scanning the wrong set of threads.
+//
 // The header directory is added to every CudaKernel's NVRTC options.
 
 #ifndef CUNUMPY_REDUCE_CUH

@@ -1,25 +1,21 @@
 """SciPy for the active backend: ``xp.scipy`` is SciPy or ``cupyx.scipy``.
 
-Field solvers and fluid codes need more than array functions: sparse matrices
-and their iterative solvers, FFTs, special functions, image filters.
 ``xp.scipy`` forwards to :mod:`scipy` on the NumPy backend and to
-:mod:`cupyx.scipy` on the CuPy backend, so this code runs on both::
+:mod:`cupyx.scipy` on the CuPy backend (sparse matrices and solvers, FFTs,
+special functions, ...), so this code runs on both::
 
     A = xp.scipy.sparse.csr_matrix((data, (rows, cols)), shape=(n, n))
     x, info = xp.scipy.sparse.linalg.cg(A, b)
-    phi_k = xp.scipy.fft.rfftn(rho)
     f = xp.scipy.special.erf(v / v_th)
 
-The module is resolved at every attribute access, so switching the backend
-(:func:`cunumpy.set_backend`) takes effect immediately; imports are cached by
-Python, so the lookup is cheap. Neither SciPy nor CuPy is imported until a
-name is used.
-
-``cupyx.scipy`` covers only part of SciPy. A name that the active backend's
-module does not have raises ``AttributeError`` saying which backend lacks it;
-:meth:`ScipyNamespace.available` checks a name without raising. Keyword
-arguments can differ as well: SciPy's ``cg`` takes ``rtol`` since SciPy 1.12,
-CuPy's still takes ``tol``.
+Names are resolved at every access, so a backend switch takes effect at once;
+nothing is imported until a name is used, and SciPy is not a dependency of
+cunumpy. ``cupyx.scipy`` covers only part of SciPy, and keyword arguments can
+differ (SciPy's ``cg`` takes ``rtol``, CuPy's ``tol``). A few missing
+functions are filled in by cunumpy on the device (``FILLS``, e.g.
+``xp.scipy.linalg.solve_circulant``). A SciPy sparse matrix
+moves to the device once with ``xp.scipy.sparse.csr_matrix(host_matrix)`` on
+the CuPy backend, and back with ``matrix.get()``. See :doc:`/guides/solvers`.
 """
 
 from __future__ import annotations
@@ -28,9 +24,10 @@ import importlib
 from types import ModuleType
 from typing import Any
 
+from cunumpy import _linalg
 from cunumpy.xp import get_backend
 
-__all__ = ["SUBMODULES", "ScipyNamespace", "scipy"]
+__all__ = ["FILLS", "SUBMODULES", "ScipyNamespace", "scipy"]
 
 #: The SciPy subpackages forwarded by ``xp.scipy``: those that ``cupyx.scipy``
 #: provides as well.
@@ -49,6 +46,10 @@ SUBMODULES = (
     "stats",
 )
 
+#: Functions ``cupyx.scipy`` lacks, implemented by cunumpy on the device; used
+#: on the CuPy backend only, where the ``cupyx`` module has no such name.
+FILLS = {"linalg": {"solve_circulant": _linalg.solve_circulant}}
+
 _ROOTS = {"numpy": "scipy", "cupy": "cupyx.scipy"}
 _INSTALL = {
     "numpy": "SciPy is not installed (pip install scipy)",
@@ -57,13 +58,29 @@ _INSTALL = {
 
 
 class ScipyNamespace:
-    """SciPy (sub)package of the active backend; see :data:`cunumpy.scipy`.
+    """A SciPy (sub)package of the active backend; see :data:`cunumpy.scipy`.
+
+    Attribute access forwards to the module of the active backend. A name the
+    backend's module lacks raises ``AttributeError`` naming the backend, unless
+    cunumpy fills it in (``FILLS``, CuPy backend only); a
+    missing SciPy (NumPy backend) or CuPy raises ``ImportError``.
 
     Parameters
     ----------
-    path : str
-        Dotted path below the SciPy root, e.g. ``"sparse.linalg"``; empty for
-        the root itself.
+    path : str, optional
+        Dotted path below the SciPy root, one of ``SUBMODULES``, e.g.
+        ``"sparse.linalg"``; empty for the root itself.
+
+    Raises
+    ------
+    ValueError
+        If `path` is not a forwarded subpackage.
+
+    Examples
+    --------
+    >>> xp.scipy.sparse
+    <cunumpy scipy namespace <backend>.sparse>
+    >>> x, info = xp.scipy.sparse.linalg.cg(A, b)  # doctest: +SKIP
     """
 
     def __init__(self, path: str = "") -> None:
@@ -82,7 +99,7 @@ class ScipyNamespace:
         return f"{root}.{self._path}" if self._path else root
 
     def resolve(self) -> ModuleType:
-        """The module this namespace stands for on the active backend.
+        """Return the module this namespace stands for on the active backend.
 
         Returns
         -------
@@ -115,6 +132,9 @@ class ScipyNamespace:
         try:
             return getattr(module, name)
         except AttributeError:
+            fill = self._fill(name)
+            if fill is not None:
+                return fill
             other = "cupy" if get_backend() == "numpy" else "numpy"
             raise AttributeError(
                 f"{module.__name__} has no attribute {name!r}: it is not available "
@@ -122,10 +142,28 @@ class ScipyNamespace:
                 f"{self._name(_ROOTS[other])})",
             ) from None
 
-    def available(self, name: str) -> bool:
-        """Whether `name` exists in this namespace on the active backend.
+    def _fill(self, name: str) -> Any:
+        if get_backend() != "cupy":
+            return None
+        return FILLS.get(self._path, {}).get(name)
 
-        Never raises; False also if the backend's SciPy is not installed.
+    def available(self, name: str) -> bool:
+        """Return whether `name` exists in this namespace on the active backend.
+
+        Parameters
+        ----------
+        name : str
+            A function, class or subpackage name.
+
+        Returns
+        -------
+        bool
+            False also if the backend's SciPy is not installed; never raises.
+
+        Examples
+        --------
+        >>> xp.scipy.special.available("erfcx")  # doctest: +SKIP
+        True
         """
         child = f"{self._path}.{name}" if self._path else name
         if child in SUBMODULES:
@@ -135,7 +173,7 @@ class ScipyNamespace:
                 return False
             return True
         try:
-            return hasattr(self.resolve(), name)
+            return hasattr(self.resolve(), name) or self._fill(name) is not None
         except ImportError:
             return False
 
@@ -150,6 +188,8 @@ class ScipyNamespace:
             names = dir(self.resolve())
         except ImportError:
             names = []
+        if get_backend() == "cupy":
+            names = [*names, *FILLS.get(self._path, {})]
         return sorted(set(names) | set(children) | {"available", "resolve"})
 
 

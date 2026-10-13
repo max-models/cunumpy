@@ -16,7 +16,9 @@ from cunumpy.kernel_testing import (
 ```
 
 `cunumpy.kernel_testing` is not imported by `import cunumpy`, and it imports pytest only
-when one of its pytest objects is used.
+when one of its pytest objects is used, so `device_function_kernel` and the
+emulation work without pytest. It is not called `cunumpy.testing`, because a
+submodule of that name would replace NumPy's `xp.testing` once imported.
 
 ## Run a test on both backends
 
@@ -222,7 +224,34 @@ intrinsics; kernels using the latter are refused with `NotImplementedError`, so
 those still need a GPU run. Inline PTX is not emulated either: `asm(...)` and
 `asm volatile(...)` compile but trap when reached, so a PTX branch a test never
 takes needs no extra options, and reaching it raises `RuntimeError`. The compiler may fuse multiply-adds as NVRTC does,
-so compare with a tolerance of a few ulp.
+so compare with a tolerance of a few ulp, or pass `options=("-ffp-contract=off",)`
+for NumPy's rounding.
+
+How the emulation works, for when a result surprises you:
+
+* The source is compiled as C++17 with `CXX` (else `c++`, see
+  `emulation_compiler()`), with `threadIdx`, `blockIdx`, `blockDim`, `gridDim`,
+  the atomics (`atomicAdd`, `atomicMin`, ..., as plain operations), `__ldg`,
+  `rsqrt` and `__trap` replaced. The shipped headers, the kernel's include
+  directories and its `-D` options apply. `CUNUMPY_EMULATION_CACHE` sets the
+  disk cache (`0`: none).
+* The library runs in the Python process, on the arrays themselves. An array
+  that is not writeable, or whose layout a parameter cannot take, is passed as
+  a copy and written back, so aliased arguments see each other's writes.
+* `__shared__` variables exist once per block (blocks run one after another),
+  `extern __shared__` arrays point into a buffer of `shared_mem` bytes, and in a
+  kernel that calls `__syncthreads` the threads of a block run as coroutines
+  (POSIX `ucontext`, each with its own stack), so every thread reaches a barrier
+  before any continues past it.
+* Not emulated: concurrency between barriers (races and atomic ordering never
+  show), warp intrinsics (`__syncwarp`, shuffles, votes: `NotImplementedError`,
+  also from an included header), complex scalars and inline PTX.
+* A kernel that does not compile, or traps (an out-of-bounds index with
+  `-DCUNUMPY_BOUNDS_CHECK`, `__trap()`, inline `asm`), raises `RuntimeError`.
+  Other crashes, such as a segmentation fault from an unchecked out-of-bounds
+  index, end the process: run such tests through
+  `run_in_fake_cupy_subprocess()`, which prints the traceback with
+  `faulthandler`.
 
 ### Struct parameters and `emulated_launches()`
 
@@ -268,7 +297,7 @@ backend too:
 from cunumpy.kernel_testing import fake_cupy_session, requires_device_backend
 
 
-@requires_device_backend  # a GPU, or the fake CuPy
+@requires_device_backend  # a GPU, or the fake CuPy (device_backend_available())
 def test_simulation_on_the_cupy_backend():
     with fake_cupy_session():  # only with the fake CuPy
         sim.run()
@@ -320,9 +349,25 @@ def test_find_span_matches_host():
     np.testing.assert_array_equal(xp.to_numpy(out), expected)
 ```
 
+The prototype above generates this kernel, named `<function>_kernel` unless
+`name=` is given:
+
+```c
+extern "C" __global__ void find_span_kernel(
+    const double* t, const int* p, const double* eta, int* out, int n)
+{
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i >= n) return;
+    out[i] = find_span(t, p[i], eta[i]);
+}
+```
+
 In the generated kernel, pointer parameters are passed unchanged to every
 thread (shared data), scalar parameters become per-thread arrays, the return
-value of thread `i` goes to `out[i]`, and `n` is the number of elements. A
+value of thread `i` goes to `out[i]` (a `void` function has no `out`), and `n`
+is the number of elements. A parameter of the function named `out` or `n`
+raises `ValueError`; rename the generated ones with `out_param=` and
+`n_threads_param=`. A
 struct parameter, by value or by `const` reference (`const DomainArgs& d`),
 is passed through unchanged as well; give the struct types in `structs=`
 and pass a `CudaStructArguments` object or a packed value, so helpers that

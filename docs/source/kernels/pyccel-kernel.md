@@ -87,11 +87,12 @@ other modules are passed through unchanged.
 
 Other details:
 
-* **Aliasing is preserved.** If the same device array appears twice, the host
-  function sees one host array twice.
+* **Aliasing is preserved.** If the same device array appears twice, also
+  inside containers, the host function sees one host array twice. Reference
+  cycles among supported containers and objects are handled.
 * **Return values**: NumPy arrays (also inside returned tuples and lists) are
   converted to CuPy; `is_array` customizes which return values count as arrays
-  (for NumPy subclasses).
+  (for NumPy subclasses). Dictionaries in return values are not converted.
 * **`use_cupy`** forces conversion on (`True`) or off (`False`); the default
   `None` decides per call.
 

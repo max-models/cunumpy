@@ -1,26 +1,19 @@
-"""PETSc vectors sharing memory with NumPy or CuPy arrays (no copies).
+"""PETSc vectors that share memory with NumPy or CuPy arrays (no copies).
 
-Field solvers often go through PETSc (KSP), while the rest of a GPU code keeps
-its data in CuPy arrays. Copying the right-hand side to the host and the
-solution back at every solve is the largest transfer of such a time step.
-:func:`petsc_vec` wraps an array as a PETSc vector that uses the array's
-memory: a host vector for a NumPy array, a CUDA (or HIP) vector for a CuPy
-array, which needs a petsc4py built with CUDA (or HIP) support::
+:func:`petsc_vec` wraps an array as a PETSc vector that uses its memory, so a
+GPU code can hand its CuPy right-hand side and solution to a PETSc solver
+without copying them to the host at every solve::
 
-    b = xp.zeros(n)            # filled by the deposit kernel
-    phi = xp.zeros(n)          # the solution, read by the gather kernel
     b_vec, phi_vec = xp.petsc.petsc_vec(b), xp.petsc.petsc_vec(phi)
-    ...
     xp.synchronize()           # CuPy work on b done before PETSc reads it
     ksp.solve(b_vec, phi_vec)  # writes into phi
     xp.synchronize()           # PETSc done before CuPy reads phi
 
 For the solve to stay on the GPU, the matrix must be a GPU type as well
-(``mat.setType("aijcusparse")``, or ``-mat_type aijcusparse -vec_type cuda``
-in the PETSc options); otherwise PETSc copies the vectors to the host for the
-matrix products.
-
-petsc4py is imported only when :func:`petsc_vec` is called.
+(``mat.setType("aijcusparse")``, or ``-mat_type aijcusparse -vec_type cuda``);
+otherwise PETSc copies the vectors to the host for the matrix products.
+petsc4py is imported only when :func:`petsc_vec` is called. See
+:doc:`/guides/solvers`.
 """
 
 from __future__ import annotations
@@ -49,15 +42,15 @@ def _petsc() -> Any:
 
 
 def petsc_vec(array: Any, comm: Any = None) -> Any:
-    """A PETSc vector that shares the memory of `array`.
+    """Wrap `array` as a PETSc vector that shares its memory, through DLPack.
 
     Parameters
     ----------
-    array : numpy.ndarray | cupy.ndarray
+    array : numpy.ndarray or cupy.ndarray
         C-contiguous array of PETSc's scalar type (``PETSc.ScalarType``,
         usually float64). A multi-dimensional array is seen by PETSc in
         row-major order, as ``array.ravel()``. The array is never copied.
-    comm : mpi4py.MPI.Comm | PETSc.Comm | None
+    comm : mpi4py.MPI.Comm or PETSc.Comm, optional
         Communicator of the vector; PETSc's default (``COMM_WORLD``) if None.
         With several processes, `array` is this process's part.
 
@@ -87,6 +80,13 @@ def petsc_vec(array: Any, comm: Any = None) -> Any:
     PETSc and CuPy may run on different streams: synchronize
     (:func:`cunumpy.synchronize`) before PETSc reads an array that CuPy wrote,
     and before CuPy reads a vector that PETSc wrote.
+
+    Examples
+    --------
+    >>> b = xp.zeros(100)
+    >>> b_vec = xp.petsc.petsc_vec(b)  # doctest: +SKIP
+    >>> b_vec.getSize()  # doctest: +SKIP
+    100
     """
     PETSc = _petsc()
     device = _is_device_array(array)

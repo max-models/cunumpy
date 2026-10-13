@@ -8,14 +8,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Supported CuPy versions: 14.0 or newer (`xp.MIN_CUPY_VERSION`,
+  `xp.cupy_version_supported`); an older CuPy warns when the CuPy backend is
+  first checked, and `backend_info()` reports the minimum. The GPU CI runs the
+  whole suite on CuPy 14.0.0 too (`gpu_tests_min_cupy`).
+- MIT license (`LICENSE.txt`, referenced by `pyproject.toml`).
+- `xp.optimize.newton`: Newton's method or the secant method on many
+  independent scalar equations at once, with the steps of
+  `scipy.optimize.newton` for an array `x0`, on the array's backend (no host
+  copies, fixed shapes, one synchronization per iteration).
+- The fake CuPy has `cupyx.scipy`: SciPy behind the CuPy rules (host arrays
+  rejected, fake device arrays and proxy objects returned), so `xp.scipy` code
+  runs its CuPy path without a GPU. Every `cupyx.scipy` subpackage has only
+  the names the oldest supported CuPy (14.0.0) provides, so e.g. `special.jv`
+  or `sparse.csr_array` fails as on a GPU. `testing/cupyx_names.py` and
+  `tests/unit/test_cupyx_names.py` check these names against the installed
+  CuPy in the GPU CI.
+  `cupyx.empty_pinned`/`zeros_pinned` return NumPy arrays.
+- `xp.optimize.fsolve`, `root`, `minimize` and `xp.integrate.quad`, `odeint`
+  (`cupyx.scipy` has neither): SciPy on the host with SciPy's arguments, the
+  callbacks get their arrays on the backend of `x0`/`y0`, and results come
+  back on that backend.
+- `xp.scipy.linalg.solve_circulant` on the CuPy backend, which `cupyx.scipy`
+  lacks: SciPy's FFT solve and arguments, on the device.
+- Solvers guide: splines on the device with `xp.scipy.interpolate`, and
+  batched root finding.
 - Compiled Pyccel regression coverage for F-ordered arrays and column-block
   copy-back, run in CPU CI with fake CuPy and required compilation.
 - Publishing now requires CPU and GPU validation of the release commit, checks
   the built distributions, and smoke-tests the wheel in a fresh environment.
+- NumPy-format docstrings with runnable examples for the whole public API. The
+  API reference is generated from them (`docs/source/reference/`); the
+  hand-written `api.md` is now a short overview, and the CUDA headers have
+  their own page. CI checks the docstrings (ruff `D` rules, numpydoc
+  validation), runs their examples as doctests, and builds the docs with
+  warnings as errors. Docstring style: `docs/source/contributing.md`.
 
 ### Fixed
+- Splines and other objects of the fake `cupyx.scipy` can be copied with
+  `copy.copy` and `copy.deepcopy` (also inside a copied container), as real
+  CuPy splines can.
+- `xp.algorithms.segment_sum` and `SegmentPlan.sum` work on the fake CuPy: it
+  cannot compile the CUDA kernel, so the sum runs on the host buffers of the
+  fake arrays and the CuPy path of a program runs without a GPU.
 - The ordering guide identifies 0.6.3 as the first release preserving F order
   in CuPy-to-host conversions.
+- `CudaStruct.from_signature` accepts quoted pyccel annotations
+  (`markers: "float[:, :]"`) in modules with `from __future__ import annotations`.
 
 ## [0.6.3] - 2026-10-08
 

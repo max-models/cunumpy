@@ -99,6 +99,10 @@ https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
 | group arrays/scalars into one kernel argument | `xp.arguments.CudaArguments` (flattened), `xp.arguments.CudaStruct` (C struct), `xp.arguments.CudaStructArguments` (C struct as a class); host kernels take their own argument objects, the caller picks one per backend |
 | CUDA struct from a Pyccel argument class | `xp.arguments.CudaStruct.from_signature(Cls.__init__, "Name")`, `xp.arguments.write_cuda_header(...)` |
 | SciPy (sparse, sparse.linalg, fft, special, ndimage, ...) on either backend | `xp.scipy.<subpackage>.<name>` (SciPy or `cupyx.scipy`); `xp.scipy.special.available(name)` |
+| splines on the device | `xp.scipy.interpolate.UnivariateSpline`, `make_interp_spline`, `NdBSpline` (no `RectBivariateSpline`: `make_interp_spline` per axis + `NdBSpline`) |
+| circulant solve (FFT preconditioner) on the device | `xp.scipy.linalg.solve_circulant(c, b)` (cunumpy fill-in on CuPy, SciPy's arguments) |
+| one root/minimization/integral/ODE at setup with an `xp` callback using device data | `xp.optimize.fsolve`/`root`/`minimize`, `xp.integrate.quad`/`odeint` (SciPy on the host, callback args and results on `x0`'s backend) |
+| many independent scalar root problems (one per ray, per marker) | `xp.optimize.newton(func, x0_array, fprime=None)` (SciPy's array Newton/secant, on the device) |
 | chain of elementwise operations as one GPU kernel | `@xp.kernels.fuse` (`cupy.fuse` for CuPy arrays, plain call otherwise) |
 | PETSc solve on device arrays without copies | `xp.petsc.petsc_vec(array)` (CUDA/HIP petsc4py for CuPy arrays); `xp.synchronize()` around PETSc calls |
 | reduction inside a CUDA kernel (energy, max velocity) | `<cunumpy/reduce.cuh>`: `cunumpy_block_sum_to(out, v)`, `cunumpy_block_min/max`, `cunumpy_warp_sum` |
@@ -171,6 +175,9 @@ with xp.mpi.mpi_buffer(a) as buf:
 with xp.mpi.mpi_buffer(a, send=False, recv=True) as buf:
     ...  # array, or pinned staging copy
 xp.mpi.set_mpi_cuda_aware(True | False | None), xp.mpi.get_mpi_cuda_aware()
+xp.mpi.exchange(
+    comm, sends=[(send, dest, tag)], receives=[(recv, source, tag)]
+)  # waits for all transfers and GPU copy-back; MPI posting/wait errors abort comm
 xp.algorithms.segment_sum(
     values, keys, n_segments
 )  # out[k] = sum(values[keys == k]); keys < 0 dropped

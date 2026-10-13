@@ -109,9 +109,74 @@ def test_step_stays_on_device():
 
 The counter only sees transfers made through CuNumpy helpers. Forwarded backend
 operations such as `xp.asarray(host)`, raw `cupy.asarray(host)`,
-`device_array.get()`, `float(device_scalar)` and conversions inside other
-libraries are invisible to it; use `nsys` to find those (see [Timing and
-profiling](profiling.md)).
+`numpy.asarray(device_array)`, `device_array.get()` and conversions inside other
+libraries are invisible to it. So is `float(device_scalar)`, an implicit sync,
+with the real CuPy: it cannot be observed from Python (the fake CuPy of the
+[test helpers](../kernels/testing.md) records it as a `sync` event marked
+`[implicit]`). Use `nsys` or CuPy's profiling hooks to find those (see [Timing
+and profiling](profiling.md)).
+
+Besides the copies, the counter records `sync` events, where the host waited
+for the device (`xp.synchronize()`, the MPI helpers, the CUDA debug mode). They
+are listed in the report and counted in `counter.syncs`, not in `total`. The
+report marks copies the host did not wait for (`to_host_async()`,
+`HostStaging.copy()`) as `[async]`. Blocks can be nested, and
+`count_transfers(counter)` adds the events of another block to an existing
+counter, e.g. to accumulate over several calls.
+
+## Transfer rules per phase: `TransferBudget`
+
+A real program may copy in some phases (diagnostics, output) but not in others
+(the time step). `TransferBudget` counts the transfers per named phase and
+checks a rule for each:
+
+```python
+budget = xp.profiling.TransferBudget(started=False)
+model.integrate = budget.count("integrate")(model.integrate)  # a decorator
+...  # setup: not counted
+budget.start()
+for step in range(n_steps):
+    model.integrate(dt)
+    with budget.phase("output"):  # or a context
+        save(model)
+
+budget.require("integrate", allow={"to_host": {"max_nbytes": 8}}, calls=n_steps)
+budget.require("output", allow={"to_host": {"max_count": n, "max_total_bytes": b}})
+budget.check()  # AssertionError with budget.report() if a rule is broken
+```
+
+`phase(name)` yields the phase's `TransferCounter` (`budget[name]`); the events
+of a phase accumulate over its calls and `budget.calls[name]` counts the calls.
+Phases nest: an event is counted in the innermost phase only. With
+`started=False` phases run uncounted until `start()`, and again after `stop()`.
+
+`require()` allows the event kinds listed in `allow`, each with optional limits,
+and forbids every other kind except those in `ignore` (`device_copy` and `sync`
+by default). Next to the size and count limits, `blocking` and `implicit`
+require a value of the events' fields: `{"to_host": {"max_nbytes": 8,
+"blocking": False}}` allows only non-blocking scalar copies, and
+`{"sync": {"implicit": False}}` with `ignore=("device_copy",)` rejects the scalar
+reads of the fake CuPy. `calls` is the number of calls the phase must have had.
+`violations()` lists the broken rules with the offending events and where they
+happened, and `report()` shows every phase's events and the broken rules.
+
+## Read a value without waiting: `to_host_async`
+
+```python
+pending = xp.to_host_async(residual_norm)  # a device scalar; returns at once
+...  # queue the next iteration's kernels
+if pending.ready() and pending.result() < tol:
+    break
+```
+
+A convergence test read one iteration late needs no sync per iteration: the
+copy runs on its own stream into page-locked memory, after the work queued so
+far. `result()` returns a NumPy scalar for a 0-d array, else a NumPy array, and
+waits only if the copy has not finished; that wait is counted as a `sync`. On
+the NumPy backend, and on the fake CuPy, the value is copied at once and
+`ready()` is always true; on the fake CuPy the copy is still counted. For large
+arrays copied repeatedly, such as output snapshots, use `memory.HostStaging`
+(see [Particle codes](particle-codes.md)), which reuses its buffers.
 
 ## Build device arguments once: `as_device_array`
 

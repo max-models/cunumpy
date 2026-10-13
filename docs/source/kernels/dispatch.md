@@ -200,12 +200,18 @@ with xp.kernels.use_device_kernel_implementation(None):
 xp.kernels.set_device_kernel_implementation(None)  # restore automatic selection
 ```
 
-`CUNUMPY_DEVICE_KERNEL_IMPLEMENTATION=cuda` sets the same choice at import.
-Unsupported values raise `ValueError`. An explicit CUDA choice raises
+`CUNUMPY_DEVICE_KERNEL_IMPLEMENTATION=cuda` sets the same choice at import (the
+value is case-insensitive and stripped of whitespace; an unsupported value makes
+the import fail). The setter raises `ValueError` for unsupported values and
+keeps the previous setting. The getter reports the requested setting, so it
+returns `None` in automatic mode even when calls use CUDA. An explicit CUDA choice raises
 `LookupError` for a missing device implementation, including kernels configured
 with `missing_cuda="fallback"`. The default (`None`, or an unset/empty environment
-variable) preserves that fallback policy. This setting controls device dispatch;
-the array backend and host implementation are selected independently.
+variable) preserves that fallback policy. This setting controls the device
+dispatch of `Kernel` and `KernelCatalog` only: the array backend and host
+implementation are selected independently, and direct `CudaKernel` (or CuPy
+`RawKernel`) calls are not affected. Like the other selections it is global,
+not per thread.
 
 ## Compiled Pyccel host kernels
 
@@ -229,10 +235,18 @@ def compile_kernels(module):
 catalog = xp.kernels.KernelCatalog.from_package(
     __name__,
     host_suffix="_pyccel",  # push/push_pyccel.py next to push/push_cuda.cu
+    dispatch="arrays",  # see "Choosing the kernel by where the arrays are"
     compile_host=compile_kernels,
     host_fallback=NUMPY_VERSIONS,
 )
 ```
+
+Without `compile_host` the plain Python functions are called; without
+`host_fallback` a kernel whose compilation fails runs its uncompiled Python
+function, with a warning. `Kernel.from_folder()` takes `compile_host` too (pass
+a fallback there as `extra_implementations={"numpy": ...}`), and
+`CompiledHostKernel(module, name, compiler, fallback=...)` wraps a single host
+kernel by hand.
 
 `host_fallback` becomes each kernel's `"numpy"` implementation (see "Several
 host implementations" above); `catalog["push"].host_kernel.kernel.available("pyccel")`
@@ -263,7 +277,9 @@ catalog["gather"](host_positions, host_field, host_result)  # host kernel, also 
 
 The CUDA kernel runs if any top-level argument is on the GPU: a CuPy array, or
 a CUDA argument object (`CudaArguments`, `CudaStructArguments`, a struct
-value). Host arguments go to the host function directly, without conversion.
+value). Host arguments go to the host function directly: the call bypasses the
+device-array conversion of `PyccelKernel`, so it costs nothing extra. On device
+arguments without a CUDA kernel, `missing_cuda` applies as usual.
 
 The arguments of one call must then all be on one side, with the dtype and
 layout the kernels take. `xp.kernels.as_kernel_array(value, like, dtype)` brings an

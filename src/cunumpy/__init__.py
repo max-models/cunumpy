@@ -1,3 +1,16 @@
+"""NumPy and CuPy behind one namespace.
+
+``import cunumpy as xp`` gives the functions of the active backend's
+``array-api-compat`` module (``xp.zeros``, ``xp.linalg``, ...), replaced when
+the backend changes, plus backend selection, array inspection and conversion,
+host execution helpers (:func:`host_call`), and :data:`scipy`. Everything else
+is in a submodule (:mod:`cunumpy.kernels`, :mod:`cunumpy.cuda`, ...). See
+:doc:`/api` for the module layout and :doc:`/guides/backends`.
+
+``xp.numpy_backend`` and ``xp.cupy_backend`` are booleans telling whether the
+active backend is NumPy or CuPy (prefer :func:`get_backend` for the name).
+"""
+
 # cunumpy/__init__.py
 import re as _re
 from importlib.metadata import PackageNotFoundError, version
@@ -6,9 +19,11 @@ from cunumpy import (
     algorithms,
     arguments,
     cuda,
+    integrate,
     kernels,
     memory,
     mpi,
+    optimize,
     petsc,
     profiling,
     rng,
@@ -18,10 +33,12 @@ from cunumpy._host import evaluate_on_host, host_call, setup_on_host
 from cunumpy._scipy_backend import scipy
 from cunumpy._staging import to_host_async
 from cunumpy.xp import (
+    MIN_CUPY_VERSION,
     as_device_array,
     assert_same_backend,
     backend_info,
     cupy_available,
+    cupy_version_supported,
     default_float_dtype,
     get_array_backend,
     get_array_module,
@@ -38,6 +55,7 @@ from cunumpy.xp import (
 )
 
 try:
+    #: The installed version of cunumpy; ``"0.0.0+unknown"`` without package metadata.
     __version__ = version("cunumpy")
 except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
@@ -48,18 +66,27 @@ def _version_key(text: str) -> tuple[int, ...]:
 
 
 def require_version(minimum: str) -> None:
-    """Raise ``ImportError`` if this cunumpy is older than `minimum`.
+    """Raise ``ImportError`` if the installed cunumpy is older than `minimum`.
 
-    For projects that depend on a feature of a given release, as a clearer
-    error than an ``AttributeError`` later::
+    A clearer error than a later ``AttributeError`` for code that needs a
+    feature of a given release. Only the numeric part is compared (``0.4.0``
+    and ``0.4.0.dev1`` are equal); nothing is checked when the installed
+    version is unknown (cunumpy not installed as a package, ``xp.__version__``
+    is then ``"0.0.0+unknown"``).
 
-        import cunumpy as xp
+    Parameters
+    ----------
+    minimum : str
+        The oldest acceptable version, e.g. ``"0.4.0"``.
 
-        xp.require_version("0.4.0")
+    Raises
+    ------
+    ImportError
+        If the installed version is older than `minimum`.
 
-    Only the numeric part of the versions is compared (``0.4.0`` and
-    ``0.4.0.dev1`` compare equal). Nothing is checked when the installed
-    version is unknown (cunumpy not installed as a package).
+    Examples
+    --------
+    >>> xp.require_version("0.4.0")
     """
     if __version__.startswith("0.0.0+unknown"):
         return
@@ -71,6 +98,7 @@ def require_version(minimum: str) -> None:
 
 
 __all__ = [
+    "MIN_CUPY_VERSION",
     "__version__",
     "algorithms",
     "arguments",
@@ -80,18 +108,21 @@ __all__ = [
     "cuda",
     "cupy_available",
     "cupy_backend",
+    "cupy_version_supported",
     "default_float_dtype",
     "evaluate_on_host",
     "get_array_backend",
     "get_array_module",
     "get_backend",
     "host_call",
+    "integrate",
     "is_cpu",
     "is_gpu",
     "kernels",
     "memory",
     "mpi",
     "numpy_backend",
+    "optimize",
     "petsc",
     "profiling",
     "require_version",
@@ -111,12 +142,7 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    """Resolve names that are not in the namespace: cunumpy.<name> -> cunumpy.xp.<name>.
-
-    The public names of the active backend are copied into this namespace (see
-    `_sync_backend_namespace`), so this only runs for names missing from the
-    backend's ``__all__`` and for ``numpy_backend``/``cupy_backend``.
-    """
+    """Resolve ``numpy_backend``, ``cupy_backend`` and backend names not copied here."""
     if name == "numpy_backend":
         return xp.numpy_backend
     if name == "cupy_backend":

@@ -58,8 +58,10 @@ Importing `mpi4py.MPI` initializes MPI by default. Do it after step 1.
 To run the same program serially without starting MPI, get the module from
 `xp.mpi.get_mpi()` instead of importing it: it returns `mpi4py.MPI` when the
 process was started by `mpirun`/`mpiexec`/`srun`, and otherwise a serial
-stand-in whose `COMM_WORLD` has size 1 (see the
-[API reference](../api.md)):
+stand-in whose `COMM_WORLD` has size 1. `get_mpi()`, `launched_under_mpi()`,
+`local_rank()` and the serial stand-in come from
+[maybempi](https://max-models.github.io/maybempi/), which documents them, and
+are re-exported in `xp.mpi`:
 
 ```python
 MPI = xp.mpi.get_mpi()
@@ -130,11 +132,42 @@ with (
 A host array is yielded as it is. A device array is yielded as it is (after
 `synchronize_for_mpi`) when MPI is CUDA-aware, and otherwise replaced by a
 pinned host copy: filled from the device before the block when `send=True`,
-copied back into the device array after the block when `recv=True`. The
-copies are counted by `count_transfers()`, so a GPU run with a plain MPI
-build is visible in the transfer report. Without a recorded answer (no
+copied back into the device array after the block when `recv=True`. A
+receive-only device buffer also waits for preceding device work before MPI
+writes into the host copy. The copies are counted by `count_transfers()`, so a
+GPU run with a plain MPI build is visible in the transfer report. To reuse
+pinned staging buffers instead of allocating them per call, pass an
+`xp.mpi.MPIStaging` (see [Execution helpers](execution-helpers.md)). Without a recorded answer (no
 `mpi_is_cuda_aware()` call and no `set_mpi_cuda_aware()`), a device array
 raises instead of guessing.
+
+### Exchange several buffers: `exchange`
+
+For a group of point-to-point transfers, `exchange()` manages the buffer
+contexts and waits for all requests internally:
+
+```python
+xp.mpi.exchange(
+    comm,
+    sends=[(send_r, right, 0), (send_l, left, 1)],
+    receives=[(recv_l, left, 0), (recv_r, right, 1)],
+)
+# recv_l and recv_r are ready, including any copies back to the GPU.
+```
+
+Each entry is `(array, peer_rank, tag)`. The helper prepares every buffer,
+posts all receives followed by all sends, and waits before closing any
+context. `cuda_aware=` has the same meaning as for `mpi_buffer()`. Each
+device receive slice gets its own staging buffer when staging is needed.
+Receive buffers must not overlap each other or send buffers; buffers passed
+directly to MPI must be contiguous. Empty lists do nothing, while zero-length
+arrays still send or receive messages and need matching peer operations.
+
+Preparation errors propagate before any local requests are posted. An error
+while posting or waiting aborts the communicator with `comm.Abort(1)`, because
+outstanding MPI requests may still access the buffers. On success the helper
+returns `None`; use `mpi_buffer()` directly when you need request statuses or
+control over asynchronous progress.
 
 ## Reproducible random numbers
 

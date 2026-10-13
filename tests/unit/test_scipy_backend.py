@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 import cunumpy as xp
+from cunumpy import _linalg
 from cunumpy import _scipy_backend as scipy_backend
 from cunumpy._scipy_backend import SUBMODULES, ScipyNamespace
 
@@ -14,6 +15,10 @@ from cunumpy._scipy_backend import SUBMODULES, ScipyNamespace
 @pytest.fixture
 def fake_cupyx(monkeypatch):
     """A fake `cupyx.scipy` with `special.erf` and `sparse.linalg.cg`, as backend."""
+    # hide the real cupyx (imported by earlier tests on a GPU): its other
+    # subpackages, e.g. cupyx.scipy.ndimage, would stay importable
+    for name in [n for n in sys.modules if n.split(".")[0] == "cupyx"]:
+        monkeypatch.delitem(sys.modules, name)
     modules = {}
     for name in ("cupyx", "cupyx.scipy", "cupyx.scipy.special", "cupyx.scipy.sparse"):
         modules[name] = types.ModuleType(name)
@@ -83,6 +88,21 @@ def test_cupy_backend_forwards_to_cupyx(fake_cupyx):
     assert not xp.scipy.available("ndimage")
     with pytest.raises(ImportError, match="needs cupyx.scipy.ndimage"):
         xp.scipy.ndimage.resolve()
+
+
+def test_cupy_backend_fills_in_missing_functions(fake_cupyx):
+    modules = {"cupyx.scipy.linalg": types.ModuleType("cupyx.scipy.linalg")}
+    fake_cupyx["cupyx.scipy"].linalg = modules["cupyx.scipy.linalg"]
+    sys.modules.update(modules)
+    try:
+        assert xp.scipy.linalg.solve_circulant is _linalg.solve_circulant
+        assert xp.scipy.linalg.available("solve_circulant")
+        assert "solve_circulant" in dir(xp.scipy.linalg)
+        # a cupyx version would win over the fill
+        modules["cupyx.scipy.linalg"].solve_circulant = "device solve_circulant"
+        assert xp.scipy.linalg.solve_circulant == "device solve_circulant"
+    finally:
+        del sys.modules["cupyx.scipy.linalg"]
 
 
 def test_backend_switch_takes_effect_immediately(fake_cupyx, monkeypatch):

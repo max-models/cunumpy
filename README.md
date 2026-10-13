@@ -299,8 +299,9 @@ positional argument 0 is written, avoiding unnecessary copy-back for
 read-only inputs. For a keyword call, declare the keyword name, such as
 `outputs=("out",)`. A wrong declaration can leave GPU output values stale.
 The wrapper can also traverse arrays nested in lists, tuples, dictionaries,
-and selected application objects; see the full [API reference](docs/source/api.md)
-for `object_modules`, `is_array`, aliasing, and output declarations.
+and selected application objects; see [Host kernels with GPU
+data](docs/source/kernels/pyccel-kernel.md) for `object_modules`, `is_array`,
+aliasing, and output declarations.
 
 ## Write CUDA kernels next to host kernels
 
@@ -435,8 +436,9 @@ Launches can be 1D to 3D (`n_threads=(nx, ny)`, `block_size=(16, 16)`) or use
 an explicit `grid`, with dynamic shared memory (`shared_mem`) and a `stream`.
 C++ function templates are instantiated with `template_args`, and
 `CudaKernelVariants` caches kernels whose source is generated per variant
-(e.g. per dimension and dtype). See the [API reference](docs/source/api.md) for
-details.
+(e.g. per dimension and dtype). See [Writing CUDA
+kernels](docs/source/kernels/cuda-kernel.md) and [CUDA
+headers](docs/source/kernels/cuda-headers.md) for details.
 
 Kernels run asynchronously, so a CUDA error (an illegal memory access, say)
 normally surfaces at a later `.get()` or MPI call, far from the kernel that
@@ -523,8 +525,9 @@ published at <https://max-models.github.io/cunumpy/>:
 * [Worked examples](docs/source/examples/index.md),
   [best practices](docs/source/best-practices.md),
   [troubleshooting](docs/source/troubleshooting.md),
-  [Pyodide](docs/source/pyodide.md) and the
-  [API reference](docs/source/api.md).
+  [Pyodide](docs/source/pyodide.md), the
+  [API overview](docs/source/api.md) and the
+  [API reference](docs/source/reference/index.md).
 
 ### For AI coding assistants
 
