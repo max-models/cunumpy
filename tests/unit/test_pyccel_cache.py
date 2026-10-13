@@ -6,6 +6,7 @@ import os
 import stat
 import sys
 import tempfile
+from types import SimpleNamespace
 
 import pytest
 
@@ -44,7 +45,9 @@ def make_module(tmp_path):
 def cache(tmp_path, monkeypatch):
     cache = xp.kernels.PyccelCache("cunumpy-test")
     monkeypatch.setenv(cache.cache_env, str(tmp_path / "cache"))
-    monkeypatch.delenv(cache.openmp_env, raising=False)
+    # serial builds: these tests are about the cache, and a runner may have no
+    # OpenMP runtime (macOS without Homebrew's libomp)
+    monkeypatch.setenv(cache.openmp_env, "0")
     return cache
 
 
@@ -88,9 +91,9 @@ def test_key_changes_with_the_source_and_the_openmp_setting(
     key = cache.build_key(module)
     assert cache.build_key(module) == key
     assert cache.build_key(module, "fortran") != key
-    monkeypatch.setenv(cache.openmp_env, "0")
+    monkeypatch.setenv(cache.openmp_env, "1")
     assert cache.build_key(module) != key
-    monkeypatch.delenv(cache.openmp_env)
+    monkeypatch.setenv(cache.openmp_env, "0")
     edited = make_module(SOURCE.replace("1.0", "2.0"), name="tiny_kernel_edited")
     edited.__name__ = module.__name__  # same name, other source
     assert cache.build_key(edited) != key
@@ -125,6 +128,54 @@ def test_compiles_once_and_reuses_the_build(make_module, cache, monkeypatch):
     assert later(module).add_one(2.0) == 3.0
 
 
+def test_no_lock_files_are_left_in_the_working_directory(
+    make_module, cache, tmp_path, monkeypatch
+):
+    # Pyccel writes .lock_acquisition.lock (and stc.lock for kernels that use
+    # its STC library) to the directory it runs in
+    pytest.importorskip("pyccel")
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    module = make_module()
+    assert cache.compile(module).add_one(1.0) == 2.0
+    assert list(work.iterdir()) == []
+
+
+@pytest.mark.parametrize(("openmp", "flag"), [("1", True), ("0", False)])
+def test_pyccel_runs_in_the_staging_folder_with_the_openmp_flag(
+    make_module, cache, monkeypatch, openmp, flag
+):
+    # no compiler needed: the command is captured instead of run
+    pytest.importorskip("pyccel")
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=1, stdout="", stderr="captured")
+
+    monkeypatch.setattr(_pyccel_cache.subprocess, "run", fake_run)
+    monkeypatch.setenv(cache.openmp_env, openmp)
+    with pytest.raises(RuntimeError, match="captured"):
+        cache.compile(make_module())
+    ((command, kwargs),) = calls
+    assert ("--openmp" in command) is flag
+    staging = kwargs["cwd"]
+    assert staging.is_absolute() and staging.parent == cache.cache_root()
+    assert not staging.exists()  # removed after the failed build
+
+
+def test_a_relative_cache_directory_works(make_module, tmp_path, monkeypatch):
+    pytest.importorskip("pyccel")
+    cache = xp.kernels.PyccelCache("cunumpy-test")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(cache.cache_env, "relative/cache")
+    monkeypatch.setenv(cache.openmp_env, "0")
+    module = make_module()
+    assert cache.compile(module).add_one(1.0) == 2.0
+    assert any((tmp_path / "relative" / "cache").iterdir())
+
+
 @pytest.mark.skipif(
     not hasattr(os, "geteuid") or os.geteuid() == 0,
     reason="root ignores directory permissions",
@@ -136,6 +187,7 @@ def test_unwritable_cache_builds_in_the_temp_dir(tmp_path, monkeypatch, make_mod
     readonly.mkdir()
     readonly.chmod(stat.S_IRUSR | stat.S_IXUSR)
     monkeypatch.setenv(cache.cache_env, str(readonly / "kernels"))
+    monkeypatch.setenv(cache.openmp_env, "0")
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "tmp"))
     (tmp_path / "tmp").mkdir()
     module = make_module()

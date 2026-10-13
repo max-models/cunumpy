@@ -182,6 +182,23 @@ class PyccelCache:
         The module's own source, the language, the OpenMP setting, the Pyccel
         and Python versions and the platform. Modules the kernel imports are not
         part of it: edit the kernel (or clear the cache) after changing one.
+
+        Parameters
+        ----------
+        module : module
+            The module to build.
+        language : str, optional
+            Pyccel's target language; by default the instance's.
+
+        Returns
+        -------
+        str
+            20 hexadecimal digits, the suffix of the build's directory name.
+
+        Raises
+        ------
+        ImportError
+            If Pyccel is not installed.
         """
         digest = hashlib.sha256()
         for part in (
@@ -215,7 +232,12 @@ class PyccelCache:
         ]
         if self._openmp_for(module):
             command.append("--openmp")
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        # Pyccel writes lock files (``.lock_acquisition.lock``, ``stc.lock``) to
+        # the directory it runs in: run it in the staging folder, removed after
+        # the build, so they never land in the caller's working directory.
+        result = subprocess.run(
+            command, capture_output=True, text=True, check=False, cwd=staging
+        )
         if result.returncode != 0:
             raise RuntimeError(
                 f"{' '.join(command)} failed ({result.returncode}):\n"
@@ -260,7 +282,10 @@ class PyccelCache:
         target = next((root / name for root in roots if _writable(root)), None)
         if target is None:
             raise PermissionError(f"No writable kernel cache among {roots}")
-        staging = Path(tempfile.mkdtemp(prefix=f".{stem}-", dir=target.parent))
+        # absolute: Pyccel runs inside it, so a relative cache path must not move
+        staging = Path(
+            tempfile.mkdtemp(prefix=f".{stem}-", dir=target.parent)
+        ).absolute()
         try:
             build = self._build(module, language, staging)
             try:

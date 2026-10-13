@@ -35,8 +35,10 @@ def _skip_without_cupy():
 def kernels(tmp_path_factory):
     """Compile `pyccel_kernels.py` with pyccel and return the compiled module.
 
-    The source is copied into a temporary directory first so that pyccel's
-    build artefacts (`__pyccel__/`) never land in the repository.
+    The source is copied into a temporary directory, and pyccel runs there, so
+    that its build artefacts (`__pyccel__/`) and the lock files it writes to the
+    working directory (`.lock_acquisition.lock`, `stc.lock`) never land in the
+    repository.
     """
     require_pyccel = os.environ.get("CUNUMPY_REQUIRE_PYCCEL", "").lower() in {
         "1",
@@ -61,7 +63,9 @@ def kernels(tmp_path_factory):
     spec.loader.exec_module(module)
 
     try:
-        return pyccel.epyccel(module, language="c")
+        with pytest.MonkeyPatch.context() as patch:
+            patch.chdir(build_dir)
+            return pyccel.epyccel(module, language="c")
     except Exception as exc:
         if require_pyccel:
             raise
