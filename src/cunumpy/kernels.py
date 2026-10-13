@@ -12,9 +12,14 @@ Which host implementation runs is set with :func:`set_host_kernel_implementation
 or :func:`use_host_kernel_implementation` (one of ``HOST_IMPLEMENTATIONS``);
 device dispatch can require CUDA with :func:`set_device_kernel_implementation`
 or :func:`use_device_kernel_implementation` (``DEVICE_IMPLEMENTATIONS``).
-:func:`as_kernel_array` and :func:`kernel_output` bring the arguments of a
-kernel to the side of its main array. :func:`fuse` turns an elementwise
+:func:`as_kernel_array` and :func:`kernel_output` (several outputs at once:
+:func:`kernel_outputs`) bring the arguments of a kernel to the side of its
+main array. :func:`fuse` turns an elementwise
 function into one CuPy kernel. See :doc:`/kernels/overview`.
+
+A :class:`PyccelCache` compiles Pyccel kernel modules on first use and keeps
+the builds on disk, keyed on their source, for later processes: pass it as
+``compile_host`` (see :doc:`/kernels/dispatch`).
 
 A :class:`MetalKernel` runs a Metal Shading Language kernel on the GPU of an
 Apple silicon Mac through MLX (``pip install 'cunumpy[metal]'``), on NumPy
@@ -39,6 +44,7 @@ from cunumpy._kernel import (
     get_device_kernel_implementation,
     get_host_kernel_implementation,
     kernel_output,
+    kernel_outputs,
     outputs_from_annotations,
     set_device_kernel_implementation,
     set_host_kernel_implementation,
@@ -46,6 +52,7 @@ from cunumpy._kernel import (
     use_host_kernel_implementation,
 )
 from cunumpy._metal_kernel import MetalKernel, metal_available
+from cunumpy._pyccel_cache import PyccelCache
 
 __all__ = [
     "DEVICE_IMPLEMENTATIONS",
@@ -57,12 +64,14 @@ __all__ = [
     "Kernel",
     "KernelCatalog",
     "MetalKernel",
+    "PyccelCache",
     "PyccelKernel",
     "as_kernel_array",
     "fuse",
     "get_device_kernel_implementation",
     "get_host_kernel_implementation",
     "kernel_output",
+    "kernel_outputs",
     "metal_available",
     "outputs_from_annotations",
     "set_device_kernel_implementation",
