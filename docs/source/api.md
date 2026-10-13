@@ -44,7 +44,7 @@ The submodules are named so that they do not hide a NumPy name (`rng`, not
 | Submodule | Backends | Contents |
 |---|---|---|
 | [`cunumpy`](reference/top-level.md) | both | NumPy/CuPy namespace, backend selection, array inspection and conversion, `as_device_array`, `to_host_async`, `synchronize`, `host_call`, `evaluate_on_host`, `setup_on_host`, `scipy`, `require_version` |
-| [`cunumpy.kernels`](reference/kernels.md) | both | `Kernel`, `KernelCatalog`, `PyccelKernel`, `CudaKernel`, `CudaKernelVariants`, `MetalKernel`, `metal_available`, host implementations, `as_kernel_array`, `kernel_output`, `fuse` |
+| [`cunumpy.kernels`](reference/kernels.md) | both | `Kernel`, `KernelCatalog`, `PyccelKernel`, `CudaKernel`, `CudaKernelVariants`, `MetalKernel`, `metal_available`, `PyccelCache`, host implementations, `as_kernel_array`, `kernel_output`, `kernel_outputs`, `fuse` |
 | [`cunumpy.arguments`](reference/arguments.md) | CUDA only | `CudaArguments`, `CudaStruct`, `CudaStructArguments`, `CudaStructValue`, `write_cuda_header` |
 | [`cunumpy.cuda`](reference/cuda.md) | CUDA only | device selection and memory, `stream`, streams/events, `pin_memory`, debug mode, CUDA headers and source tools (`cuda_include_dir`, `parse_cuda_signature`) |
 | [`cunumpy.rng`](reference/rng.md) | both | `random_streams`, `get_rng`, `philox_*` |

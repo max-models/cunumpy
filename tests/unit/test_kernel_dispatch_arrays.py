@@ -658,6 +658,38 @@ def test_strided_without_dtype_keeps_any_dtype():
     assert xp.kernels.as_kernel_array(view, like=np.zeros(1), strided=True) is view
 
 
+def test_kernel_outputs_yields_one_buffer_per_output():
+    grid = np.zeros(3)
+    direct = np.zeros(4)
+    strided = np.zeros((2, 8))[:, :5]
+    converted = np.zeros(4, dtype=np.float32)
+    with xp.kernels.kernel_outputs(
+        direct, strided, converted, like=grid, dtype=float, strided=True
+    ) as (a, b, c):
+        assert a is direct and b is strided  # written directly
+        assert c is not converted and c.dtype == np.float64
+        a[:] = 1.0
+        b[:] = 2.0
+        c[:] = 3.5
+    np.testing.assert_array_equal(direct, 1.0)
+    np.testing.assert_array_equal(strided, 2.0)
+    np.testing.assert_array_equal(converted, np.full(4, 3.5, dtype=np.float32))
+
+
+def test_kernel_outputs_keeps_the_outputs_after_an_error():
+    out = np.zeros(4, dtype=np.float32)
+    outputs = xp.kernels.kernel_outputs(out, like=np.zeros(1), dtype=float)
+    with pytest.raises(RuntimeError), outputs as (buffer,):
+        buffer[:] = 1.0
+        raise RuntimeError("kernel failed")
+    np.testing.assert_array_equal(out, 0.0)
+
+
+def test_kernel_outputs_without_outputs_yields_an_empty_tuple():
+    with xp.kernels.kernel_outputs(like=np.zeros(1)) as buffers:
+        assert buffers == ()
+
+
 def test_kernel_output_writes_into_its_target():
     grid = np.zeros(3)
     out = np.zeros(4)
@@ -691,3 +723,16 @@ def test_kernel_arrays_follow_a_device_grid():
         assert xp.is_gpu(buffer)
         buffer[...] = 2.0
     assert host_out.tolist() == [2.0] * 4
+
+
+def test_one_column_selected_by_a_mask_gets_c_order_strides():
+    # nodes[:, mask] with one True: shape (2, 1), strides (8, 16); NumPy calls
+    # it C-contiguous, but Pyccel rejects the length-1 axis's larger stride
+    nodes = np.zeros((2, 5, 4))
+    mask = np.zeros((5, 4), dtype=bool)
+    mask[2, 1] = True
+    view = nodes[:, mask]
+    assert view.flags.c_contiguous and view.strides == (8, 16)
+    converted = xp.kernels.as_kernel_array(view, like=view, dtype=float)
+    assert converted.strides == (8, 8)
+    assert np.shares_memory(converted, view)  # a view, not a copy

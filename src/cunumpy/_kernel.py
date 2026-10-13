@@ -950,7 +950,16 @@ def _with_unit_axis_strides(array: np.ndarray) -> np.ndarray:
     extent = array.itemsize
     for axis in reversed(range(array.ndim)):
         if array.shape[axis] == 1:
-            strides[axis] = max(strides[axis], extent)
+            # Any stride is valid for a length-1 axis, but Pyccel's C-order check
+            # wants each stride at least the extent of the axes inside it. Inside
+            # a longer axis, use exactly the C stride, so that the outer stride
+            # (e.g. 8 in a (2, 1) array with strides (8, 16)) still covers it;
+            # a leading length-1 axis may keep a larger stride (a row of a
+            # wider array, ``storage[1:2, :n]``).
+            if any(length > 1 for length in array.shape[:axis]):
+                strides[axis] = extent
+            else:
+                strides[axis] = max(strides[axis], extent)
         else:
             extent = strides[axis] * array.shape[axis]
     if tuple(strides) == array.strides:
@@ -1052,6 +1061,18 @@ def _same_memory(buffer: Any, out: Any) -> bool:
     )
 
 
+def _copy_back(buffer: Any, out: Any) -> None:
+    """Write `buffer` into `out`, on its own side, unless they share their memory."""
+    if _same_memory(buffer, out):
+        return
+    if is_gpu(out) and not is_gpu(buffer):
+        out[...] = to_cupy(buffer)
+    elif not is_gpu(out) and is_gpu(buffer):
+        out[...] = to_numpy(buffer)
+    else:
+        out[...] = buffer
+
+
 class _KernelOutput:
     """The context manager of :func:`kernel_output` (a class: cheaper than a generator)."""
 
@@ -1070,16 +1091,8 @@ class _KernelOutput:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        if exc_type is not None:
-            return
-        buffer, out = self._buffer, self._out
-        if not _same_memory(buffer, out):
-            if is_gpu(out) and not is_gpu(buffer):
-                out[...] = to_cupy(buffer)
-            elif not is_gpu(out) and is_gpu(buffer):
-                out[...] = to_numpy(buffer)
-            else:
-                out[...] = buffer
+        if exc_type is None:
+            _copy_back(self._buffer, self._out)
 
 
 def kernel_output(
@@ -1116,6 +1129,73 @@ def kernel_output(
     array([1.5, 1.5], dtype=float32)
     """
     return _KernelOutput(out, as_kernel_array(out, like, dtype, strided=strided))
+
+
+class _KernelOutputs:
+    """The context manager of :func:`kernel_outputs`."""
+
+    __slots__ = ("_buffers", "_outs")
+
+    def __init__(self, outs: tuple[Any, ...], buffers: tuple[Any, ...]) -> None:
+        self._outs = outs
+        self._buffers = buffers
+
+    def __enter__(self) -> tuple[Any, ...]:
+        return self._buffers
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        if exc_type is None:
+            for buffer, out in zip(self._buffers, self._outs, strict=True):
+                _copy_back(buffer, out)
+
+
+def kernel_outputs(
+    *outs: Any, like: Any, dtype: Any = None, strided: bool = False
+) -> _KernelOutputs:
+    """Provide the output buffers of several arrays in one block.
+
+    As :func:`~cunumpy.kernels.kernel_output` for each of `outs`, with one
+    context manager for all: cheaper for a kernel that writes several arrays,
+    called at every step. Each buffer is its array itself if
+    :func:`~cunumpy.kernels.as_kernel_array` takes it unchanged, else a
+    converted copy written back into the array when the block ends without an
+    error.
+
+    Parameters
+    ----------
+    *outs : array
+        The arrays the kernel should write.
+    like : array
+        A CuPy array for a device kernel, anything else for a host kernel.
+    dtype : dtype, optional
+        Required dtype of every buffer; by default any.
+    strided : bool, optional
+        As for :func:`~cunumpy.kernels.as_kernel_array`. Default False.
+
+    Returns
+    -------
+    context manager
+        Yields the tuple of buffers to pass to the kernel, in the order of
+        `outs`.
+
+    Examples
+    --------
+    >>> x = np.zeros(2)
+    >>> counts = np.zeros(2, dtype=np.float32)
+    >>> with xp.kernels.kernel_outputs(x, counts, like=x, dtype=float) as (a, b):
+    ...     a[:] = 1.0  # x itself
+    ...     b[:] = 2.5  # a float64 copy, written back into counts
+    >>> x, counts
+    (array([1., 1.]), array([2.5, 2.5], dtype=float32))
+    """
+    return _KernelOutputs(
+        outs, tuple(as_kernel_array(out, like, dtype, strided=strided) for out in outs)
+    )
 
 
 _SCALAR_ANNOTATIONS = {"int", "float", "bool", "complex", "str"}

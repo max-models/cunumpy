@@ -129,6 +129,7 @@ Some convenience helpers deliberately require C order:
 | `xp.as_device_array` | Returns a C-contiguous device array, copying if needed. |
 | `xp.kernels.as_kernel_array` | Returns a C-contiguous array on the side of `like`; with `strided=True`, also a NumPy array in C order with gaps, unchanged. |
 | `xp.kernels.kernel_output` | Yields a C-contiguous working buffer (with `strided=True`, also a NumPy output in C order with gaps) and copies updates back into the original output when needed. |
+| `xp.kernels.kernel_outputs` | `kernel_output` for several outputs in one block: yields a tuple of buffers. |
 
 "C order with gaps" means positive strides, each at least the extent of the next
 axis: `a[:, :n]`, `a[::2]` or `a[:, ::2]` of a C-contiguous `a`. Pyccel's

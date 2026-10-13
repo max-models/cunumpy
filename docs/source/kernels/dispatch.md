@@ -223,14 +223,11 @@ version when that fails (no Pyccel, no compiler):
 
 ```python
 import cunumpy as xp
-import pyccel
 
 from my_sim.kernels.numpy_versions import NUMPY_VERSIONS  # {"push": push_numpy, ...}
 
-
-def compile_kernels(module):
-    return pyccel.epyccel(module, language="c")  # add a cache in real code
-
+# builds once with `pyccel compile`, kept in ~/.cache/my-sim/kernels for later runs
+compile_kernels = xp.kernels.PyccelCache("my-sim")
 
 catalog = xp.kernels.KernelCatalog.from_package(
     __name__,
@@ -253,9 +250,30 @@ host implementations" above); `catalog["push"].host_kernel.kernel.available("pyc
 reports whether the compiled version builds, and `catalog["push"].selected()`
 which version runs. To test the path of a machine without Pyccel, run the code
 inside `with xp.kernels.use_host_kernel_implementation("numpy"):` (or set
-`CUNUMPY_HOST_KERNEL_IMPLEMENTATION=numpy` for a whole run). Note that `epyccel` compiles again on every call; a
-code that compiles at run time usually keeps the builds in an on-disk cache
-keyed on the module source, so that only the first run after an edit compiles.
+`CUNUMPY_HOST_KERNEL_IMPLEMENTATION=numpy` for a whole run).
+
+`epyccel` compiles again on every call, in every process. `PyccelCache(name)`
+compiles a module once with the `pyccel compile` command and keeps the build
+on disk, keyed on the module source, the OpenMP setting, the Pyccel and Python
+versions and the platform, so only the first run after an edit compiles:
+
+- builds go to `~/.cache/<name>/kernels`, or the directory in
+  `<NAME>_KERNEL_CACHE`; if that is not writable, to `<tmp>/<name>-kernels`;
+- modules are built with OpenMP; `<NAME>_OPENMP=0` builds them serial, except
+  modules that call the OpenMP runtime;
+- builds are published with an atomic rename, so MPI ranks compiling the same
+  module on a cold cache never load a partial build;
+- the key covers the module's own source only: after editing a module the
+  kernel imports, edit the kernel or clear the cache.
+
+`<NAME>` is the name in upper case with `-` and `.` replaced by `_` (pass
+`env_prefix=` to choose it). To build every kernel before a run, for example
+before starting MPI ranks, load the compiled version of each:
+
+```python
+for name in catalog:
+    catalog[name].host_kernel.kernel.get("pyccel")
+```
 
 Packages that compile their kernels at install time with the `pyccel` command
 do not need `compile_host`: the compiled modules are imported like the Python
@@ -293,6 +311,15 @@ from functools import partial
 convert = partial(xp.kernels.as_kernel_array, like=field, dtype=float)
 with xp.kernels.kernel_output(result, like=field, dtype=float) as buffer:
     catalog["gather"](convert(positions), convert(field), buffer, n_threads=n)
+```
+
+For a kernel that writes several arrays, `xp.kernels.kernel_outputs(*outs, like=...,
+dtype=...)` does the same for all of them in one block, which is cheaper at every
+step than nested `kernel_output` blocks:
+
+```python
+with xp.kernels.kernel_outputs(pos, vel, like=field, dtype=float) as (p, v):
+    catalog["push"](p, v, convert(field), dt)
 ```
 
 Pyccel host kernels also take arrays in C order with gaps, such as the stored

@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `xp.kernels.kernel_outputs(*outs, like=..., dtype=..., strided=...)`: the
+  buffers of several kernel outputs in one block, each written back into its
+  array (as `kernel_output` does) when the block ends without an error.
+- `xp.kernels.PyccelCache(name)`: compiles a Pyccel kernel module once with
+  `pyccel compile` and keeps the build on disk (`~/.cache/<name>/kernels`, or
+  `<NAME>_KERNEL_CACHE`), keyed on its source, the OpenMP setting
+  (`<NAME>_OPENMP`), the Pyccel and Python versions and the platform; a
+  temporary directory if the cache is not writable, and an atomic publish for
+  concurrent builders. Callable, so it can be the `compile_host` of
+  `Kernel.from_folder` and `KernelCatalog.from_package`.
 - Supported CuPy versions: 14.0 or newer (`xp.MIN_CUPY_VERSION`,
   `xp.cupy_version_supported`); an older CuPy warns when the CuPy backend is
   first checked, and `backend_info()` reports the minimum. The GPU CI runs the
@@ -45,6 +55,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   warnings as errors. Docstring style: `docs/source/contributing.md`.
 
 ### Fixed
+- `as_kernel_array` gives a length-1 axis inside a longer one exactly the
+  C-order stride: `nodes[:, mask]` with a single selected column (shape
+  `(2, 1)`, strides `(8, 16)`) is C-contiguous to NumPy but was rejected by
+  Pyccel's order check.
 - Splines and other objects of the fake `cupyx.scipy` can be copied with
   `copy.copy` and `copy.deepcopy` (also inside a copied container), as real
   CuPy splines can.
