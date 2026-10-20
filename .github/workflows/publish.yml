@@ -6,17 +6,14 @@ on:
       - main
 
 jobs:
-  # Local reusable workflows check out this push's commit. Main validation is
-  # invoked here, so publishing cannot race independent CPU/GPU workflows.
+  # The local reusable workflow checks out this push's commit, so publishing cannot race the
+  # CPU tests. The GPU tests run on devel and on pull requests (gpu_ci_trigger.yml), not here:
+  # they are slow and need the GitLab runner, which a release should not wait for.
   cpu-tests:
     uses: ./.github/workflows/testing.yml
 
-  gpu-tests:
-    uses: ./.github/workflows/gpu_ci_trigger.yml
-    secrets: inherit
-
   build-and-publish:
-    needs: [cpu-tests, gpu-tests]
+    needs: [cpu-tests]
     runs-on: ubuntu-latest
 
     steps:
