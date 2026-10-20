@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-20
+
 ### Added
 - `xp.kernels.kernel_outputs(*outs, like=..., dtype=..., strided=...)`: the
   buffers of several kernel outputs in one block, each written back into its
