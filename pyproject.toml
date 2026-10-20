@@ -33,8 +33,9 @@ optional-dependencies.dev = [
   "pyproject-fmt",
   "ruff",
 ]
-# the API reference of the docs site (docs/, Astro + Starlight) reads the docstrings with griffe
-optional-dependencies.docs = [ "griffe" ]
+# the API reference of the docs site (docs/, Astro + Starlight) reads the docstrings with griffe;
+# the shared docs workflow registers an ipykernel even without notebooks
+optional-dependencies.docs = [ "griffe", "ipykernel" ]
 optional-dependencies.metal = [ "mlx; sys_platform == 'darwin' and platform_machine == 'arm64'" ]
 optional-dependencies.test = [ "coverage", "pytest", "scipy" ]
 optional-dependencies.test-compiled = [ "cunumpy[test]", "pyccel" ]
