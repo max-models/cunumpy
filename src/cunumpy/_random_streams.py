@@ -18,8 +18,8 @@ from cunumpy.xp import get_backend
 
 __all__ = ["BIT_GENERATORS", "RandomStreams", "random_streams"]
 
-#: NumPy bit generators :meth:`RandomStreams.seed` accepts by name.
 BIT_GENERATORS = ("MT19937", "PCG64", "PCG64DXSM", "Philox", "SFC64")
+"""NumPy bit generators :meth:`RandomStreams.seed` accepts by name."""
 
 _BACKEND_KEYS = {"numpy": 0, "cupy": 1}
 
@@ -278,8 +278,8 @@ class RandomStreams:
         return low + (high - low) * rng.random(size=size)
 
 
-#: The random streams of this process.
 random_streams = RandomStreams()
+"""The random streams of this process."""
 
 
 def get_rng(seed: int | None = None) -> Any:

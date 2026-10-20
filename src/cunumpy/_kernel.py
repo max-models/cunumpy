@@ -438,9 +438,10 @@ class PyccelKernel:
         return self._outputs
 
 
-#: The names of the host implementations a kernel can have, see
-#: :class:`~cunumpy.kernels.HostImplementations`.
 HOST_IMPLEMENTATIONS = ("pyccel", "numba", "numpy", "python")
+"""The names of the host implementations a kernel can have, see
+:class:`~cunumpy.kernels.HostImplementations`.
+"""
 
 
 def _check_implementation(name: str | None) -> str | None:
@@ -536,8 +537,8 @@ def use_host_kernel_implementation(name: str | None) -> Iterator[None]:
         _KERNEL_IMPLEMENTATION = previous
 
 
-#: The names of the device implementations a kernel can have.
 DEVICE_IMPLEMENTATIONS = ("cuda",)
+"""The names of the device implementations a kernel can have."""
 
 
 def _check_device_implementation(name: str | None) -> str | None:

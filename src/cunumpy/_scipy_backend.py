@@ -29,8 +29,6 @@ from cunumpy.xp import get_backend
 
 __all__ = ["FILLS", "SUBMODULES", "ScipyNamespace", "scipy"]
 
-#: The SciPy subpackages forwarded by ``xp.scipy``: those that ``cupyx.scipy``
-#: provides as well.
 SUBMODULES = (
     "fft",
     "fftpack",
@@ -45,10 +43,14 @@ SUBMODULES = (
     "special",
     "stats",
 )
+"""The SciPy subpackages forwarded by ``xp.scipy``: those that ``cupyx.scipy``
+provides as well.
+"""
 
-#: Functions ``cupyx.scipy`` lacks, implemented by cunumpy on the device; used
-#: on the CuPy backend only, where the ``cupyx`` module has no such name.
 FILLS = {"linalg": {"solve_circulant": _linalg.solve_circulant}}
+"""Functions ``cupyx.scipy`` lacks, implemented by cunumpy on the device; used
+on the CuPy backend only, where the ``cupyx`` module has no such name.
+"""
 
 _ROOTS = {"numpy": "scipy", "cupy": "cupyx.scipy"}
 _INSTALL = {
@@ -193,5 +195,5 @@ class ScipyNamespace:
         return sorted(set(names) | set(children) | {"available", "resolve"})
 
 
-#: SciPy of the active backend, available as ``xp.scipy``.
 scipy = ScipyNamespace()
+"""SciPy of the active backend, available as ``xp.scipy``."""

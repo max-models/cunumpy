@@ -70,6 +70,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CudaStruct.from_signature` accepts quoted pyccel annotations
   (`markers: "float[:, :]"`) in modules with `from __future__ import annotations`.
 
+### Changed
+- The documentation site is built with Astro and Starlight
+  ([starlight-theme](https://github.com/max-models/starlight-theme)) instead of
+  Sphinx: the pages are in `docs/src/content/docs/`, the API reference is
+  generated from the docstrings by starlight-pydocs (`/api/cunumpy/`), the old
+  `.html` URLs redirect, and `make docs-build` builds it. The `docs` extra is
+  now only `griffe`; `pre-commit` and `pyproject-fmt` moved to `dev`. The
+  `#:` comments of public constants are now attribute docstrings.
+
 ## [0.6.3] - 2026-10-08
 
 ### Fixed

@@ -415,8 +415,6 @@ def fake_cupy_session(
         yield
 
 
-#: Prefixes of the environment variables through which an MPI launcher (Open
-#: MPI, MPICH/Hydra, Intel MPI, Slurm, ...) hands a process its place in the job.
 MPI_LAUNCHER_PREFIXES = (
     "OMPI_",
     "PMIX_",
@@ -430,6 +428,9 @@ MPI_LAUNCHER_PREFIXES = (
     "ALPS_APP_PE",
     "PALS_",
 )
+"""Prefixes of the environment variables through which an MPI launcher (Open
+MPI, MPICH/Hydra, Intel MPI, Slurm, ...) hands a process its place in the job.
+"""
 
 
 def _tail(text: str, lines: int = 50) -> str:
@@ -865,8 +866,6 @@ def assert_kernels_agree(
 # parity tests from <name>_test_args.py modules
 # ---------------------------------------------------------------------------
 
-#: Module-level names a ``<name>_test_args.py`` module may define, and the
-#: keyword of :func:`assert_kernels_agree` each one sets.
 TEST_ARGS_SETTINGS = {
     "N_THREADS": "n_threads",
     "GRID": "grid",
@@ -877,6 +876,9 @@ TEST_ARGS_SETTINGS = {
     "OUTPUTS": "outputs",
     "SEED": "seed",
 }
+"""Module-level names a ``<name>_test_args.py`` module may define, and the
+keyword of :func:`assert_kernels_agree` each one sets.
+"""
 
 
 def parity_cases(catalog: Any) -> list[Any]:

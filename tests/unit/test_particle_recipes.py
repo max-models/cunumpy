@@ -1,4 +1,4 @@
-"""The recipes of the "Particle codes" page (docs/source/examples/particle_recipes.py)."""
+"""The recipes of the "Particle codes" page (docs/src/snippets/particle_recipes.py)."""
 
 import importlib.util
 from pathlib import Path
@@ -7,7 +7,7 @@ import numpy as np
 
 import cunumpy as xp
 
-_PATH = Path(__file__).resolve().parents[2] / "docs/source/examples/particle_recipes.py"
+_PATH = Path(__file__).resolve().parents[2] / "docs/src/snippets/particle_recipes.py"
 _spec = importlib.util.spec_from_file_location("particle_recipes", _PATH)
 recipes = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(recipes)

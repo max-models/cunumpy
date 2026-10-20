@@ -116,10 +116,11 @@ def cuda_include_dir() -> str:
     return str(_CUDA_INCLUDE_DIR)
 
 
-#: NVRTC options added in debug mode: line information for
-#: ``compute-sanitizer``/``nsys`` and bounds checks in the array views
-#: (no ``-G``: NVRTC does not support it).
 DEBUG_OPTIONS = ("-lineinfo", "-DCUNUMPY_BOUNDS_CHECK")
+"""NVRTC options added in debug mode: line information for
+``compute-sanitizer``/``nsys`` and bounds checks in the array views
+(no ``-G``: NVRTC does not support it).
+"""
 
 
 class CudaArguments:

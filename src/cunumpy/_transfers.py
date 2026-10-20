@@ -32,7 +32,6 @@ __all__ = [
     "count_transfers",
 ]
 
-#: Event kinds, in the order they are reported.
 KINDS = (
     "to_host",
     "to_device",
@@ -41,6 +40,7 @@ KINDS = (
     "device_copy",
     "sync",
 )
+"""Event kinds, in the order they are reported."""
 
 # The currently active counters, innermost last. Instrumented code checks
 # ``if _ACTIVE:`` before doing any work, so the overhead of an inactive counter

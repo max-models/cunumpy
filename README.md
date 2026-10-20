@@ -37,7 +37,7 @@ never hide a NumPy name:
 
 Everything except `xp.cuda`, `xp.arguments` and `CudaKernel` works on both backends.
 `MetalKernel` runs Metal kernels on the GPU of an Apple silicon Mac (MLX, float32, NumPy arrays;
-`pip install 'cunumpy[metal]'`, see [the guide](docs/source/kernels/metal-kernel.md)).
+`pip install 'cunumpy[metal]'`, see [the guide](https://max-models.github.io/cunumpy/kernels/metal-kernel/)).
 
 ## Install
 
@@ -53,7 +53,7 @@ installation instructions for your system. CuNumpy does not install CUDA.
 `array-api-compat` supplies NumPy and CuPy compatibility modules with more
 consistent behavior for shared array operations. CuNumpy uses them internally;
 your arrays remain ordinary NumPy or CuPy arrays. See [why CuNumpy uses
-`array-api-compat`](docs/source/array-api-compat.md) for a plain-language
+`array-api-compat`](https://max-models.github.io/cunumpy/guides/array-api-compat/) for a plain-language
 explanation and examples.
 
 ## Choose a backend
@@ -79,7 +79,7 @@ Use `xp.set_backend("cupy", strict=True)` to raise when CUDA is unavailable,
 preserving the previous backend. `xp.backend_info()` returns structured backend,
 dependency, and CUDA diagnostics. Reusable streams/events, MPI staging, cell
 ranges, and prepared reductions are described in the
-[execution helpers guide](docs/source/guides/execution-helpers.md).
+[execution helpers guide](https://max-models.github.io/cunumpy/guides/execution-helpers/).
 
 Use `use_backend()` for a temporary selection. It restores the previous
 selection when the block exits, including when an exception is raised:
@@ -300,7 +300,7 @@ read-only inputs. For a keyword call, declare the keyword name, such as
 `outputs=("out",)`. A wrong declaration can leave GPU output values stale.
 The wrapper can also traverse arrays nested in lists, tuples, dictionaries,
 and selected application objects; see [Host kernels with GPU
-data](docs/source/kernels/pyccel-kernel.md) for `object_modules`, `is_array`,
+data](https://max-models.github.io/cunumpy/kernels/pyccel-kernel/) for `object_modules`, `is_array`,
 aliasing, and output declarations.
 
 ## Write CUDA kernels next to host kernels
@@ -437,8 +437,8 @@ an explicit `grid`, with dynamic shared memory (`shared_mem`) and a `stream`.
 C++ function templates are instantiated with `template_args`, and
 `CudaKernelVariants` caches kernels whose source is generated per variant
 (e.g. per dimension and dtype). See [Writing CUDA
-kernels](docs/source/kernels/cuda-kernel.md) and [CUDA
-headers](docs/source/kernels/cuda-headers.md) for details.
+kernels](https://max-models.github.io/cunumpy/kernels/cuda-kernel/) and [CUDA
+headers](https://max-models.github.io/cunumpy/kernels/cuda-headers/) for details.
 
 Kernels run asynchronously, so a CUDA error (an illegal memory access, say)
 normally surfaces at a later `.get()` or MPI call, far from the kernel that
@@ -498,36 +498,36 @@ mirror.to_host()  # vector._data holds the result on both backends
 
 CuNumpy supports the NumPy backend in Pyodide. It does not provide CuPy/CUDA
 there. Ordinary Python callables can be wrapped with `PyccelKernel` without
-compilation. See the [Pyodide guide](docs/source/pyodide.md) for a complete
+compilation. See the [Pyodide guide](https://max-models.github.io/cunumpy/pyodide/) for a complete
 installation example and compatibility notes.
 
 ## Documentation
 
-The full documentation lives in [`docs/source`](docs/source/index.md) and is
+The full documentation lives in [`docs/`](docs/) (Astro + Starlight, `make docs-build`) and is
 published at <https://max-models.github.io/cunumpy/>:
 
-* Getting started: [installation](docs/source/installation.md) and a
-  [quickstart](docs/source/quickstart.md) with a map of which guide covers what.
-* User guide: [choosing a backend](docs/source/guides/backends.md),
-  [backend-agnostic code](docs/source/guides/portable-code.md),
-  [data movement](docs/source/guides/data-movement.md),
-  [devices, memory and streams](docs/source/guides/gpu-devices.md),
-  [MPI with one rank per GPU](docs/source/guides/mpi.md),
-  [timing and profiling](docs/source/guides/profiling.md).
-* Porting kernels: [overview](docs/source/kernels/overview.md),
-  [`PyccelKernel`](docs/source/kernels/pyccel-kernel.md),
-  [`CudaKernel`](docs/source/kernels/cuda-kernel.md),
-  [`Kernel` and `KernelCatalog`](docs/source/kernels/dispatch.md),
-  [argument objects and structs](docs/source/kernels/arguments.md),
-  [accumulation kernels](docs/source/kernels/accumulation.md),
-  [debugging](docs/source/kernels/debugging.md),
-  [testing](docs/source/kernels/testing.md).
-* [Worked examples](docs/source/examples/index.md),
-  [best practices](docs/source/best-practices.md),
-  [troubleshooting](docs/source/troubleshooting.md),
-  [Pyodide](docs/source/pyodide.md), the
-  [API overview](docs/source/api.md) and the
-  [API reference](docs/source/reference/index.md).
+* Getting started: [installation](https://max-models.github.io/cunumpy/getting-started/installation/) and a
+  [quickstart](https://max-models.github.io/cunumpy/getting-started/quickstart/) with a map of which guide covers what.
+* User guide: [choosing a backend](https://max-models.github.io/cunumpy/guides/backends/),
+  [backend-agnostic code](https://max-models.github.io/cunumpy/guides/portable-code/),
+  [data movement](https://max-models.github.io/cunumpy/guides/data-movement/),
+  [devices, memory and streams](https://max-models.github.io/cunumpy/guides/gpu-devices/),
+  [MPI with one rank per GPU](https://max-models.github.io/cunumpy/guides/mpi/),
+  [timing and profiling](https://max-models.github.io/cunumpy/guides/profiling/).
+* Porting kernels: [overview](https://max-models.github.io/cunumpy/kernels/overview/),
+  [`PyccelKernel`](https://max-models.github.io/cunumpy/kernels/pyccel-kernel/),
+  [`CudaKernel`](https://max-models.github.io/cunumpy/kernels/cuda-kernel/),
+  [`Kernel` and `KernelCatalog`](https://max-models.github.io/cunumpy/kernels/dispatch/),
+  [argument objects and structs](https://max-models.github.io/cunumpy/kernels/arguments/),
+  [accumulation kernels](https://max-models.github.io/cunumpy/kernels/accumulation/),
+  [debugging](https://max-models.github.io/cunumpy/kernels/debugging/),
+  [testing](https://max-models.github.io/cunumpy/kernels/testing/).
+* [Worked examples](https://max-models.github.io/cunumpy/examples/),
+  [best practices](https://max-models.github.io/cunumpy/best-practices/),
+  [troubleshooting](https://max-models.github.io/cunumpy/troubleshooting/),
+  [Pyodide](https://max-models.github.io/cunumpy/pyodide/), the
+  [API overview](https://max-models.github.io/cunumpy/reference/overview/) and the
+  [API reference](https://max-models.github.io/cunumpy/reference/).
 
 ### For AI coding assistants
 

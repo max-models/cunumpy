@@ -64,10 +64,11 @@ def _on_device(arg: Any) -> bool:
     return _is_device_array(arg) or callable(getattr(type(arg), "__cuda_args__", None))
 
 
-#: Longest name a Fortran compiler accepts. Pyccel names the wrapper module of a
-#: host kernel module ``bind_c_<module>``, so a module name longer than
-#: ``63 - len("bind_c_")`` characters cannot be compiled with the Fortran backend.
 FORTRAN_NAME_LIMIT = 63
+"""Longest name a Fortran compiler accepts. Pyccel names the wrapper module of a
+host kernel module ``bind_c_<module>``, so a module name longer than
+``63 - len("bind_c_")`` characters cannot be compiled with the Fortran backend.
+"""
 
 
 def _pyccel_stub_parameters(function: Any) -> list[str] | None:

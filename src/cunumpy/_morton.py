@@ -33,8 +33,8 @@ __all__ = [
     "morton_scales",
 ]
 
-#: Largest number of bits per axis that fits a uint64 key, by dimension.
 MAX_MORTON_LEVELS = {2: 32, 3: 21}
+"""Largest number of bits per axis that fits a uint64 key, by dimension."""
 
 _SPREAD = {
     2: (

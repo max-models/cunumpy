@@ -29,7 +29,6 @@ from typing import Any
 
 import numpy as np
 
-#: The subpackages of ``cupyx.scipy``; the same as ``_scipy_backend.SUBMODULES``.
 SUBPACKAGES = (
     "fft",
     "fftpack",
@@ -44,21 +43,19 @@ SUBPACKAGES = (
     "special",
     "stats",
 )
+"""The subpackages of ``cupyx.scipy``; the same as ``_scipy_backend.SUBMODULES``."""
 
 
 def _names(text: str) -> frozenset[str]:
     return frozenset(text.split())
 
 
-#: The CuPy release whose ``cupyx.scipy`` names :data:`NAMES` lists: the oldest
-#: supported one (``cunumpy.xp.MIN_CUPY_VERSION``), so code that runs on the
-#: fake runs on every supported CuPy. Newer CuPy releases have more names.
 NAMES_VERSION = "14.0.0"
+"""The CuPy release whose ``cupyx.scipy`` names :data:`NAMES` lists: the oldest
+supported one (``cunumpy.xp.MIN_CUPY_VERSION``), so code that runs on the
+fake runs on every supported CuPy. Newer CuPy releases have more names.
+"""
 
-#: The public names of each ``cupyx.scipy`` subpackage in CuPy
-#: :data:`NAMES_VERSION`. Check them against an installed CuPy with
-#: ``python testing/cupyx_names.py`` (the GPU CI does, in
-#: ``tests/unit/test_cupyx_names.py``).
 NAMES = {
     "fft": _names(
         """
@@ -193,6 +190,11 @@ NAMES = {
         """,
     ),
 }
+"""The public names of each ``cupyx.scipy`` subpackage in CuPy
+:data:`NAMES_VERSION`. Check them against an installed CuPy with
+``python testing/cupyx_names.py`` (the GPU CI does, in
+``tests/unit/test_cupyx_names.py``).
+"""
 
 
 def public_names(module: types.ModuleType) -> frozenset[str]:

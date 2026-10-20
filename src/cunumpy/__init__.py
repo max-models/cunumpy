@@ -55,8 +55,8 @@ from cunumpy.xp import (
 )
 
 try:
-    #: The installed version of cunumpy; ``"0.0.0+unknown"`` without package metadata.
     __version__ = version("cunumpy")
+    """The installed version of cunumpy; ``"0.0.0+unknown"`` without package metadata."""
 except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
 

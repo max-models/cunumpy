@@ -1,0 +1,46 @@
+---
+title: "cunumpy"
+description: "One Python code base on NumPy (CPU) or CuPy (NVIDIA GPU): replace import numpy as np with import cunumpy as xp."
+template: splash
+hero:
+  tagline: "One Python code base on NumPy (CPU) or CuPy (NVIDIA GPU). Replace import numpy as np with import cunumpy as xp."
+  actions:
+    - text: Get started
+      link: /cunumpy/getting-started/installation/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/max-models/cunumpy
+      icon: external
+      variant: minimal
+---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+CuNumpy lets one Python code base run on NumPy (CPU) or CuPy (NVIDIA GPU).
+Replace `import numpy as np` with `import cunumpy as xp`, choose a backend, and
+the array code you already have runs on the selected device. For codes whose
+time is spent in compiled loops, CuNumpy adds a kernel layer to port those
+kernels to CUDA one at a time, with the CPU version kept as the tested
+reference.
+
+```python
+import cunumpy as xp
+
+xp.set_backend("cupy")  # falls back to NumPy without a usable GPU
+values = xp.arange(1_000)
+print(xp.sum(values**2), xp.get_backend())
+```
+
+Install with `python -m pip install cunumpy`, plus a CuPy wheel matching your
+CUDA version for GPU use. Start with the [Quickstart](/cunumpy/getting-started/quickstart/).
+
+## Where to go
+
+<CardGrid>
+  <LinkCard title="New to CuNumpy" href="/cunumpy/getting-started/installation/" description="Installation, then the Quickstart." />
+  <LinkCard title="Running array code on CPU and GPU" href="/cunumpy/guides/backends/" description="The user guide: backends, backend-agnostic code, data movement, devices, MPI and profiling." />
+  <LinkCard title="Porting compiled kernels to CUDA" href="/cunumpy/kernels/overview/" description="Start at Porting kernels to the GPU." />
+  <LinkCard title="Complete programs" href="/cunumpy/examples/" description="Worked examples." />
+  <LinkCard title="Looking up a function" href="/cunumpy/reference/" description="The API reference, and the API overview for the module layout." />
+  <LinkCard title="Using an AI assistant" href="/cunumpy/ai-assistants/" description="Point it at the guide for AI assistants, which ships with the package as cunumpy/LLM_GUIDE.md." />
+</CardGrid>

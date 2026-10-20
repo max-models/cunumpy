@@ -1,8 +1,14 @@
-name: Deploy docs to GitHub Pages
+name: Docs
+
+# The Astro + Starlight site in docs/: hand-written pages and the API reference. Built on every
+# push and pull request with the shared workflow of max-models/starlight-theme; deployed to GitHub
+# Pages from devel (the Sphinx site was deployed from devel too).
 
 on:
   push:
-    branches: ["devel"]
+    branches: ["main", "devel"]
+  pull_request:
+    branches: ["main", "devel"]
   workflow_dispatch:
 
 permissions:
@@ -11,43 +17,28 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "pages"
-  cancel-in-progress: false
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build-and-deploy:
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install pandoc
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pandoc
-
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install ".[docs]"
-
-      - name: Build Sphinx docs
-        run: |
-          cd docs
-          make html
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload built docs
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: docs/build/html/
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+  docs:
+    uses: max-models/starlight-theme/.github/workflows/docs.yml@v0.4.0
+    with:
+      notebooks: false
+      # stable-branch: main  # deploy the latest release at /<repo>/ and devel at /<repo>/dev/
+      smoke-paths: |
+        index.html
+        getting-started/installation/index.html
+        getting-started/quickstart/index.html
+        guides/backends/index.html
+        guides/particle-codes/index.html
+        kernels/overview/index.html
+        kernels/cuda-kernel/index.html
+        examples/index.html
+        ai-assistants/index.html
+        reference/index.html
+        api/cunumpy/index.html
+        api/cunumpy/kernels/index.html
+        api/cunumpy/cuda/index.html
+        api/cunumpy/objects.inv
+        installation.html/index.html

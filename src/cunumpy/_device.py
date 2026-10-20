@@ -192,10 +192,11 @@ def memory_info() -> tuple[int, int] | None:
     return cp.cuda.runtime.memGetInfo()
 
 
-#: Dynamic shared memory per block that every CUDA device provides without an
-#: opt-in (48 KiB); also the answer of :func:`max_shared_memory_per_block`
-#: without a GPU.
 DEFAULT_SHARED_MEMORY_PER_BLOCK = 48 * 1024
+"""Dynamic shared memory per block that every CUDA device provides without an
+opt-in (48 KiB); also the answer of :func:`max_shared_memory_per_block`
+without a GPU.
+"""
 
 
 def max_shared_memory_per_block(
