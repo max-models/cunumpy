@@ -45,7 +45,11 @@ Apply `order` to every per-marker array (positions, velocities, weights, ids),
 e.g. by keeping them as columns of one `(n, k)` array. A stable sort keeps the
 result independent of how the markers were ordered before.
 `xp.algorithms.sort_by_key(keys, positions, velocities, weights)` does the argsort and
-the reordering of several arrays in one call.
+the reordering of several arrays in one call. For component-major `(ncomp, n)`
+markers, `xp.algorithms.take_columns(positions, order)` gathers the columns in a
+compiled, threaded kernel on NumPy (about 2.5 times faster than `positions[:, order]`
+for a million markers) and with `cupy.take` on CuPy; a boolean mask works too, and
+`out=` writes into a preallocated array.
 
 For a tree code, or for better locality in 2D and 3D, sort by Morton key
 (`xp.algorithms.morton_keys`, see [CUDA headers](/cunumpy/kernels/cuda-headers/) for

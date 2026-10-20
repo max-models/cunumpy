@@ -2,13 +2,14 @@
 
 Morton (Z-order) keys (the same as ``cunumpy/morton.cuh`` computes in a
 kernel, at most ``MAX_MORTON_LEVELS`` bits per axis), a stable sort of several
-arrays by one key, sums per key, and the compaction of the live rows of
-particle arrays::
+arrays by one key, sums per key, the compaction of the live rows of
+particle arrays and the gather of columns of component-major markers::
 
     keys = xp.algorithms.morton_keys(positions, lower, upper, levels)
     keys, order, positions = xp.algorithms.sort_by_key(keys, positions)
     charge = xp.algorithms.segment_sum(q, cell, n_cells)
     n = xp.algorithms.compact_by_mask(alive, positions, charges)
+    markers = xp.algorithms.take_columns(markers, order)
 
 See :doc:`/guides/particle-codes`.
 """
@@ -20,6 +21,7 @@ from cunumpy._algorithms import (
     segment_boundaries,
     segment_sum,
     sort_by_key,
+    take_columns,
 )
 from cunumpy._morton import (
     MAX_MORTON_LEVELS,
@@ -41,4 +43,5 @@ __all__ = [
     "segment_boundaries",
     "segment_sum",
     "sort_by_key",
+    "take_columns",
 ]

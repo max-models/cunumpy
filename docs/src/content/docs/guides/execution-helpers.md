@@ -163,6 +163,21 @@ unspecified. The count is needed on the host, so on CuPy each call
 synchronizes once. For component-major arrays, `(ncomp, N)` next to `(N,)`,
 pass `axis=-1` and continue with `positions[:, :n]`.
 
+## Gather marker columns: `take_columns`
+
+```python
+positions = xp.algorithms.take_columns(positions[:, :length], order)
+alive_positions = xp.algorithms.take_columns(positions, alive)  # boolean mask
+xp.algorithms.take_columns(velocities, order, out=buffer[:, :length])
+```
+
+`array[:, index]` of a component-major `(ncomp, n)` array, as a C-contiguous
+copy (NumPy's own comes back Fortran-ordered), for integer indices or a boolean
+mask. On NumPy, from about 30000 columns on, a compiled OpenMP kernel (Pyccel,
+one contiguous row per thread; float64/32, int64/32 and bool) is used, otherwise
+a row-by-row NumPy gather; on CuPy it is `cupy.take`. Out-of-bounds indices raise
+`IndexError` on NumPy and wrap around on CuPy (checking would synchronize).
+
 ## Prepare cell ranges and segment reductions
 
 ```python

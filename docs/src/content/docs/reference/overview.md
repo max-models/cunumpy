@@ -51,7 +51,7 @@ The submodules are named so that they do not hide a NumPy name (`rng`, not
 | [`cunumpy.arguments`](/cunumpy/api/cunumpy/arguments/) | CUDA only | `CudaArguments`, `CudaStruct`, `CudaStructArguments`, `CudaStructValue`, `write_cuda_header` |
 | [`cunumpy.cuda`](/cunumpy/api/cunumpy/cuda/) | CUDA only | device selection and memory, `stream`, streams/events, `pin_memory`, debug mode, CUDA headers and source tools (`cuda_include_dir`, `parse_cuda_signature`) |
 | [`cunumpy.rng`](/cunumpy/api/cunumpy/rng/) | both | `random_streams`, `get_rng`, `philox_*` |
-| [`cunumpy.algorithms`](/cunumpy/api/cunumpy/algorithms/) | both | `morton_*`, `sort_by_key`, `segment_sum`, `compact_by_mask` |
+| [`cunumpy.algorithms`](/cunumpy/api/cunumpy/algorithms/) | both | `morton_*`, `sort_by_key`, `segment_sum`, `compact_by_mask`, `take_columns` |
 | [`cunumpy.optimize`](/cunumpy/api/cunumpy/optimize/) | both | `newton` (batched Newton/secant), `NewtonResult`; `fsolve`, `root`, `minimize` (SciPy on the host, callbacks on the device) |
 | [`cunumpy.integrate`](/cunumpy/api/cunumpy/integrate/) | both | `quad`, `odeint` (SciPy on the host, callbacks on the device) |
 | [`cunumpy.mpi`](/cunumpy/api/cunumpy/mpi/) | both | `mpi_buffer`, `MPIStaging`, CUDA-aware MPI detection, `synchronize_for_mpi`, and the MPI stand-ins of maybempi (`get_mpi`, `local_rank`, ...) |
