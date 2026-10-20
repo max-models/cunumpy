@@ -18,6 +18,15 @@ def take_columns(source: "T", order: "int[:]", target: "T") -> None:
     The indices must lie in ``[0, source.shape[1])`` (the caller checks them) and
     ``target`` must not overlap ``source``. One loop per component, so every
     thread streams through one contiguous row.
+
+    Parameters
+    ----------
+    source : array of shape (ncomp, n)
+        The component-major array.
+    order : array of int, shape (m,)
+        The column indices to gather.
+    target : array of shape (ncomp, m)
+        Receives the gathered columns.
     """
     for component in range(source.shape[0]):
         # fmt: off

@@ -185,7 +185,10 @@ def test_compiled_kernel_agrees_with_numpy_implementation(monkeypatch):
     from cunumpy._kernels.take_columns import kernel
 
     pytest.importorskip("pyccel")
-    assert kernel.selected() == "pyccel"
+    if kernel.selected() != "pyccel":
+        pytest.skip(
+            "the compiled kernel is not available (needs Pyccel and a compiler)"
+        )
     array = make((3, 3000), np.float64)
     index = np.random.default_rng(6).permutation(3000)
     with use_host_kernel_implementation("pyccel"):
