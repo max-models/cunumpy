@@ -7,13 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- `xp.algorithms.take_columns(array, index, *, out=None)`: gathers the columns of a
-  component-major `(ncomp, n)` array at integer indices or a boolean mask, as a
-  C-contiguous copy (`array[:, index]` is Fortran-ordered on NumPy). On NumPy a
-  compiled OpenMP kernel (Pyccel, one row per thread) is about 2.5 times faster than
-  the best NumPy gather for a million columns and falls back to NumPy without a
-  compiler; on CuPy it is `cupy.take`.
+### Changed
+- `xp.algorithms.sort_by_key` gathers a 2-D NumPy array along its last axis (component-major
+  markers, `axis=-1`) row by row, about 2x faster than `take` (1e6 markers: 3 rows 12.9 to 6.7 ms,
+  8 rows 37 to 19 ms).
 
 ## [0.7.0] - 2026-10-20
 

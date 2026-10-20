@@ -380,6 +380,8 @@ def sort_by_key(keys: Any, *arrays: Any, axis: int = 0) -> tuple[Any, ...]:
     radix sort; on NumPy, integer keys of more than 4096 entries get an LSD
     radix sort too (one stable ``uint16`` argsort per 16-bit digit the key range
     needs), about ten times faster than NumPy's stable sort of 64-bit integers.
+    On NumPy, a 2-D array sorted along its last axis (component-major markers) is
+    gathered row by row, about twice as fast as ``take`` along that axis.
 
     Parameters
     ----------
@@ -437,10 +439,25 @@ def sort_by_key(keys: Any, *arrays: Any, axis: int = 0) -> tuple[Any, ...]:
         keys[order],
         order,
         *(
-            xpm.take(array, order, axis=array_axis)
+            _take_along_axis(xpm, array, order, array_axis)
             for array, array_axis in zip(arrays, axes, strict=True)
         ),
     )
+
+
+def _take_along_axis(xpm: Any, array: Any, order: Any, axis: int) -> Any:
+    """Return `array` taken at `order` along `axis`, as a new C-contiguous array.
+
+    A component-major ``(ncomp, n)`` NumPy array is gathered one contiguous row at a
+    time, which is about twice as fast as ``take`` along its last axis; everything
+    else, and CuPy, goes through ``take``.
+    """
+    if xpm is np and array.ndim == 2 and axis == 1:
+        gathered = np.empty((array.shape[0], order.shape[0]), dtype=array.dtype)
+        for row in range(array.shape[0]):
+            gathered[row] = array[row][order]
+        return gathered
+    return xpm.take(array, order, axis=axis)
 
 
 def compact_by_mask(mask: Any, *arrays: Any, axis: int = 0) -> int:
@@ -510,134 +527,3 @@ def compact_by_mask(mask: Any, *arrays: Any, axis: int = 0) -> int:
         # the right side is a copy: no overlap problem
         array[front] = xpm.take(array, rows, axis=array_axis)
     return n_kept
-
-
-#: dtypes the compiled ``take_columns`` kernel is built for; others use NumPy.
-_TAKE_COLUMNS_DTYPES = frozenset(
-    np.dtype(name) for name in ("float64", "float32", "int64", "int32", "bool")
-)
-
-
-#: Fewer columns are gathered by NumPy: the kernel's call and thread start-up
-#: cost about 60 microseconds, which is what NumPy needs for ~30000 columns.
-_TAKE_COLUMNS_MIN_COLUMNS = 32768
-
-
-def _checked_columns(index: Any, n: int, xpm: Any) -> Any:
-    """Return the integer column indices of `index`, validated against `n` columns."""
-    index = xpm.asarray(index)
-    if index.ndim != 1:
-        raise ValueError(f"index must be 1D, got shape {index.shape}")
-    if index.dtype == np.bool_:
-        if index.shape[0] != n:
-            raise ValueError(
-                f"a boolean index needs one entry per column ({n}), "
-                f"got {index.shape[0]}",
-            )
-        return xpm.nonzero(index)[0]
-    if index.dtype.kind not in "iu":
-        raise TypeError("index must be an integer or boolean array")
-    return index
-
-
-def take_columns(array: Any, index: Any, *, out: Any = None) -> Any:
-    """Gather columns of a component-major 2-D array, as ``array[:, index]``.
-
-    The step of a particle code that reorders or filters its markers stored as
-    ``(ncomp, n)`` arrays: after :func:`sort_by_key`, or to drop the dead
-    markers. Unlike ``array[:, index]``, which NumPy returns Fortran-ordered,
-    the result is C-contiguous. On NumPy a compiled kernel (Pyccel, OpenMP)
-    gathers one contiguous row per thread, about 2.5 times faster than the
-    best NumPy gather for a random permutation of a million columns (below
-    about 30000 columns NumPy is faster and is used); without a compiler it
-    falls back to NumPy, one row at a time. On CuPy it is
-    ``cupy.take``.
-
-    Parameters
-    ----------
-    array : array, shape (ncomp, n)
-        The source; a view such as ``storage[:, :length]`` is fine.
-    index : array of int or bool, shape (m,) or (n,)
-        Indices of the columns to take (negative ones count from the end), or a
-        boolean mask with one entry per column.
-    out : array, optional
-        Output to overwrite: shape ``(ncomp, m)``, the dtype of `array`,
-        writable, C-contiguous and not overlapping `array`.
-
-    Returns
-    -------
-    array, shape (ncomp, m)
-        ``array[:, index]``, C-contiguous; `out` if given.
-
-    Raises
-    ------
-    ValueError
-        If `array` is not 2-D, `index` is not 1D (or a mask of the wrong
-        length), or `out` is unsuitable.
-    TypeError
-        If `index` is neither integer nor boolean.
-    IndexError
-        If an index is out of bounds. Checked on NumPy only: on CuPy the check
-        would synchronize, and out-of-range indices wrap around.
-
-    See Also
-    --------
-    sort_by_key : Computes the permutation to gather with.
-    compact_by_mask : Filters in place instead.
-
-    Examples
-    --------
-    >>> a = xp.asarray([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
-    >>> xp.algorithms.take_columns(a, xp.asarray([2, 0]))
-    array([[3., 1.],
-           [6., 4.]])
-    >>> xp.algorithms.take_columns(a, xp.asarray([True, False, True]))
-    array([[1., 3.],
-           [4., 6.]])
-    """
-    assert_same_backend(array, index, *(() if out is None else (out,)))
-    xpm = get_array_module(array)
-    array = xpm.asarray(array)
-    if array.ndim != 2:
-        raise ValueError(f"array must be 2D (ncomp, n), got shape {array.shape}")
-    ncomp, n = array.shape
-    columns = _checked_columns(index, n, xpm)
-    shape = (ncomp, columns.shape[0])
-    if out is not None:
-        if out.shape != shape or out.dtype != array.dtype or not out.flags.c_contiguous:
-            raise ValueError(
-                f"out must have shape {shape}, dtype {array.dtype} and be C-contiguous",
-            )
-        if not getattr(out.flags, "writeable", True):
-            raise ValueError("out must be writable")
-        if xpm.may_share_memory(out, array):
-            raise ValueError("out must not overlap array")
-    if get_array_backend(array) == "cupy":
-        # CuPy's take wraps out-of-range indices, negative ones as NumPy does
-        return xpm.take(array, columns, axis=1, out=out, mode="wrap")
-    result = np.empty(shape, dtype=array.dtype) if out is None else out
-    if result.size == 0:
-        return result
-    low, high = int(columns.min()), int(columns.max())
-    if high >= n or low < -n:
-        raise IndexError(
-            f"column index out of bounds for {n} columns "
-            f"(indices from {low} to {high})",
-        )
-    if low < 0:
-        columns = np.where(columns < 0, columns + n, columns)
-    if (
-        array.dtype in _TAKE_COLUMNS_DTYPES
-        and array.strides[1] == array.itemsize
-        and columns.shape[0] >= _TAKE_COLUMNS_MIN_COLUMNS
-    ):
-        from cunumpy._kernels.take_columns import kernel
-
-        kernel(array, np.ascontiguousarray(columns, dtype=np.int64), result)
-    else:
-        from cunumpy._kernels.take_columns.take_columns_numpy import (
-            take_columns as take_numpy,
-        )
-
-        take_numpy(array, columns, result)
-    return result
