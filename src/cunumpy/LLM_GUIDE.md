@@ -5,7 +5,7 @@ correct code with `cunumpy`. It ships inside the installed package
 (`<site-packages>/cunumpy/LLM_GUIDE.md`; locate it with
 `python -c "import cunumpy, pathlib; print(pathlib.Path(cunumpy.__file__).parent / 'LLM_GUIDE.md')"`).
 It is self-contained. The full documentation is at
-https://max-models.github.io/cunumpy/ and in `docs/source/` of the repository.
+https://max-models.github.io/cunumpy/ and in `docs/` of the repository.
 
 ## What cunumpy is
 

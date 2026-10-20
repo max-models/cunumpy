@@ -1,0 +1,17 @@
+---
+title: "Guide for AI assistants"
+description: "How to write correct code with cunumpy: the guide for AI coding assistants that ships with the package."
+---
+
+import Guide from '../../../../src/cunumpy/LLM_GUIDE.md';
+
+{/* This page renders src/cunumpy/LLM_GUIDE.md, which also ships inside the installed package. Edit that file, not this one. */}
+
+<div class="llm-guide">
+  <Guide />
+</div>
+
+<style>{`
+  /* the page title replaces the guide's own heading */
+  .llm-guide > h1:first-child { display: none; }
+`}</style>

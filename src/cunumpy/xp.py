@@ -43,8 +43,8 @@ if os.environ.get("CUNUMPY_FAKE_CUPY", "").strip().lower() in ("1", "true", "yes
 
     _install_fake_cupy()
 
-#: The backend names: ``"numpy"`` or ``"cupy"``.
 BackendType = Literal["numpy", "cupy"]
+"""The backend names: ``"numpy"`` or ``"cupy"``."""
 
 _logger = logging.getLogger(__name__)
 
@@ -52,11 +52,12 @@ _logger = logging.getLogger(__name__)
 _CUPY_AVAILABLE_CACHE = None
 _CUPY_UNAVAILABLE_REASON: str | None = None
 
-#: The oldest supported CuPy release. Older ones lack parts of ``cupyx.scipy``
-#: that cunumpy documents (``interpolate.UnivariateSpline``, ``NdBSpline``,
-#: ``CubicSpline``, ...); the fake ``cupyx.scipy`` lists the names of this
-#: release. The GPU CI tests this release and the newest one.
 MIN_CUPY_VERSION = "14.0.0"
+"""The oldest supported CuPy release. Older ones lack parts of ``cupyx.scipy``
+that cunumpy documents (``interpolate.UnivariateSpline``, ``NdBSpline``,
+``CubicSpline``, ...); the fake ``cupyx.scipy`` lists the names of this
+release. The GPU CI tests this release and the newest one.
+"""
 
 
 def cupy_version_supported(cupy_version: str) -> bool:
@@ -279,14 +280,15 @@ class ArrayBackend:
             self._set(old_backend, old_xp)
 
 
-#: The process-wide backend state; NumPy unless ``CUNUMPY_BACKEND=cupy`` was set
-#: at import.
 array_backend = ArrayBackend(
     backend=(
         "cupy" if os.getenv("CUNUMPY_BACKEND", "numpy").lower() == "cupy" else "numpy"
     ),
     verbose=False,
 )
+"""The process-wide backend state; NumPy unless ``CUNUMPY_BACKEND=cupy`` was set
+at import.
+"""
 
 
 def use_backend(

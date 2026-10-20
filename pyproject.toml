@@ -28,22 +28,13 @@ dependencies = [
 ]
 
 optional-dependencies.dev = [
-  "ruff",
   "cunumpy[test-compiled,docs]",
-]
-# https://medium.com/@pratikdomadiya123/build-project-documentation-quickly-with-the-sphinx-python-2a9732b66594
-optional-dependencies.docs = [
-  "ipykernel",
-  "myst-parser",
-  "nbconvert",
-  "nbsphinx",
-  "numpydoc",
-  "jupyterlab",
   "pre-commit",
   "pyproject-fmt",
-  "sphinx",
-  "sphinx-book-theme",
+  "ruff",
 ]
+# the API reference of the docs site (docs/, Astro + Starlight) reads the docstrings with griffe
+optional-dependencies.docs = [ "griffe" ]
 optional-dependencies.metal = [ "mlx; sys_platform == 'darwin' and platform_machine == 'arm64'" ]
 optional-dependencies.test = [ "coverage", "pytest", "scipy" ]
 optional-dependencies.test-compiled = [ "cunumpy[test]", "pyccel" ]
