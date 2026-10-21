@@ -10,6 +10,8 @@ on:
       - devel
   workflow_call:
 
+# Runs that do not target main install the devel branches of the max-models dependencies
+# (requirements-devel.txt) before cunumpy; PRs to main and the release use PyPI only.
 jobs:
   compiled-fake-cupy:
     runs-on: ubuntu-latest
@@ -22,6 +24,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc gfortran
+          if [ "${GITHUB_BASE_REF:-$GITHUB_REF_NAME}" != main ]; then python -m pip install -r requirements-devel.txt; fi
           python -m pip install ".[test-compiled]"
       - name: Test compiled host kernels with fake device arrays
         env:
@@ -61,6 +64,7 @@ jobs:
       - name: Install project
         run: |
           pip install --upgrade pip
+          if [ "${GITHUB_BASE_REF:-$GITHUB_REF_NAME}" != main ]; then python -m pip install -r requirements-devel.txt; fi
           pip install ".[dev]"
 
       - name: Run tests
@@ -70,3 +74,18 @@ jobs:
       - name: Run docstring examples
         run: |
           pytest --doctest-modules src/cunumpy
+
+  # PyPI rejects direct references (`name @ git+...`): the wheel's metadata must have none.
+  no-direct-references:
+    if: (github.base_ref || github.ref_name) == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check the wheel for direct references
+        run: |
+          python -m pip install build
+          python -m build --wheel
+          ! unzip -p dist/*.whl '*.dist-info/METADATA' | grep -E '^Requires-Dist:.* @ '

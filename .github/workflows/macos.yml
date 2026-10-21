@@ -43,6 +43,8 @@ jobs:
       - name: Install project
         run: |
           pip install --upgrade pip
+          # devel branches of the max-models dependencies, except on runs that target main
+          if [ "${GITHUB_BASE_REF:-$GITHUB_REF_NAME}" != main ]; then python -m pip install -r requirements-devel.txt; fi
           pip install ".[test-compiled,metal]"
 
       # Hosted macOS runners are virtual machines and usually have no Metal GPU,

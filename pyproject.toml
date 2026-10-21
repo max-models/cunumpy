@@ -47,6 +47,11 @@ where = [ "src" ]
 [tool.setuptools.package-data]
 cunumpy = [ "py.typed", "*.pyi", "LLM_GUIDE.md", "cuda/include/cunumpy/*.cuh" ]
 
+# PRs to devel test against the devel branches of the max-models packages; PRs to main
+# and the release use PyPI only.
+[tool.uv.sources]
+maybempi = { git = "https://github.com/max-models/maybempi", branch = "devel" }
+
 [tool.ruff]
 # agent worktrees and scratch scripts are local copies, not part of the project
 extend-exclude = [ ".claude" ]
