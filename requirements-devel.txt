@@ -1,0 +1,4 @@
+# The devel branches of the max-models packages in cunumpy's dependency tree. CI installs
+# them before cunumpy on every run that does not target main; main and the release use PyPI.
+#   pip install -r requirements-devel.txt
+maybempi @ git+https://github.com/max-models/maybempi@devel

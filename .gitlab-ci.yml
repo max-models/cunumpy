@@ -14,6 +14,13 @@ variables:
 stages:
   - test
 
+# Runs that do not target main install the devel branches of the max-models dependencies
+# first; main uses PyPI only. The GitHub trigger pushes gpu-test-* branches and passes the
+# target branch in MAX_MODELS_TARGET.
+.install_devel_dependencies: &install_devel_dependencies
+  - TARGET="${MAX_MODELS_TARGET:-${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-$CI_COMMIT_BRANCH}}"
+  - if [ "$TARGET" != main ]; then python3 -m pip install --user -r requirements-devel.txt; fi
+
 .gpu_job_nvidia:
   stage: test
   image: ${CUDA_IMAGE}
@@ -27,6 +34,7 @@ stages:
     - nvidia-smi
     # Keep NVRTC, CUDA libraries and headers on the same toolkit generation.
     - python3 -m pip install --user "cupy-cuda13x[ctk]${CUPY_PIN}" "cuda-toolkit==13.2.*"
+    - *install_devel_dependencies
     - python3 -m pip install --user -e ".[test]"
     - export PATH="$HOME/.local/bin:$PATH"
     - python3 -c "import cupy; cupy.show_config()"
@@ -49,6 +57,7 @@ stages:
     - export ROCM_HOME="${ROCM_PATH:-/opt/rocm}"
     - export CUPY_INSTALL_USE_HIP=1
     - python3 -m pip install --user "cupy${CUPY_PIN}"
+    - *install_devel_dependencies
     - python3 -m pip install --user -e ".[test]"
     - export PATH="$HOME/.local/bin:$PATH"
     - python3 -c "import cupy; cupy.show_config()"

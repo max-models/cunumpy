@@ -63,8 +63,10 @@ jobs:
           # 3. Add GitLab SSH remote
           git remote add gitlab git@gitlab.mpcdf.mpg.de:maxlin/cunumpy.git
 
-          # 4. Force push (This automatically starts the GitLab Pipeline)
-          git push -f gitlab "HEAD:refs/heads/$TARGET_BRANCH"
+          # 4. Force push (This automatically starts the GitLab Pipeline). The pushed branch
+          #    is gpu-test-*, so pass the target branch for the max-models dependencies.
+          git push -f -o ci.variable="MAX_MODELS_TARGET=${{ github.base_ref || github.ref_name }}" \
+            gitlab "HEAD:refs/heads/$TARGET_BRANCH"
           echo "PUSHED_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
           # 5. Provide the direct link
