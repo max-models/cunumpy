@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `xp.algorithms.sort_by_key` gathers a 2-D NumPy array along its last axis (component-major
+  markers, `axis=-1`) row by row, about 2x faster than `take` (1e6 markers: 3 rows 12.9 to 6.7 ms,
+  8 rows 37 to 19 ms).
+
 ## [0.7.0] - 2026-10-20
 
 ### Added

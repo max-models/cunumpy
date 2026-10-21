@@ -270,3 +270,45 @@ def test_cupy_arrays_stay_on_the_device():
     assert bool((sorted_keys[1:] >= sorted_keys[:-1]).all())
     cx, _ = xp.algorithms.morton_decode(sorted_keys, 2)
     assert isinstance(cx, cp.ndarray)
+
+
+@pytest.mark.parametrize(
+    "dtype", [np.float64, np.float32, np.int64, np.int32, np.bool_]
+)
+@pytest.mark.parametrize("ncomp", [1, 3, 8])
+def test_sort_by_key_gathers_component_major_arrays_like_take(dtype, ncomp):
+    rng = np.random.default_rng(ncomp)
+    n = 5000
+    keys = rng.integers(0, 50, n)
+    array = (rng.random((ncomp, n)) * 100).astype(dtype)
+
+    _, order, gathered = xp.algorithms.sort_by_key(keys, array, axis=-1)
+
+    expected = np.take(array, order, axis=1)
+    np.testing.assert_array_equal(gathered, expected)
+    assert gathered.dtype == array.dtype
+    assert gathered.flags.c_contiguous
+
+
+def test_sort_by_key_gathers_strided_views_other_axes_and_empty_arrays():
+    rng = np.random.default_rng(0)
+    keys = rng.integers(0, 10, 100)
+    storage = rng.random((3, 150))  # markers[:, :100] of a store with spare capacity
+    transposed = rng.random((100, 3))  # axis=0 is the plain take path
+    volume = rng.random((2, 100, 4))  # three axes: the plain take path as well
+
+    _, order, from_view = xp.algorithms.sort_by_key(keys, storage[:, :100], axis=-1)
+    np.testing.assert_array_equal(from_view, storage[:, :100][:, order])
+
+    _, order, from_rows = xp.algorithms.sort_by_key(keys, transposed, axis=0)
+    np.testing.assert_array_equal(from_rows, transposed[order])
+
+    _, order, from_volume = xp.algorithms.sort_by_key(keys, volume, axis=1)
+    np.testing.assert_array_equal(from_volume, volume[:, order])
+
+    empty_keys = np.zeros(0, dtype=np.int64)
+    _, empty_order, empty = xp.algorithms.sort_by_key(
+        empty_keys, np.zeros((3, 0)), axis=-1
+    )
+    assert empty_order.shape == (0,)
+    assert empty.shape == (3, 0)
