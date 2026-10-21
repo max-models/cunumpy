@@ -3,6 +3,14 @@ import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { loadPyodide } from "pyodide";
 
+// Node's default report of an uncaught error starts with the throwing source
+// line. Inside Pyodide that is one ~65 KB minified line of pyodide.asm.mjs,
+// which GitHub truncates together with the error message after it.
+process.on("uncaughtException", (error) => {
+  console.error(error?.stack ?? error);
+  process.exit(1);
+});
+
 const [wheel] = process.argv.slice(2);
 if (!wheel || process.argv.length !== 3 || !wheel.endsWith("-py3-none-any.whl")) {
   throw new Error("Usage: node run.mjs /path/to/cunumpy-VERSION-py3-none-any.whl");
