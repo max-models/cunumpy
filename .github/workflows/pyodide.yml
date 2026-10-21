@@ -6,6 +6,8 @@ on:
   pull_request:
     branches: [main, devel]
 
+# PyPI only, also on devel: micropip, which installs the wheel's dependencies in Pyodide,
+# cannot install from git.
 jobs:
   wheel-test:
     runs-on: ubuntu-latest
