@@ -86,6 +86,28 @@ another library converting internally) show up in Nsight as `memcpy` rows on the
 timeline; NVTX ranges tell you which part of the step issued them. See [Moving
 data between host and device](/cunumpy/guides/data-movement/).
 
+## Cunumpy's own regions in scope-profiler
+
+Cunumpy ships [scope-profiler](https://github.com/max-models/scope-profiler)
+regions around its coarse operations: every `Kernel` call
+(`cunumpy.kernel.<name>`), CUDA and Pyccel compilation, `sort_by_key`,
+`segment_sum` (`cunumpy.SegmentPlan.sum`), `compact_by_mask`, `morton_keys`, the
+solvers, `exchange` and the host/device copies of `mpi_buffer` and
+`DeviceMirror`. They are off by default, so an application that profiles itself
+does not see them, and cost at most about 0.2 µs per call while off. Turn them on with the `cunumpy` tag:
+
+```python
+import scope_profiler as sp
+
+sp.setup(enable_tags=["cunumpy"])
+```
+
+or `SCOPE_PROFILER_ENABLE_TAGS=cunumpy`, or
+`scope-profiler run --enable-tag cunumpy simulate.py` (`"*"` enables every
+library's tag). The regions time the host side: on CuPy, a kernel region
+measures the launch, not the kernel; wrap a synchronizing `timed_region` around
+a loop of steps for device times.
+
 ## A profiling checklist
 
 1. Run a few steps with `count_transfers()` and remove every transfer from the

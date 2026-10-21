@@ -12,7 +12,9 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import scope_profiler as sp
 
+from cunumpy._profile_tags import _PROFILE_TAGS
 from cunumpy._transfers import _ACTIVE as _COUNTERS
 from cunumpy._transfers import _describe, _nbytes, _record
 from cunumpy.xp import _cupy_backend, to_cupy
@@ -160,17 +162,18 @@ class DeviceMirror:
         if not _cupy_backend():
             return self
         self._check_device()
-        if self._device is None:
-            _ = self.device  # allocates as a copy of the host, through to_cupy
-        else:
-            # host -> device copy into the existing device buffer
-            self._device.set(self._host)
-            if _COUNTERS:
-                _record(
-                    "to_device",
-                    f"DeviceMirror.to_device({_describe(self._host)})",
-                    nbytes=_nbytes(self._host),
-                )
+        with sp.region("cunumpy.DeviceMirror.to_device", tags=_PROFILE_TAGS):
+            if self._device is None:
+                _ = self.device  # allocates as a copy of the host, through to_cupy
+            else:
+                # host -> device copy into the existing device buffer
+                self._device.set(self._host)
+                if _COUNTERS:
+                    _record(
+                        "to_device",
+                        f"DeviceMirror.to_device({_describe(self._host)})",
+                        nbytes=_nbytes(self._host),
+                    )
         return self
 
     def to_host(self, *, stream: Any = None, event: Any = None) -> DeviceMirror:
@@ -222,10 +225,11 @@ class DeviceMirror:
         if event is not None:
             cp.cuda.get_current_stream().wait_event(event)
         # device -> host copy into the existing host buffer
-        if stream is None:
-            self._device.get(out=self._host)
-        else:
-            self._device.get(out=self._host, stream=stream)
+        with sp.region("cunumpy.DeviceMirror.to_host", tags=_PROFILE_TAGS):
+            if stream is None:
+                self._device.get(out=self._host)
+            else:
+                self._device.get(out=self._host, stream=stream)
         if _COUNTERS:
             _record(
                 "to_host",

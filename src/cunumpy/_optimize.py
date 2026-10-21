@@ -6,6 +6,9 @@ import warnings
 from collections.abc import Callable
 from typing import Any, NamedTuple
 
+import scope_profiler as sp
+
+from cunumpy._profile_tags import _PROFILE_TAGS
 from cunumpy.xp import array_backend, get_array_backend, get_array_module
 
 
@@ -35,6 +38,7 @@ def _module(x0: Any) -> Any:
     return array_backend.xp
 
 
+@sp.profile("cunumpy.newton", tags=_PROFILE_TAGS)
 def newton(
     func: Callable[..., Any],
     x0: Any,

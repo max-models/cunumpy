@@ -34,7 +34,9 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 import numpy as np
+import scope_profiler as sp
 
+from cunumpy._profile_tags import _PROFILE_TAGS
 from cunumpy._transfers import _ACTIVE as _COUNTERS
 from cunumpy._transfers import _record_sync
 
@@ -2387,21 +2389,22 @@ class CudaKernel:
                     "without CUNUMPY_BOUNDS_CHECK (and without debug mode, which adds "
                     "it) for a kernel using array views on this build.",
                 )
-            if self._template_args is None:
-                raw = cp.RawKernel(
-                    self._source,
-                    self._name,
-                    options=options,
-                )
-                raw.compile(log_stream=log_stream)
-            else:
-                module = cp.RawModule(
-                    code=self._source,
-                    options=options,
-                    name_expressions=[self.expression],
-                )
-                module.compile(log_stream=log_stream)
-                raw = module.get_function(self.expression)
+            with sp.region("cunumpy.CudaKernel.compile", tags=_PROFILE_TAGS):
+                if self._template_args is None:
+                    raw = cp.RawKernel(
+                        self._source,
+                        self._name,
+                        options=options,
+                    )
+                    raw.compile(log_stream=log_stream)
+                else:
+                    module = cp.RawModule(
+                        code=self._source,
+                        options=options,
+                        name_expressions=[self.expression],
+                    )
+                    module.compile(log_stream=log_stream)
+                    raw = module.get_function(self.expression)
             limits = _device_limits(device)
             attributes = dict(raw.attributes)
             static = max(0, attributes.get("shared_size_bytes", 0))
