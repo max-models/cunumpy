@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `PyccelCache` key includes the NumPy version, so environments that share an interpreter
   but not NumPy no longer share builds.
 
+### Added
+- scope-profiler regions around the coarse operations (`Kernel` calls as
+  `cunumpy.kernel.<name>`, CUDA and Pyccel compilation, `sort_by_key`,
+  `SegmentPlan.sum`, `compact_by_mask`, `morton_keys`, the solvers, `exchange`,
+  and the device copies of `mpi_buffer` and `DeviceMirror`), behind the opt-in
+  tag `cunumpy`: off unless the application enables it, e.g.
+  `sp.setup(enable_tags=["cunumpy"])` or `SCOPE_PROFILER_ENABLE_TAGS=cunumpy`.
+  New dependency: `scope-profiler>=0.7.5`.
+
 ### Changed
 - `xp.algorithms.sort_by_key` gathers a 2-D NumPy array along its last axis (component-major
   markers, `axis=-1`) row by row, about 2x faster than `take` (1e6 markers: 3 rows 12.9 to 6.7 ms,

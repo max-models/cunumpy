@@ -15,6 +15,8 @@ active backend is NumPy or CuPy (prefer :func:`get_backend` for the name).
 import re as _re
 from importlib.metadata import PackageNotFoundError, version
 
+import scope_profiler as _sp
+
 from cunumpy import (
     algorithms,
     arguments,
@@ -30,6 +32,7 @@ from cunumpy import (
     xp,
 )
 from cunumpy._host import evaluate_on_host, host_call, setup_on_host
+from cunumpy._profile_tags import _PROFILE_TAGS
 from cunumpy._scipy_backend import scipy
 from cunumpy._staging import to_host_async
 from cunumpy.xp import (
@@ -53,6 +56,10 @@ from cunumpy.xp import (
     to_numpy,
     use_backend,
 )
+
+# cunumpy's scope-profiler regions are off unless the application enables the
+# "cunumpy" tag
+_sp.register_opt_in_tag(*_PROFILE_TAGS)
 
 try:
     __version__ = version("cunumpy")

@@ -22,8 +22,10 @@ from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
+import scope_profiler as sp
 
 from cunumpy._philox import _module
+from cunumpy._profile_tags import _PROFILE_TAGS
 
 __all__ = [
     "MAX_MORTON_LEVELS",
@@ -196,6 +198,7 @@ def morton_scales(lower: Sequence[float], upper: Sequence[float], levels: int) -
     return float(2**levels) / (upper - lower)
 
 
+@sp.profile("cunumpy.morton_keys", tags=_PROFILE_TAGS)
 def morton_keys(
     positions: Any,
     lower: Sequence[float],

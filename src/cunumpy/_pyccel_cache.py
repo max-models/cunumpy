@@ -31,6 +31,10 @@ import tempfile
 from pathlib import Path
 from types import ModuleType
 
+import scope_profiler as sp
+
+from cunumpy._profile_tags import _PROFILE_TAGS
+
 #: Bumped when the layout of a cached build changes (it was an ``epyccel``
 #: folder before the ``pyccel compile`` command line was used). Part of the key.
 _LAYOUT = "pyccel-cli-1"
@@ -306,6 +310,7 @@ class PyccelCache:
             )
         return output
 
+    @sp.profile("cunumpy.PyccelCache.compile", tags=_PROFILE_TAGS)
     def compile(self, module: ModuleType, *, language: str | None = None) -> ModuleType:
         """Return the compiled form of `module`, building it on first use.
 

@@ -30,6 +30,7 @@ from typing import Any
 
 import array_api_compat
 import numpy as np
+import scope_profiler as sp
 
 from cunumpy._cuda_kernel import CudaKernel, _compile_in_threads
 from cunumpy._kernel import (
@@ -39,6 +40,7 @@ from cunumpy._kernel import (
     get_device_kernel_implementation,
     outputs_from_annotations,
 )
+from cunumpy._profile_tags import _PROFILE_TAGS
 from cunumpy._transfers import _ACTIVE as _COUNTERS
 from cunumpy._transfers import _record
 from cunumpy.xp import get_backend
@@ -240,6 +242,7 @@ class Kernel:
         self._host_kernel = host_kernel
         self._cuda_kernel = cuda_kernel
         self._name = name if name is not None else host_kernel.name
+        self._region = f"cunumpy.kernel.{self._name}"
         self._missing_cuda = missing_cuda
         self._cuda_path = None if cuda_path is None else Path(cuda_path)
         self._test_args_module = test_args
@@ -675,41 +678,42 @@ class Kernel:
             If the CUDA kernel runs without `n_threads`, `grid` or
             ``n_threads_from``.
         """
-        if self._dispatch == "arrays":
-            on_device = any(_on_device(arg) for arg in args)
-            kernel = self._device_kernel() if on_device else self._host_kernel
-        else:
-            on_device = get_backend() == "cupy"
-            kernel = self.get_kernel()
-        if kernel is self._host_kernel:
-            if _COUNTERS and self._cuda_kernel is None and on_device:
-                _record(
-                    "fallback",
-                    f"Kernel {self._name!r} has no CUDA kernel: host kernel "
-                    "called on the CuPy backend",
+        with sp.region(self._region, tags=_PROFILE_TAGS):
+            if self._dispatch == "arrays":
+                on_device = any(_on_device(arg) for arg in args)
+                kernel = self._device_kernel() if on_device else self._host_kernel
+            else:
+                on_device = get_backend() == "cupy"
+                kernel = self.get_kernel()
+            if kernel is self._host_kernel:
+                if _COUNTERS and self._cuda_kernel is None and on_device:
+                    _record(
+                        "fallback",
+                        f"Kernel {self._name!r} has no CUDA kernel: host kernel "
+                        "called on the CuPy backend",
+                    )
+                if (
+                    self._dispatch == "arrays"
+                    and not on_device
+                    and kernel._use_cupy is not True
+                ):
+                    # only host arguments, by the choice above: nothing to convert,
+                    # even while CuPy is the active backend
+                    return kernel.kernel(*args)
+                return kernel(*args)
+            if n_threads is None and grid is None and kernel.n_threads_from is None:
+                raise ValueError(
+                    f"{self._name}: n_threads is required to launch the CUDA kernel "
+                    "(or pass grid, or set cuda_kernel.n_threads_from)",
                 )
-            if (
-                self._dispatch == "arrays"
-                and not on_device
-                and kernel._use_cupy is not True
-            ):
-                # only host arguments, by the choice above: nothing to convert,
-                # even while CuPy is the active backend
-                return kernel.kernel(*args)
-            return kernel(*args)
-        if n_threads is None and grid is None and kernel.n_threads_from is None:
-            raise ValueError(
-                f"{self._name}: n_threads is required to launch the CUDA kernel "
-                "(or pass grid, or set cuda_kernel.n_threads_from)",
+            return kernel(
+                *args,
+                n_threads=n_threads,
+                grid=grid,
+                block=block,
+                shared_mem=shared_mem,
+                stream=stream,
             )
-        return kernel(
-            *args,
-            n_threads=n_threads,
-            grid=grid,
-            block=block,
-            shared_mem=shared_mem,
-            stream=stream,
-        )
 
 
 class KernelCatalog(Mapping):
@@ -978,6 +982,7 @@ class KernelCatalog(Mapping):
                 + "\n  ".join(problems),
             )
 
+    @sp.profile("cunumpy.KernelCatalog.compile_all", tags=_PROFILE_TAGS)
     def compile_all(self, jobs: int | None = 1) -> list[str]:
         """Compile all CUDA kernels now, e.g. at setup instead of in the first step.
 

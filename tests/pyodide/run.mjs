@@ -11,18 +11,26 @@ process.on("uncaughtException", (error) => {
   process.exit(1);
 });
 
-const [wheel] = process.argv.slice(2);
-if (!wheel || process.argv.length !== 3 || !wheel.endsWith("-py3-none-any.whl")) {
-  throw new Error("Usage: node run.mjs /path/to/cunumpy-VERSION-py3-none-any.whl");
+// Wheels after cunumpy's are dependencies installed alongside it, e.g. the devel branches of
+// the max-models packages, which micropip cannot install from git.
+const [wheel, ...dependencies] = process.argv.slice(2);
+if (!wheel || ![wheel, ...dependencies].every((path) => path.endsWith("-py3-none-any.whl"))) {
+  throw new Error(
+    "Usage: node run.mjs /path/to/cunumpy-VERSION-py3-none-any.whl [dependency wheels...]",
+  );
 }
 
 const pyodide = await loadPyodide();
 await pyodide.loadPackage(["micropip", "pytest"]);
-pyodide.FS.writeFile(`/tmp/${basename(wheel)}`, await readFile(wheel));
-pyodide.globals.set("wheel_uri", `emfs:/tmp/${basename(wheel)}`);
+const uris = [];
+for (const path of [...dependencies, wheel]) {
+  pyodide.FS.writeFile(`/tmp/${basename(path)}`, await readFile(path));
+  uris.push(`emfs:/tmp/${basename(path)}`);
+}
+pyodide.globals.set("wheel_uris", pyodide.toPy(uris));
 await pyodide.runPythonAsync(`
 import micropip
-await micropip.install(wheel_uri)
+await micropip.install(list(wheel_uris))
 `);
 pyodide.FS.mkdirTree("/tests");
 pyodide.FS.writeFile(
