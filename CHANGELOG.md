@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `PyccelCache` imports a new build once in a subprocess before it stores it: a build the
+  interpreter cannot import, or one that crashes it (an extension linked to `libpython` in a
+  Python that has it built in, such as uv's CPython 3.12 on macOS), is a `RuntimeError` and is
+  not stored, instead of a segmentation fault in every process that loads it.
+- The `PyccelCache` key includes the NumPy version, so environments that share an interpreter
+  but not NumPy no longer share builds.
+
 ### Added
 - scope-profiler regions around the coarse operations (`Kernel` calls as
   `cunumpy.kernel.<name>`, CUDA and Pyccel compilation, `sort_by_key`,

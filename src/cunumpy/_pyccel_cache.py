@@ -2,10 +2,12 @@
 
 :class:`PyccelCache` builds a module with the ``pyccel compile`` command line
 interface, in a subprocess, once. It keys a build on the module source, the
-target language, the OpenMP setting, the Pyccel and Python versions and the
-platform, and stores it under a per-package cache directory. Later processes,
-and other MPI ranks, import the stored extension directly; only the first run
-after an edit compiles.
+target language, the OpenMP setting, the Pyccel, NumPy and Python versions and
+the platform, and stores it under a per-package cache directory. Later
+processes, and other MPI ranks, import the stored extension directly; only the
+first run after an edit compiles. A new build is imported once in a subprocess
+before it is stored, so a build this interpreter cannot load is an error, not a
+crash of the process that uses it.
 
 cunumpy needs no Pyccel to import this module: Pyccel is looked up when a
 module is compiled, and a missing Pyccel is an :class:`ImportError` there, which
@@ -64,18 +66,75 @@ def _writable(directory: Path) -> bool:
     return os.access(directory, os.W_OK | os.X_OK)
 
 
-def _load_extension(directory: Path, stem: str) -> ModuleType | None:
+def _extension_path(directory: Path, stem: str) -> Path | None:
     for suffix in importlib.machinery.EXTENSION_SUFFIXES:
         path = directory / f"{stem}{suffix}"
-        if not path.is_file():
-            continue
-        spec = importlib.util.spec_from_file_location(stem, path)
-        if spec is None or spec.loader is None:
-            continue
-        extension = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(extension)
-        return extension
+        if path.is_file():
+            return path
     return None
+
+
+def _load_extension(directory: Path, stem: str) -> ModuleType | None:
+    path = _extension_path(directory, stem)
+    if path is not None:
+        spec = importlib.util.spec_from_file_location(stem, path)
+        if spec is not None and spec.loader is not None:
+            extension = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(extension)
+            return extension
+    return None
+
+
+#: Imports the extension at ``argv[1]`` as module ``argv[2]``.
+_IMPORT_CHECK = (
+    "import importlib.util, sys\n"
+    "spec = importlib.util.spec_from_file_location(sys.argv[2], sys.argv[1])\n"
+    "spec.loader.exec_module(importlib.util.module_from_spec(spec))\n"
+)
+
+
+def _check_importable(directory: Path, stem: str) -> None:
+    """Import a new build in a subprocess; raise if this interpreter cannot.
+
+    A build that crashes the interpreter on import (an extension linked to
+    ``libpython`` loaded into a Python with ``libpython`` built in, as with some
+    standalone CPython builds, runs two Pythons in one process) would otherwise
+    crash every process that loads it from the cache.
+    """
+    path = _extension_path(directory, stem)
+    if path is None:
+        raise ImportError(f"pyccel compile wrote no extension module for {stem}")
+    result = subprocess.run(
+        [sys.executable, "-c", _IMPORT_CHECK, str(path), stem],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=directory,
+    )
+    if result.returncode == 0:
+        return
+    how = (
+        f"crashed with signal {-result.returncode}"
+        if result.returncode < 0
+        else f"failed ({result.returncode})"
+    )
+    hint = (
+        "\nAn extension linked to libpython crashes a Python that has libpython "
+        "built in; `otool -L` (macOS) or `ldd` shows what it links."
+        if result.returncode < 0
+        else ""
+    )
+    raise RuntimeError(
+        f"importing the new build of {stem} with {sys.executable} {how}; it is "
+        f"not stored:\n{result.stdout}{result.stderr}{hint}"
+    )
+
+
+def _numpy_version() -> str:
+    try:
+        return importlib.metadata.version("numpy")
+    except importlib.metadata.PackageNotFoundError:
+        return "none"
 
 
 def _pyccel_version() -> str:
@@ -183,9 +242,10 @@ class PyccelCache:
     def build_key(self, module: ModuleType, language: str | None = None) -> str:
         """Return the key of `module`'s build, which changes with anything that changes it.
 
-        The module's own source, the language, the OpenMP setting, the Pyccel
-        and Python versions and the platform. Modules the kernel imports are not
-        part of it: edit the kernel (or clear the cache) after changing one.
+        The module's own source, the language, the OpenMP setting, the Pyccel,
+        NumPy and Python versions and the platform. Modules the kernel imports
+        are not part of it: edit the kernel (or clear the cache) after changing
+        one.
 
         Parameters
         ----------
@@ -211,6 +271,7 @@ class PyccelCache:
             _LAYOUT,
             f"openmp={self._openmp_for(module)}",
             _pyccel_version(),
+            f"numpy={_numpy_version()}",
             sys.version,
             platform.platform(),
         ):
@@ -270,8 +331,9 @@ class PyccelCache:
         ImportError
             If Pyccel is not installed.
         RuntimeError
-            With the output of ``pyccel compile`` if the build fails; callers
-            decide on a fallback.
+            With the output of ``pyccel compile`` if the build fails, or of
+            the import if this interpreter cannot import the new build (it is
+            then not stored); callers decide on a fallback.
         PermissionError
             If neither the cache nor the fallback directory is writable.
         """
@@ -293,6 +355,7 @@ class PyccelCache:
         ).absolute()
         try:
             build = self._build(module, language, staging)
+            _check_importable(build, stem)
             try:
                 # Atomic, so concurrent builders never see a partial directory.
                 os.rename(build, target)

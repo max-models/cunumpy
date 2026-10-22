@@ -1,5 +1,6 @@
 """PyccelCache: compile once, keep the build on disk, reuse it in later processes."""
 
+import importlib.machinery
 import importlib.metadata
 import importlib.util
 import os
@@ -97,6 +98,51 @@ def test_key_changes_with_the_source_and_the_openmp_setting(
     edited = make_module(SOURCE.replace("1.0", "2.0"), name="tiny_kernel_edited")
     edited.__name__ = module.__name__  # same name, other source
     assert cache.build_key(edited) != key
+
+
+def test_key_changes_with_the_numpy_version(make_module, cache, monkeypatch):
+    # a build is compiled against one NumPy's C API
+    monkeypatch.setattr(_pyccel_cache, "_pyccel_version", lambda: "test")
+    module = make_module()
+    monkeypatch.setattr(_pyccel_cache, "_numpy_version", lambda: "2.4.0")
+    key = cache.build_key(module)
+    monkeypatch.setattr(_pyccel_cache, "_numpy_version", lambda: "2.5.0")
+    assert cache.build_key(module) != key
+
+
+def _fake_build(content):
+    """A ``PyccelCache._build`` that writes `content` as the extension module."""
+
+    def build(self, module, language, staging):
+        output = staging / "build"
+        output.mkdir()
+        stem = module.__name__.rsplit(".", 1)[-1]
+        suffix = importlib.machinery.EXTENSION_SUFFIXES[0]
+        (output / f"{stem}{suffix}").write_bytes(content)
+        return output
+
+    return build
+
+
+def test_a_build_that_cannot_be_imported_is_not_stored(make_module, cache, monkeypatch):
+    # no compiler needed: the "build" is a file no interpreter can import
+    monkeypatch.setattr(_pyccel_cache, "_pyccel_version", lambda: "test")
+    monkeypatch.setattr(xp.kernels.PyccelCache, "_build", _fake_build(b"not a library"))
+    with pytest.raises(RuntimeError, match="not stored"):
+        cache.compile(make_module())
+    assert not list(cache.cache_root().iterdir())
+
+
+def test_a_build_that_crashes_the_interpreter_names_the_signal(
+    make_module, cache, monkeypatch
+):
+    monkeypatch.setattr(_pyccel_cache, "_pyccel_version", lambda: "test")
+    monkeypatch.setattr(xp.kernels.PyccelCache, "_build", _fake_build(b""))
+    crashed = SimpleNamespace(returncode=-11, stdout="", stderr="Segmentation fault")
+    monkeypatch.setattr(_pyccel_cache.subprocess, "run", lambda *a, **k: crashed)
+    with pytest.raises(RuntimeError, match="signal 11(.|\n)*libpython"):
+        cache.compile(make_module())
+    assert not list(cache.cache_root().iterdir())
 
 
 def test_a_module_calling_the_openmp_runtime_keeps_openmp(
