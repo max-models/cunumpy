@@ -257,8 +257,8 @@ inside `with xp.kernels.use_host_kernel_implementation("numpy"):` (or set
 
 `epyccel` compiles again on every call, in every process. `PyccelCache(name)`
 compiles a module once with the `pyccel compile` command and keeps the build
-on disk, keyed on the module source, the OpenMP setting, the Pyccel and Python
-versions and the platform, so only the first run after an edit compiles:
+on disk, keyed on the module source, the OpenMP setting, the Pyccel, NumPy and
+Python versions and the platform, so only the first run after an edit compiles:
 
 - builds go to `~/.cache/<name>/kernels`, or the directory in
   `<NAME>_KERNEL_CACHE`; if that is not writable, to `<tmp>/<name>-kernels`;
@@ -266,6 +266,10 @@ versions and the platform, so only the first run after an edit compiles:
   modules that call the OpenMP runtime;
 - builds are published with an atomic rename, so MPI ranks compiling the same
   module on a cold cache never load a partial build;
+- a new build is imported once in a subprocess before it is published; if that
+  import fails or crashes the interpreter (an extension linked to `libpython` in
+  a Python that has it built in), `compile` raises instead and nothing is
+  stored, so the process that uses the cache does not crash;
 - the key covers the module's own source only: after editing a module the
   kernel imports, edit the kernel or clear the cache.
 
