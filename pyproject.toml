@@ -25,6 +25,7 @@ dependencies = [
   "array-api-compat",
   "maybempi>=0.1.2",
   "numpy",
+  "scope-profiler>=0.7.5",
 ]
 
 optional-dependencies.dev = [
@@ -51,6 +52,7 @@ cunumpy = [ "py.typed", "*.pyi", "LLM_GUIDE.md", "cuda/include/cunumpy/*.cuh" ]
 # and the release use PyPI only.
 [tool.uv.sources]
 maybempi = { git = "https://github.com/max-models/maybempi", branch = "devel" }
+scope-profiler = { git = "https://github.com/max-models/scope-profiler", branch = "devel" }
 
 [tool.ruff]
 # agent worktrees and scratch scripts are local copies, not part of the project

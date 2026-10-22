@@ -7,8 +7,10 @@ import operator
 from typing import Any
 
 import array_api_compat.numpy as np
+import scope_profiler as sp
 
 from cunumpy import _fake_cupy
+from cunumpy._profile_tags import _PROFILE_TAGS
 from cunumpy.xp import assert_same_backend, get_array_backend, get_array_module
 
 
@@ -202,6 +204,7 @@ class SegmentPlan:
         """Number of output segments, fixed when the plan is created."""
         return self._n_segments
 
+    @sp.profile("cunumpy.SegmentPlan.sum", tags=_PROFILE_TAGS)
     def sum(self, values: Any, *, out: Any = None) -> Any:
         """Sum the rows of `values` per segment.
 
@@ -371,6 +374,7 @@ def _radix_argsort(keys: np.ndarray) -> np.ndarray:
     return order.astype(np.int64, copy=False)
 
 
+@sp.profile("cunumpy.sort_by_key", tags=_PROFILE_TAGS)
 def sort_by_key(keys: Any, *arrays: Any, axis: int = 0) -> tuple[Any, ...]:
     """Sort `keys` and reorder every array the same way, in one stable argsort.
 
@@ -460,6 +464,7 @@ def _take_along_axis(xpm: Any, array: Any, order: Any, axis: int) -> Any:
     return xpm.take(array, order, axis=axis)
 
 
+@sp.profile("cunumpy.compact_by_mask", tags=_PROFILE_TAGS)
 def compact_by_mask(mask: Any, *arrays: Any, axis: int = 0) -> int:
     """Move the entries where `mask` is True to the front of every array, in place.
 

@@ -10,8 +10,10 @@ from typing import Any
 
 import array_api_compat
 import array_api_compat.numpy as np
+import scope_profiler as sp
 from maybempi import get_mpi
 
+from cunumpy._profile_tags import _PROFILE_TAGS
 from cunumpy._transfers import _ACTIVE as _COUNTERS
 from cunumpy._transfers import _describe, _nbytes, _record, _record_sync
 from cunumpy.xp import array_backend, cupy_available, to_numpy
@@ -340,9 +342,10 @@ def mpi_buffer(
         synchronize_for_mpi(array, stream=stream, event=event)
         transfer_array = staging._transfer_array(array)
         if send:
-            if transfer_array is not array:
-                transfer_array[...] = array
-            transfer_array.get(out=host)
+            with sp.region("cunumpy.mpi_buffer.to_host", tags=_PROFILE_TAGS):
+                if transfer_array is not array:
+                    transfer_array[...] = array
+                transfer_array.get(out=host)
             if _COUNTERS:
                 _record(
                     "to_host",
@@ -351,21 +354,23 @@ def mpi_buffer(
                 )
         yield host
         if recv:
-            transfer_array.set(host)
-            if _COUNTERS:
-                _record(
-                    "to_device",
-                    f"mpi_buffer({_describe(array)}) staging for recv",
-                    nbytes=_nbytes(array),
-                )
-            # Ensure MPI's host buffer can be reused immediately on context exit.
-            if transfer_array is not array:
-                array[...] = transfer_array
-            if _COUNTERS:
-                _record_sync("mpi_buffer() staging for recv")
-            cp.cuda.get_current_stream().synchronize()
+            with sp.region("cunumpy.mpi_buffer.to_device", tags=_PROFILE_TAGS):
+                transfer_array.set(host)
+                if _COUNTERS:
+                    _record(
+                        "to_device",
+                        f"mpi_buffer({_describe(array)}) staging for recv",
+                        nbytes=_nbytes(array),
+                    )
+                # Ensure MPI's host buffer can be reused immediately on context exit.
+                if transfer_array is not array:
+                    array[...] = transfer_array
+                if _COUNTERS:
+                    _record_sync("mpi_buffer() staging for recv")
+                cp.cuda.get_current_stream().synchronize()
 
 
+@sp.profile("cunumpy.exchange", tags=_PROFILE_TAGS)
 def exchange(
     comm: Any,
     *,
