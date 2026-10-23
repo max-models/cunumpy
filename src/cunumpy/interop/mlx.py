@@ -8,7 +8,22 @@ from cunumpy.interop._common import cast, record, require, target_backend
 
 
 def to_framework(array: Any, *, device: Any = None, dtype: Any = None) -> Any:
-    """Convert a NumPy or CuPy array to an MLX array."""
+    """Convert a NumPy or CuPy array to an MLX array.
+
+    Parameters
+    ----------
+    array : object
+        Array to convert.
+    device : object or None, optional
+        MLX device on which to place the result.
+    dtype : object or None, optional
+        Dtype for the result.
+
+    Returns
+    -------
+    object
+        MLX array.
+    """
     mlx = require("mlx.core", extra="mlx")
     if type(array).__module__.startswith("mlx"):
         result = array
@@ -24,7 +39,22 @@ def to_framework(array: Any, *, device: Any = None, dtype: Any = None) -> Any:
 
 
 def from_framework(array: Any, *, backend: str = "numpy", dtype: Any = None) -> Any:
-    """Convert an MLX array to a NumPy or CuPy array."""
+    """Convert an MLX array to a NumPy or CuPy array.
+
+    Parameters
+    ----------
+    array : object
+        MLX array to convert.
+    backend : {"numpy", "cupy"}, default="numpy"
+        Array library to construct.
+    dtype : object or None, optional
+        Dtype for the result.
+
+    Returns
+    -------
+    object
+        NumPy or CuPy array.
+    """
     target = target_backend(backend)
     if hasattr(array, "__dlpack__") and hasattr(target, "from_dlpack"):
         result = target.from_dlpack(array)

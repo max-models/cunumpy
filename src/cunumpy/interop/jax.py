@@ -12,6 +12,20 @@ def to_framework(array: Any, *, device: Any = None, dtype: Any = None) -> Any:
 
     DLPack is used when available; `device` and `dtype` are explicit optional
     conversions.
+
+    Parameters
+    ----------
+    array : object
+        Array to convert.
+    device : object or None, optional
+        JAX device on which to place the result.
+    dtype : object or None, optional
+        Dtype for the result.
+
+    Returns
+    -------
+    object
+        JAX array.
     """
     jax = require("jax")
     import jax.numpy as jnp
@@ -30,7 +44,22 @@ def to_framework(array: Any, *, device: Any = None, dtype: Any = None) -> Any:
 
 
 def from_framework(array: Any, *, backend: str = "numpy", dtype: Any = None) -> Any:
-    """Convert a JAX array to a NumPy or CuPy array."""
+    """Convert a JAX array to a NumPy or CuPy array.
+
+    Parameters
+    ----------
+    array : object
+        JAX array to convert.
+    backend : {"numpy", "cupy"}, default="numpy"
+        Array library to construct.
+    dtype : object or None, optional
+        Dtype for the result.
+
+    Returns
+    -------
+    object
+        NumPy or CuPy array.
+    """
     target = target_backend(backend)
     if hasattr(target, "from_dlpack") and hasattr(array, "__dlpack__"):
         result = target.from_dlpack(array)
