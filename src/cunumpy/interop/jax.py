@@ -29,9 +29,7 @@ def to_framework(array: Any, *, device: Any = None, dtype: Any = None) -> Any:
     return result
 
 
-def from_framework(
-    array: Any, *, backend: str = "numpy", dtype: Any = None
-) -> Any:
+def from_framework(array: Any, *, backend: str = "numpy", dtype: Any = None) -> Any:
     """Convert a JAX array to a NumPy or CuPy array."""
     target = target_backend(backend)
     if hasattr(target, "from_dlpack") and hasattr(array, "__dlpack__"):

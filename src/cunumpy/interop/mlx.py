@@ -23,9 +23,7 @@ def to_framework(array: Any, *, device: Any = None, dtype: Any = None) -> Any:
     return result
 
 
-def from_framework(
-    array: Any, *, backend: str = "numpy", dtype: Any = None
-) -> Any:
+def from_framework(array: Any, *, backend: str = "numpy", dtype: Any = None) -> Any:
     """Convert an MLX array to a NumPy or CuPy array."""
     target = target_backend(backend)
     if hasattr(array, "__dlpack__") and hasattr(target, "from_dlpack"):

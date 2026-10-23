@@ -19,9 +19,7 @@ def test_dlpack_helpers_use_array_protocol(monkeypatch):
     target = types.SimpleNamespace(
         from_dlpack=lambda source: np.array([source.__dlpack__()]),
     )
-    monkeypatch.setattr(
-        "cunumpy.interop.dlpack.target_backend", lambda backend: target
-    )
+    monkeypatch.setattr("cunumpy.interop.dlpack.target_backend", lambda backend: target)
     result = dlpack.from_dlpack(Source())
     np.testing.assert_array_equal(result, ["capsule"])
 
