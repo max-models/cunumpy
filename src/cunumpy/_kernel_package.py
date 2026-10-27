@@ -123,15 +123,18 @@ class KernelPackage:
         self.n_threads_from = n_threads_from
         self.threadgroup = threadgroup
 
-    def __repr__(self) -> str:
-        return f"KernelPackage({self.name!r})"
-
     @property
     def options(self) -> dict[str, Any]:
         """The options :meth:`from_folder` passes to ``Kernel.from_folder``.
 
         The same options fit :meth:`KernelCatalog.from_package
         <cunumpy.kernels.KernelCatalog.from_package>`.
+
+        Returns
+        -------
+        dict
+            ``host_suffix``, ``compile_host`` (:attr:`cache`), ``dispatch``,
+            ``block_size`` and ``n_threads_from``.
         """
         return {
             "host_suffix": self.host_suffix,
@@ -158,6 +161,7 @@ class KernelPackage:
         Returns
         -------
         Kernel
+            The folder's kernel; nothing is compiled yet.
         """
         return Kernel.from_folder(package, **{**self.options, **options})
 
@@ -180,8 +184,16 @@ class KernelPackage:
 
         Parameters
         ----------
-        name, source, inputs, outputs, header
-            As for :class:`~cunumpy.kernels.MetalKernel`.
+        name : str
+            Name of the kernel; part of the compiled function name.
+        source : str
+            Body of the Metal kernel function.
+        inputs : sequence of str
+            Names of the input arrays, in call order.
+        outputs : sequence of str
+            Names of the output arrays, in the order passed as ``out``.
+        header : str, optional
+            Source before the kernel function: includes, defines, helpers.
         **options
             Passed on to :class:`~cunumpy.kernels.MetalKernel`, replacing
             ``threadgroup=``:attr:`threadgroup`, ``float64="cast"`` and
@@ -190,6 +202,7 @@ class KernelPackage:
         Returns
         -------
         MetalKernel
+            The kernel, compiled by MLX on its first call.
         """
         options = {
             "threadgroup": self.threadgroup,
@@ -200,3 +213,6 @@ class KernelPackage:
         return MetalKernel(
             source, inputs=inputs, outputs=outputs, name=name, header=header, **options
         )
+
+    def __repr__(self) -> str:
+        return f"KernelPackage({self.name!r})"

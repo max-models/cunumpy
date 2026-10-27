@@ -215,6 +215,7 @@ def shared_memory_fits(num_values: int, itemsize: int = 8) -> bool:
     Returns
     -------
     bool
+        True if ``num_values * itemsize`` bytes fit in one block.
 
     Examples
     --------
