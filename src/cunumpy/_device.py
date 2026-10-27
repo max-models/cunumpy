@@ -199,6 +199,33 @@ without a GPU.
 """
 
 
+def shared_memory_fits(num_values: int, itemsize: int = 8) -> bool:
+    """Return whether `num_values` values fit the default shared memory of a block.
+
+    The limit is :data:`DEFAULT_SHARED_MEMORY_PER_BLOCK`, which every device
+    provides without an opt-in, so the answer is the same with or without a GPU.
+
+    Parameters
+    ----------
+    num_values : int
+        Number of values in the per-block buffer.
+    itemsize : int, optional
+        Bytes per value. Default 8 (float64).
+
+    Returns
+    -------
+    bool
+
+    Examples
+    --------
+    >>> xp.cuda.shared_memory_fits(6144)
+    True
+    >>> xp.cuda.shared_memory_fits(6145)
+    False
+    """
+    return num_values * itemsize <= DEFAULT_SHARED_MEMORY_PER_BLOCK
+
+
 def max_shared_memory_per_block(
     device: int | None = None,
     *,

@@ -42,6 +42,7 @@ from cunumpy._device import (
     set_cuda_debug,
     set_device,
     set_device_for_rank,
+    shared_memory_fits,
     stream,
 )
 from cunumpy._streams import (
@@ -80,6 +81,7 @@ __all__ = [
     "set_cuda_debug",
     "set_device",
     "set_device_for_rank",
+    "shared_memory_fits",
     "stream",
     "wait_event",
 ]
