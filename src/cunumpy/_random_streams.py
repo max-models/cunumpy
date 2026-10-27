@@ -51,14 +51,6 @@ class RandomStreams:
         self._bit_generator = "PCG64"
         self._generators: dict[str, Any] = {}
 
-    def __repr__(self) -> str:
-        if self._sequence is None:
-            return "RandomStreams(not seeded)"
-        return (
-            f"RandomStreams(entropy={self._sequence.entropy}, "
-            f"spawn_key={self._sequence.spawn_key}, bit_generator={self._bit_generator!r})"
-        )
-
     def seed(
         self,
         value: int | None,
@@ -276,6 +268,14 @@ class RandomStreams:
         if hasattr(rng, "uniform"):
             return rng.uniform(low=low, high=high, size=size)
         return low + (high - low) * rng.random(size=size)
+
+    def __repr__(self) -> str:
+        if self._sequence is None:
+            return "RandomStreams(not seeded)"
+        return (
+            f"RandomStreams(entropy={self._sequence.entropy}, "
+            f"spawn_key={self._sequence.spawn_key}, bit_generator={self._bit_generator!r})"
+        )
 
 
 random_streams = RandomStreams()

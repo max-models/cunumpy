@@ -30,6 +30,7 @@ from typing import Any
 
 import array_api_compat
 import numpy as np
+import scope_profiler as sp
 
 from cunumpy._cuda_kernel import CudaKernel, _compile_in_threads
 from cunumpy._kernel import (
@@ -39,6 +40,7 @@ from cunumpy._kernel import (
     get_device_kernel_implementation,
     outputs_from_annotations,
 )
+from cunumpy._profile_tags import _PROFILE_TAGS
 from cunumpy._transfers import _ACTIVE as _COUNTERS
 from cunumpy._transfers import _record
 from cunumpy.xp import get_backend
@@ -240,6 +242,7 @@ class Kernel:
         self._host_kernel = host_kernel
         self._cuda_kernel = cuda_kernel
         self._name = name if name is not None else host_kernel.name
+        self._region = f"cunumpy.kernel.{self._name}"
         self._missing_cuda = missing_cuda
         self._cuda_path = None if cuda_path is None else Path(cuda_path)
         self._test_args_module = test_args
@@ -416,12 +419,6 @@ class Kernel:
             test_args=test_args,
         )
 
-    def __repr__(self) -> str:
-        return (
-            f"Kernel(name={self._name!r}, cuda={self._cuda_kernel is not None}, "
-            f"missing_cuda={self._missing_cuda!r})"
-        )
-
     @property
     def name(self) -> str:
         """Name of the kernel."""
@@ -546,6 +543,32 @@ class Kernel:
         )
         return (*host, "cuda") if self._cuda_kernel is not None else host
 
+    def _device_kernel(self) -> PyccelKernel | CudaKernel:
+        """Resolve the device selection, honoring fallback only in automatic mode."""
+        if self._cuda_kernel is not None:
+            return self._cuda_kernel
+        if get_device_kernel_implementation() == "cuda":
+            raise LookupError(
+                f"kernel {self._name!r} has no 'cuda' implementation "
+                "(explicitly selected device implementation)",
+            )
+        if self._missing_cuda == "raise":
+            expected = (
+                "" if self._cuda_path is None else f" (expected {self._cuda_path})"
+            )
+            raise NotImplementedError(
+                f"No CUDA version of kernel {self._name!r}{expected}.",
+            )
+        if not self._warned:
+            warnings.warn(
+                f"No CUDA version of kernel {self._name!r}: calling the host kernel, "
+                "which copies its arrays to the host and back at every call.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            self._warned = True
+        return self._host_kernel
+
     def selected(self, device: bool = False) -> str:
         """Return the implementation a call runs now, e.g. to rule out a slow path.
 
@@ -605,32 +628,6 @@ class Kernel:
             return self._host_kernel
         return self._device_kernel()
 
-    def _device_kernel(self) -> PyccelKernel | CudaKernel:
-        """Resolve the device selection, honoring fallback only in automatic mode."""
-        if self._cuda_kernel is not None:
-            return self._cuda_kernel
-        if get_device_kernel_implementation() == "cuda":
-            raise LookupError(
-                f"kernel {self._name!r} has no 'cuda' implementation "
-                "(explicitly selected device implementation)",
-            )
-        if self._missing_cuda == "raise":
-            expected = (
-                "" if self._cuda_path is None else f" (expected {self._cuda_path})"
-            )
-            raise NotImplementedError(
-                f"No CUDA version of kernel {self._name!r}{expected}.",
-            )
-        if not self._warned:
-            warnings.warn(
-                f"No CUDA version of kernel {self._name!r}: calling the host kernel, "
-                "which copies its arrays to the host and back at every call.",
-                RuntimeWarning,
-                stacklevel=3,
-            )
-            self._warned = True
-        return self._host_kernel
-
     def compile(self) -> bool:
         """Compile the CUDA kernel now, if there is one.
 
@@ -675,40 +672,47 @@ class Kernel:
             If the CUDA kernel runs without `n_threads`, `grid` or
             ``n_threads_from``.
         """
-        if self._dispatch == "arrays":
-            on_device = any(_on_device(arg) for arg in args)
-            kernel = self._device_kernel() if on_device else self._host_kernel
-        else:
-            on_device = get_backend() == "cupy"
-            kernel = self.get_kernel()
-        if kernel is self._host_kernel:
-            if _COUNTERS and self._cuda_kernel is None and on_device:
-                _record(
-                    "fallback",
-                    f"Kernel {self._name!r} has no CUDA kernel: host kernel "
-                    "called on the CuPy backend",
+        with sp.region(self._region, tags=_PROFILE_TAGS):
+            if self._dispatch == "arrays":
+                on_device = any(_on_device(arg) for arg in args)
+                kernel = self._device_kernel() if on_device else self._host_kernel
+            else:
+                on_device = get_backend() == "cupy"
+                kernel = self.get_kernel()
+            if kernel is self._host_kernel:
+                if _COUNTERS and self._cuda_kernel is None and on_device:
+                    _record(
+                        "fallback",
+                        f"Kernel {self._name!r} has no CUDA kernel: host kernel "
+                        "called on the CuPy backend",
+                    )
+                if (
+                    self._dispatch == "arrays"
+                    and not on_device
+                    and kernel._use_cupy is not True
+                ):
+                    # only host arguments, by the choice above: nothing to convert,
+                    # even while CuPy is the active backend
+                    return kernel.kernel(*args)
+                return kernel(*args)
+            if n_threads is None and grid is None and kernel.n_threads_from is None:
+                raise ValueError(
+                    f"{self._name}: n_threads is required to launch the CUDA kernel "
+                    "(or pass grid, or set cuda_kernel.n_threads_from)",
                 )
-            if (
-                self._dispatch == "arrays"
-                and not on_device
-                and kernel._use_cupy is not True
-            ):
-                # only host arguments, by the choice above: nothing to convert,
-                # even while CuPy is the active backend
-                return kernel.kernel(*args)
-            return kernel(*args)
-        if n_threads is None and grid is None and kernel.n_threads_from is None:
-            raise ValueError(
-                f"{self._name}: n_threads is required to launch the CUDA kernel "
-                "(or pass grid, or set cuda_kernel.n_threads_from)",
+            return kernel(
+                *args,
+                n_threads=n_threads,
+                grid=grid,
+                block=block,
+                shared_mem=shared_mem,
+                stream=stream,
             )
-        return kernel(
-            *args,
-            n_threads=n_threads,
-            grid=grid,
-            block=block,
-            shared_mem=shared_mem,
-            stream=stream,
+
+    def __repr__(self) -> str:
+        return (
+            f"Kernel(name={self._name!r}, cuda={self._cuda_kernel is not None}, "
+            f"missing_cuda={self._missing_cuda!r})"
         )
 
 
@@ -885,23 +889,6 @@ class KernelCatalog(Mapping):
         self._kernels[name] = kernel
         return kernel
 
-    def __getitem__(self, name: str) -> Kernel:
-        return self._kernels[name]
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._kernels)
-
-    def __len__(self) -> int:
-        return len(self._kernels)
-
-    def __repr__(self) -> str:
-        return (
-            f"KernelCatalog({len(self)} kernels, {len(self.without_cuda)} without CUDA)"
-        )
-
-    def __str__(self) -> str:
-        return self.summary()
-
     def summary(self, max_missing: int = 10) -> str:
         """Return one line on the porting status, e.g. for a ``--status`` command.
 
@@ -978,6 +965,7 @@ class KernelCatalog(Mapping):
                 + "\n  ".join(problems),
             )
 
+    @sp.profile("cunumpy.KernelCatalog.compile_all", tags=_PROFILE_TAGS)
     def compile_all(self, jobs: int | None = 1) -> list[str]:
         """Compile all CUDA kernels now, e.g. at setup instead of in the first step.
 
@@ -1010,3 +998,20 @@ class KernelCatalog(Mapping):
             },
             jobs,
         )
+
+    def __getitem__(self, name: str) -> Kernel:
+        return self._kernels[name]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._kernels)
+
+    def __len__(self) -> int:
+        return len(self._kernels)
+
+    def __repr__(self) -> str:
+        return (
+            f"KernelCatalog({len(self)} kernels, {len(self.without_cuda)} without CUDA)"
+        )
+
+    def __str__(self) -> str:
+        return self.summary()

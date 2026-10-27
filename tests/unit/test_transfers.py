@@ -154,6 +154,13 @@ def test_to_cunumpy_counts_the_direction_it_delegates_to(fake_device, monkeypatc
     assert counter.to_device == 1 and counter.to_host == 0
 
 
+def _current_line() -> int:
+    """Line number of the caller."""
+    import sys
+
+    return sys._getframe(1).f_lineno
+
+
 # ---------------------------------------------------------------------------
 # Call sites and report
 # ---------------------------------------------------------------------------
@@ -415,10 +422,3 @@ def test_assert_no_transfers_on_device_only_work():
         values = xp.arange(10, dtype=xp.float64)
         values = values * 2 + 1
         xp.synchronize()
-
-
-def _current_line() -> int:
-    """Line number of the caller."""
-    import sys
-
-    return sys._getframe(1).f_lineno

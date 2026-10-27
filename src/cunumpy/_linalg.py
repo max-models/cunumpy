@@ -5,7 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import scope_profiler as sp
 
+from cunumpy._profile_tags import _PROFILE_TAGS
 from cunumpy.xp import get_array_module
 
 
@@ -24,6 +26,7 @@ def _as_inexact(xpm: Any, a: Any) -> Any:
     return a
 
 
+@sp.profile("cunumpy.solve_circulant", tags=_PROFILE_TAGS)
 def solve_circulant(
     c: Any,
     b: Any,

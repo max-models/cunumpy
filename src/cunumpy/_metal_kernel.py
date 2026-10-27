@@ -105,6 +105,13 @@ class MetalKernel:
     array([0., 2., 4., 6.], dtype=float32)
     """
 
+    @staticmethod
+    def _as_triple(value: int | Sequence[int], what: str, default: int) -> tuple:
+        values = (int(value),) if isinstance(value, (int, np.integer)) else tuple(value)
+        if not 1 <= len(values) <= 3 or any(v < 1 for v in values):
+            raise ValueError(f"{what} must be 1 to 3 positive integers, got {value!r}")
+        return values + (default,) * (3 - len(values))
+
     def __init__(
         self,
         source: str,
@@ -135,18 +142,6 @@ class MetalKernel:
         self.atomic_outputs = atomic_outputs
         self.init_value = init_value
         self._kernel: Any = None
-
-    def __repr__(self) -> str:
-        return (
-            f"MetalKernel({self.name!r}, inputs={self.inputs}, outputs={self.outputs})"
-        )
-
-    @staticmethod
-    def _as_triple(value: int | Sequence[int], what: str, default: int) -> tuple:
-        values = (int(value),) if isinstance(value, (int, np.integer)) else tuple(value)
-        if not 1 <= len(values) <= 3 or any(v < 1 for v in values):
-            raise ValueError(f"{what} must be 1 to 3 positive integers, got {value!r}")
-        return values + (default,) * (3 - len(values))
 
     @staticmethod
     def _as_input(value: Any) -> np.ndarray:
@@ -277,3 +272,8 @@ class MetalKernel:
                     nbytes=_nbytes(host),
                 )
         return outs[0] if len(outs) == 1 else outs
+
+    def __repr__(self) -> str:
+        return (
+            f"MetalKernel({self.name!r}, inputs={self.inputs}, outputs={self.outputs})"
+        )

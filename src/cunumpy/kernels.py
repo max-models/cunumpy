@@ -19,7 +19,9 @@ function into one CuPy kernel. See :doc:`/kernels/overview`.
 
 A :class:`PyccelCache` compiles Pyccel kernel modules on first use and keeps
 the builds on disk, keyed on their source, for later processes: pass it as
-``compile_host`` (see :doc:`/kernels/dispatch`).
+``compile_host`` (see :doc:`/kernels/dispatch`). A :class:`KernelPackage` holds
+the cache and the launch options shared by the kernel folders of one package;
+:func:`source_roots` finds the headers of other packages for ``include_dirs``.
 
 A :class:`MetalKernel` runs a Metal Shading Language kernel on the GPU of an
 Apple silicon Mac through MLX (``pip install 'cunumpy[metal]'``), on NumPy
@@ -51,6 +53,7 @@ from cunumpy._kernel import (
     use_device_kernel_implementation,
     use_host_kernel_implementation,
 )
+from cunumpy._kernel_package import KernelPackage, source_roots
 from cunumpy._metal_kernel import MetalKernel, metal_available
 from cunumpy._pyccel_cache import PyccelCache
 
@@ -63,6 +66,7 @@ __all__ = [
     "HostImplementations",
     "Kernel",
     "KernelCatalog",
+    "KernelPackage",
     "MetalKernel",
     "PyccelCache",
     "PyccelKernel",
@@ -76,6 +80,7 @@ __all__ = [
     "outputs_from_annotations",
     "set_device_kernel_implementation",
     "set_host_kernel_implementation",
+    "source_roots",
     "use_device_kernel_implementation",
     "use_host_kernel_implementation",
 ]

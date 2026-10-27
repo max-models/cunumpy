@@ -8,8 +8,11 @@ import importlib
 from collections.abc import Callable
 from typing import Any
 
+import scope_profiler as sp
+
 from cunumpy import xp
 from cunumpy._host import _to_device
+from cunumpy._profile_tags import _PROFILE_TAGS
 
 
 def _scipy(name: str, function: str) -> Any:
@@ -79,6 +82,7 @@ class _Bridge:
         return out
 
 
+@sp.profile("cunumpy.fsolve", tags=_PROFILE_TAGS)
 def fsolve(
     func: Callable[..., Any],
     x0: Any,
@@ -134,6 +138,7 @@ def fsolve(
     return bridge.result(out)
 
 
+@sp.profile("cunumpy.root", tags=_PROFILE_TAGS)
 def root(
     fun: Callable[..., Any],
     x0: Any,
@@ -190,6 +195,7 @@ def root(
     return bridge.result(out)
 
 
+@sp.profile("cunumpy.minimize", tags=_PROFILE_TAGS)
 def minimize(
     fun: Callable[..., Any],
     x0: Any,
@@ -266,6 +272,7 @@ def minimize(
     return bridge.result(out)
 
 
+@sp.profile("cunumpy.quad", tags=_PROFILE_TAGS)
 def quad(
     func: Callable[..., Any],
     a: float,
@@ -313,6 +320,7 @@ def quad(
     )
 
 
+@sp.profile("cunumpy.odeint", tags=_PROFILE_TAGS)
 def odeint(
     func: Callable[..., Any],
     y0: Any,

@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-10-27
+
+### Fixed
+- `PyccelCache` imports a new build once in a subprocess before it stores it: a build the
+  interpreter cannot import, or one that crashes it (an extension linked to `libpython` in a
+  Python that has it built in, such as uv's CPython 3.12 on macOS), is a `RuntimeError` and is
+  not stored, instead of a segmentation fault in every process that loads it.
+- The `PyccelCache` key includes the NumPy version, so environments that share an interpreter
+  but not NumPy no longer share builds.
+
+### Added
+- `xp.kernels.KernelPackage(name)`: the `PyccelCache` and the `Kernel.from_folder` options
+  shared by the kernel folders of one package (`host_suffix="_pyccel"`, `dispatch="arrays"`,
+  `block_size=256`, `n_threads_from="last_axis"`), with `from_folder(package, **overrides)`
+  and `metal_kernel(...)` (float32 `MetalKernel`s with zeroed outputs), so packages no longer
+  keep their own copies of these settings.
+- `xp.kernels.source_roots(*packages)`: the source roots of installed packages, for
+  `include_dirs` of a CUDA kernel that includes another package's header.
+- `xp.cuda.shared_memory_fits(num_values, itemsize=8)`: whether a per-block buffer fits
+  `DEFAULT_SHARED_MEMORY_PER_BLOCK`.
+- scope-profiler regions around the coarse operations (`Kernel` calls as
+  `cunumpy.kernel.<name>`, CUDA and Pyccel compilation, `sort_by_key`,
+  `SegmentPlan.sum`, `compact_by_mask`, `morton_keys`, the solvers, `exchange`,
+  and the device copies of `mpi_buffer` and `DeviceMirror`), behind the opt-in
+  tag `cunumpy`: off unless the application enables it, e.g.
+  `sp.setup(enable_tags=["cunumpy"])` or `SCOPE_PROFILER_ENABLE_TAGS=cunumpy`.
+  New dependency: `scope-profiler>=0.7.5`.
+
 ### Changed
 - `xp.algorithms.sort_by_key` gathers a 2-D NumPy array along its last axis (component-major
   markers, `axis=-1`) row by row, about 2x faster than `take` (1e6 markers: 3 rows 12.9 to 6.7 ms,
@@ -440,7 +468,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **Dynamic Dispatch Architecture**: Refactored `src/cunumpy/xp.py` to use module-level `__getattr__`. This ensures that `cunumpy.<op>` calls always resolve to the currently active backend module, enabling seamless runtime switching via `set_backend`.
 - **Type Safety**: Updated `src/cunumpy/__init__.pyi` stubs to provide full IDE autocompletion and type-checking for all new API methods.
-- **Documentation**: 
+- **Documentation**:
     - Simplified `README.md` and documentation to exclusively focus on PyPI installation (`pip install cunumpy`).
     - Enhanced `quickstart.md` and `api.md` with usage examples for the new backend control and synchronization features.
 - **CI/CD**: Restricted GitHub Pages documentation deployment to the `devel` branch only.

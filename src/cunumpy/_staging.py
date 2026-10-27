@@ -182,12 +182,6 @@ class HostStaging:
         self._stream: Any = None
         self._device_id: int | None = None
 
-    def __repr__(self) -> str:
-        return (
-            f"HostStaging(shape={self.shape}, dtype={self.dtype}, "
-            f"buffers={self._n_buffers})"
-        )
-
     @property
     def shape(self) -> tuple[int, ...]:
         """The fixed shape of each snapshot."""
@@ -320,6 +314,12 @@ class HostStaging:
             if slot.event is not None:
                 with slot.context():
                     slot.event.synchronize()
+
+    def __repr__(self) -> str:
+        return (
+            f"HostStaging(shape={self.shape}, dtype={self.dtype}, "
+            f"buffers={self._n_buffers})"
+        )
 
 
 class HostCopy:

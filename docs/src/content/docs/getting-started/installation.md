@@ -88,6 +88,11 @@ python -m pytest tests/unit
 
 Tests that need a GPU are skipped automatically where CuPy is not functional.
 
+On `devel`, cunumpy is developed against the `devel` branches of the other max-models packages
+(currently maybempi): `uv sync` picks them up from `[tool.uv.sources]`, and with pip run
+`python -m pip install -r requirements-devel.txt` before the install above. CI does the same for
+pull requests to `devel`; pull requests to `main` and the PyPI release use PyPI versions only.
+
 ## Environment variables
 
 | Variable | Effect |

@@ -6,6 +6,8 @@ on:
   pull_request:
     branches: [main, devel]
 
+# Runs that do not target main take the max-models packages from their devel branches
+# (requirements-devel.txt); micropip cannot install from git, so they reach Pyodide as wheels.
 jobs:
   wheel-test:
     runs-on: ubuntu-latest
@@ -22,6 +24,10 @@ jobs:
           cache-dependency-path: tests/pyodide/package-lock.json
       - name: Build wheel and install compiler-free test dependencies
         run: |
+          if [ "${GITHUB_BASE_REF:-$GITHUB_REF_NAME}" != main ]; then
+            python -m pip install -r requirements-devel.txt
+            python -m pip wheel --no-deps -w devel-wheels -r requirements-devel.txt
+          fi
           python -m pip install build '.[test]'
           python -m build --wheel
       - name: Run portable tests in native Python
@@ -29,4 +35,4 @@ jobs:
       - name: Install Pyodide
         run: npm ci --prefix tests/pyodide
       - name: Run portable tests against the wheel in Pyodide
-        run: node tests/pyodide/run.mjs dist/cunumpy-*-py3-none-any.whl
+        run: node tests/pyodide/run.mjs dist/cunumpy-*-py3-none-any.whl $(ls devel-wheels/*.whl 2>/dev/null)

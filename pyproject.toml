@@ -5,7 +5,7 @@ requires = [ "setuptools", "wheel" ]
 
 [project]
 name = "cunumpy"
-version = "0.7.1"
+version = "0.7.2"
 description = "Simple wrapper for numpy and cupy. Replace `import numpy as np` with `import cunumpy as xp`."
 readme = "README.md"
 keywords = [ "python" ]
@@ -25,6 +25,7 @@ dependencies = [
   "array-api-compat",
   "maybempi>=0.1.2",
   "numpy",
+  "scope-profiler>=0.7.5",
 ]
 
 optional-dependencies.dev = [
@@ -37,6 +38,9 @@ optional-dependencies.dev = [
 # the shared docs workflow registers an ipykernel even without notebooks
 optional-dependencies.docs = [ "griffe", "ipykernel" ]
 optional-dependencies.metal = [ "mlx; sys_platform == 'darwin' and platform_machine == 'arm64'" ]
+optional-dependencies.jax = [ "jax" ]
+optional-dependencies.mlx = [ "mlx; sys_platform == 'darwin' and platform_machine == 'arm64'" ]
+optional-dependencies.torch = [ "torch" ]
 optional-dependencies.test = [ "coverage", "pytest", "scipy" ]
 optional-dependencies.test-compiled = [ "cunumpy[test]", "pyccel" ]
 urls."Source" = "https://github.com/max-models/cunumpy"
@@ -46,6 +50,12 @@ where = [ "src" ]
 
 [tool.setuptools.package-data]
 cunumpy = [ "py.typed", "*.pyi", "LLM_GUIDE.md", "cuda/include/cunumpy/*.cuh" ]
+
+# PRs to devel test against the devel branches of the max-models packages; PRs to main
+# and the release use PyPI only.
+[tool.uv.sources]
+maybempi = { git = "https://github.com/max-models/maybempi", branch = "devel" }
+scope-profiler = { git = "https://github.com/max-models/scope-profiler", branch = "devel" }
 
 [tool.ruff]
 # agent worktrees and scratch scripts are local copies, not part of the project

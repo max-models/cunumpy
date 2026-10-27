@@ -12,7 +12,9 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import scope_profiler as sp
 
+from cunumpy._profile_tags import _PROFILE_TAGS
 from cunumpy._transfers import _ACTIVE as _COUNTERS
 from cunumpy._transfers import _describe, _nbytes, _record
 from cunumpy.xp import _cupy_backend, to_cupy
@@ -49,12 +51,6 @@ class DeviceMirror:
     True
     """
 
-    def __init__(self, host: np.ndarray) -> None:
-        self._host = self._check_host(host)
-        self._shape = host.shape
-        self._dtype = host.dtype
-        self._device: Any = None
-
     @staticmethod
     def _check_host(host: Any) -> np.ndarray:
         if not isinstance(host, np.ndarray):
@@ -64,11 +60,11 @@ class DeviceMirror:
             )
         return host
 
-    def __repr__(self) -> str:
-        where = "host" if self._device is None else "device"
-        return (
-            f"DeviceMirror(shape={self._shape}, dtype={self._dtype}, buffer={where!r})"
-        )
+    def __init__(self, host: np.ndarray) -> None:
+        self._host = self._check_host(host)
+        self._shape = host.shape
+        self._dtype = host.dtype
+        self._device: Any = None
 
     @property
     def host(self) -> np.ndarray:
@@ -84,19 +80,6 @@ class DeviceMirror:
     def dtype(self) -> np.dtype:
         """Dtype of the mirrored array."""
         return self._dtype
-
-    @property
-    def device(self) -> Any:
-        """The array kernels write into: CuPy (copied from the host on first use), or the host on NumPy."""
-        if not _cupy_backend():
-            return self._host
-        self._check_bound()
-        self._check_device()
-        if self._device is None:
-            # The only host -> device allocation; it goes through to_cupy so
-            # that it is visible wherever transfers are accounted for.
-            self._device = to_cupy(self._host)
-        return self._device
 
     def _check_device(self) -> None:
         if self._device is not None:
@@ -117,6 +100,19 @@ class DeviceMirror:
                 f"has shape {self._host.shape} and dtype {self._host.dtype}; "
                 "call rebind(host) with the new array",
             )
+
+    @property
+    def device(self) -> Any:
+        """The array kernels write into: CuPy (copied from the host on first use), or the host on NumPy."""
+        if not _cupy_backend():
+            return self._host
+        self._check_bound()
+        self._check_device()
+        if self._device is None:
+            # The only host -> device allocation; it goes through to_cupy so
+            # that it is visible wherever transfers are accounted for.
+            self._device = to_cupy(self._host)
+        return self._device
 
     def rebind(self, host: np.ndarray) -> DeviceMirror:
         """Bind to a new host array, e.g. after its owner reallocated it.
@@ -160,17 +156,18 @@ class DeviceMirror:
         if not _cupy_backend():
             return self
         self._check_device()
-        if self._device is None:
-            _ = self.device  # allocates as a copy of the host, through to_cupy
-        else:
-            # host -> device copy into the existing device buffer
-            self._device.set(self._host)
-            if _COUNTERS:
-                _record(
-                    "to_device",
-                    f"DeviceMirror.to_device({_describe(self._host)})",
-                    nbytes=_nbytes(self._host),
-                )
+        with sp.region("cunumpy.DeviceMirror.to_device", tags=_PROFILE_TAGS):
+            if self._device is None:
+                _ = self.device  # allocates as a copy of the host, through to_cupy
+            else:
+                # host -> device copy into the existing device buffer
+                self._device.set(self._host)
+                if _COUNTERS:
+                    _record(
+                        "to_device",
+                        f"DeviceMirror.to_device({_describe(self._host)})",
+                        nbytes=_nbytes(self._host),
+                    )
         return self
 
     def to_host(self, *, stream: Any = None, event: Any = None) -> DeviceMirror:
@@ -222,10 +219,11 @@ class DeviceMirror:
         if event is not None:
             cp.cuda.get_current_stream().wait_event(event)
         # device -> host copy into the existing host buffer
-        if stream is None:
-            self._device.get(out=self._host)
-        else:
-            self._device.get(out=self._host, stream=stream)
+        with sp.region("cunumpy.DeviceMirror.to_host", tags=_PROFILE_TAGS):
+            if stream is None:
+                self._device.get(out=self._host)
+            else:
+                self._device.get(out=self._host, stream=stream)
         if _COUNTERS:
             _record(
                 "to_host",
@@ -256,3 +254,9 @@ class DeviceMirror:
         else:
             self._device.fill(0)
         return self
+
+    def __repr__(self) -> str:
+        where = "host" if self._device is None else "device"
+        return (
+            f"DeviceMirror(shape={self._shape}, dtype={self._dtype}, buffer={where!r})"
+        )
