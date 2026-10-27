@@ -210,9 +210,6 @@ class PyccelCache:
         )
         self.language = language
 
-    def __repr__(self) -> str:
-        return f"PyccelCache({self.name!r}, env_prefix={self.env_prefix!r})"
-
     @property
     def cache_env(self) -> str:
         """Name of the environment variable that moves the cache directory."""
@@ -371,3 +368,6 @@ class PyccelCache:
     def __call__(self, module: ModuleType) -> ModuleType:
         """:meth:`compile`, so the instance can be a ``compile_host``."""
         return self.compile(module)
+
+    def __repr__(self) -> str:
+        return f"PyccelCache({self.name!r}, env_prefix={self.env_prefix!r})"

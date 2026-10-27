@@ -584,98 +584,6 @@ def _template_arg(value: Any) -> str:
     return ctype_of(value)
 
 
-def parse_cuda_signature(
-    source: str,
-    name: str,
-    *,
-    structs: Iterable[CudaStruct] = (),
-    template_args: Sequence[Any] | None = None,
-) -> tuple[CudaParameter, ...]:
-    """Parse the parameters of a ``__global__`` function.
-
-    C types map to dtypes as on Linux (LP64): ``int`` is int32, ``long`` and
-    ``long long`` are int64.
-
-    Parameters
-    ----------
-    source : str
-        CUDA C source code.
-    name : str
-        Name of the ``__global__`` function.
-    structs : iterable of CudaStruct, optional
-        Struct types that may appear as parameters (by value). A definition
-        of the struct in `source` must match.
-    template_args : sequence, optional
-        Template arguments if `name` is a function template: C types or
-        dtypes (see :func:`~cunumpy.cuda.ctype_of`) for type parameters,
-        ints or bools for non-type parameters.
-
-    Returns
-    -------
-    tuple of CudaParameter
-        The parameters, in order.
-
-    Raises
-    ------
-    ValueError
-        If there is no such function, `template_args` do not fit, a struct
-        definition does not match its :class:`~cunumpy.arguments.CudaStruct`,
-        or a parameter type cannot be checked (e.g. a macro or ``double**``).
-
-    Examples
-    --------
-    >>> source = '''
-    ... template <typename T>
-    ... __global__ void scale(T* x, T factor, int n) {}'''
-    >>> [(p.name, p.ctype, p.pointer) for p in xp.cuda.parse_cuda_signature(
-    ...     source, "scale", template_args=[np.float32])]
-    [('x', 'float', True), ('factor', 'float', False), ('n', 'int', False)]
-    """
-    code = _strip_comments(source)
-    structs = {s.name: s for s in structs}
-    for struct in structs.values():
-        struct.check_source(code)
-
-    pattern = r"(?:template\s*<(?P<template>[^{};]*?)>\s*)?__global__\s+void\s+"
-    match = re.search(pattern + re.escape(name) + r"\s*\(", code)
-    if match is None:
-        raise ValueError(f"no __global__ function {name!r} found in the CUDA source")
-
-    depth, start = 1, match.end()
-    for pos in range(start, len(code)):
-        if code[pos] == "(":
-            depth += 1
-        elif code[pos] == ")":
-            depth -= 1
-            if depth == 0:
-                break
-    else:
-        raise ValueError(f"unbalanced parentheses in the signature of {name!r}")
-    params = code[start:pos].strip()
-
-    template = match.group("template")
-    if template is not None:
-        template_params = [p.split() for p in _split_top_level(template) if p.strip()]
-        if template_args is None or len(template_args) != len(template_params):
-            raise ValueError(
-                f"{name!r} is a template with {len(template_params)} parameters; "
-                f"pass them as template_args",
-            )
-        for words, value in zip(template_params, template_args):
-            if words[0] in ("typename", "class"):
-                params = re.sub(
-                    r"\b" + re.escape(words[-1]) + r"\b",
-                    _template_arg(value),
-                    params,
-                )
-    elif template_args:
-        raise ValueError(f"{name!r} is not a template, but template_args were given")
-
-    if params in ("", "void"):
-        return ()
-    return tuple(_parse_parameter(p, structs) for p in _split_top_level(params))
-
-
 def _describe(param: CudaParameter, index: int) -> str:
     ctype = param.ctype + ("*" if param.pointer else "")
     return f"argument {index} ({ctype} {param.name})"
@@ -860,17 +768,6 @@ def _struct_checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
     return check
 
 
-def _max_view_ndim(params: Iterable[CudaParameter]) -> int:
-    """Return the largest `view_ndim` among `params` and their struct fields (0 if none)."""
-    best = 0
-    for p in params:
-        if p.view_ndim is not None:
-            best = max(best, p.view_ndim)
-        if p.struct is not None:
-            best = max(best, _max_view_ndim(p.struct.fields))
-    return best
-
-
 def _checker(param: CudaParameter, index: int) -> Callable[[Any], Any]:
     if param.struct is not None:
         return _struct_checker(param, index)
@@ -994,60 +891,6 @@ def _header_source(
         lines += [struct.declaration]
     lines += [f"#endif  // {guard}", ""]
     return "\n".join(lines)
-
-
-def write_cuda_header(
-    path: str | Path,
-    structs: Iterable[CudaStruct],
-    guard: str | None = None,
-    *,
-    includes: Iterable[str] = (),
-) -> str:
-    """Write the definitions of several structs to one header file.
-
-    The header has an include guard, ``#include "cunumpy/array_view.cuh"`` if
-    a struct has array view fields, any `includes`, then the structs in
-    order. Commit it next to the kernels and let a test regenerate and
-    compare it (see :meth:`CudaStruct.to_header`).
-
-    Parameters
-    ----------
-    path : str or Path
-        File to write.
-    structs : iterable of CudaStruct
-        The structs, in declaration order.
-    guard : str, optional
-        Include guard macro; by default from the file name
-        (``pusher_args.cuh`` -> ``PUSHER_ARGS_CUH``).
-    includes : iterable of str, optional
-        Additional headers, as file names or ``#include`` lines.
-
-    Returns
-    -------
-    str
-        The header source that was written.
-
-    Examples
-    --------
-    >>> import os, tempfile
-    >>> Vec = xp.arguments.CudaStruct("Vec", [("data", "double*"), ("n", "int")])
-    >>> path = os.path.join(tempfile.mkdtemp(), "vec.cuh")
-    >>> print(xp.arguments.write_cuda_header(path, [Vec]), end="")
-    // Generated by cunumpy.arguments.CudaStruct from the Python definition; do not edit.
-    #ifndef VEC_CUH
-    #define VEC_CUH
-    <BLANKLINE>
-    struct Vec {
-        double* data;
-        int n;
-    };
-    <BLANKLINE>
-    #endif  // VEC_CUH
-    """
-    path = Path(path)
-    source = _header_source(tuple(structs), guard or _header_guard(path.name), includes)
-    path.write_text(source)
-    return source
 
 
 def _read_python_source(source: str | Path) -> tuple[str, str]:
@@ -1325,9 +1168,6 @@ class CudaStruct:
         fields = _apply_contiguous(fields, contiguous, f"{class_name} in {where}")
         return cls(class_name if name is None else name, fields)
 
-    def __repr__(self) -> str:
-        return f"CudaStruct({self._name!r}, {len(self._fields)} fields)"
-
     @property
     def name(self) -> str:
         """Name of the struct type in C."""
@@ -1592,6 +1432,166 @@ class CudaStruct:
             packed[field.name] = value.data.ptr if field.pointer else value
         return CudaStructValue(self, packed[()], values)
 
+    def __repr__(self) -> str:
+        return f"CudaStruct({self._name!r}, {len(self._fields)} fields)"
+
+
+def parse_cuda_signature(
+    source: str,
+    name: str,
+    *,
+    structs: Iterable[CudaStruct] = (),
+    template_args: Sequence[Any] | None = None,
+) -> tuple[CudaParameter, ...]:
+    """Parse the parameters of a ``__global__`` function.
+
+    C types map to dtypes as on Linux (LP64): ``int`` is int32, ``long`` and
+    ``long long`` are int64.
+
+    Parameters
+    ----------
+    source : str
+        CUDA C source code.
+    name : str
+        Name of the ``__global__`` function.
+    structs : iterable of CudaStruct, optional
+        Struct types that may appear as parameters (by value). A definition
+        of the struct in `source` must match.
+    template_args : sequence, optional
+        Template arguments if `name` is a function template: C types or
+        dtypes (see :func:`~cunumpy.cuda.ctype_of`) for type parameters,
+        ints or bools for non-type parameters.
+
+    Returns
+    -------
+    tuple of CudaParameter
+        The parameters, in order.
+
+    Raises
+    ------
+    ValueError
+        If there is no such function, `template_args` do not fit, a struct
+        definition does not match its :class:`~cunumpy.arguments.CudaStruct`,
+        or a parameter type cannot be checked (e.g. a macro or ``double**``).
+
+    Examples
+    --------
+    >>> source = '''
+    ... template <typename T>
+    ... __global__ void scale(T* x, T factor, int n) {}'''
+    >>> [(p.name, p.ctype, p.pointer) for p in xp.cuda.parse_cuda_signature(
+    ...     source, "scale", template_args=[np.float32])]
+    [('x', 'float', True), ('factor', 'float', False), ('n', 'int', False)]
+    """
+    code = _strip_comments(source)
+    structs = {s.name: s for s in structs}
+    for struct in structs.values():
+        struct.check_source(code)
+
+    pattern = r"(?:template\s*<(?P<template>[^{};]*?)>\s*)?__global__\s+void\s+"
+    match = re.search(pattern + re.escape(name) + r"\s*\(", code)
+    if match is None:
+        raise ValueError(f"no __global__ function {name!r} found in the CUDA source")
+
+    depth, start = 1, match.end()
+    for pos in range(start, len(code)):
+        if code[pos] == "(":
+            depth += 1
+        elif code[pos] == ")":
+            depth -= 1
+            if depth == 0:
+                break
+    else:
+        raise ValueError(f"unbalanced parentheses in the signature of {name!r}")
+    params = code[start:pos].strip()
+
+    template = match.group("template")
+    if template is not None:
+        template_params = [p.split() for p in _split_top_level(template) if p.strip()]
+        if template_args is None or len(template_args) != len(template_params):
+            raise ValueError(
+                f"{name!r} is a template with {len(template_params)} parameters; "
+                f"pass them as template_args",
+            )
+        for words, value in zip(template_params, template_args):
+            if words[0] in ("typename", "class"):
+                params = re.sub(
+                    r"\b" + re.escape(words[-1]) + r"\b",
+                    _template_arg(value),
+                    params,
+                )
+    elif template_args:
+        raise ValueError(f"{name!r} is not a template, but template_args were given")
+
+    if params in ("", "void"):
+        return ()
+    return tuple(_parse_parameter(p, structs) for p in _split_top_level(params))
+
+
+def _max_view_ndim(params: Iterable[CudaParameter]) -> int:
+    """Return the largest `view_ndim` among `params` and their struct fields (0 if none)."""
+    best = 0
+    for p in params:
+        if p.view_ndim is not None:
+            best = max(best, p.view_ndim)
+        if p.struct is not None:
+            best = max(best, _max_view_ndim(p.struct.fields))
+    return best
+
+
+def write_cuda_header(
+    path: str | Path,
+    structs: Iterable[CudaStruct],
+    guard: str | None = None,
+    *,
+    includes: Iterable[str] = (),
+) -> str:
+    """Write the definitions of several structs to one header file.
+
+    The header has an include guard, ``#include "cunumpy/array_view.cuh"`` if
+    a struct has array view fields, any `includes`, then the structs in
+    order. Commit it next to the kernels and let a test regenerate and
+    compare it (see :meth:`CudaStruct.to_header`).
+
+    Parameters
+    ----------
+    path : str or Path
+        File to write.
+    structs : iterable of CudaStruct
+        The structs, in declaration order.
+    guard : str, optional
+        Include guard macro; by default from the file name
+        (``pusher_args.cuh`` -> ``PUSHER_ARGS_CUH``).
+    includes : iterable of str, optional
+        Additional headers, as file names or ``#include`` lines.
+
+    Returns
+    -------
+    str
+        The header source that was written.
+
+    Examples
+    --------
+    >>> import os, tempfile
+    >>> Vec = xp.arguments.CudaStruct("Vec", [("data", "double*"), ("n", "int")])
+    >>> path = os.path.join(tempfile.mkdtemp(), "vec.cuh")
+    >>> print(xp.arguments.write_cuda_header(path, [Vec]), end="")
+    // Generated by cunumpy.arguments.CudaStruct from the Python definition; do not edit.
+    #ifndef VEC_CUH
+    #define VEC_CUH
+    <BLANKLINE>
+    struct Vec {
+        double* data;
+        int n;
+    };
+    <BLANKLINE>
+    #endif  // VEC_CUH
+    """
+    path = Path(path)
+    source = _header_source(tuple(structs), guard or _header_guard(path.name), includes)
+    path.write_text(source)
+    return source
+
 
 class CudaStructValue:
     """A value of a :class:`CudaStruct`, passed to kernels as one argument.
@@ -1622,9 +1622,6 @@ class CudaStructValue:
         self._packed = packed
         self._values = dict(values)
 
-    def __repr__(self) -> str:
-        return f"<{self._struct.name} value>"
-
     @property
     def struct(self) -> CudaStruct:
         """The struct type."""
@@ -1635,12 +1632,35 @@ class CudaStructValue:
         """The packed struct, with the memory layout of the C struct."""
         return self._packed
 
-    def __getitem__(self, field: str) -> Any:
-        return self._values[field]
-
     def __cuda_args__(self) -> tuple[np.void]:
         """Return the packed struct, the one kernel argument this value stands for."""
         return (self._packed,)
+
+    def __getitem__(self, field: str) -> Any:
+        return self._values[field]
+
+    def __repr__(self) -> str:
+        return f"<{self._struct.name} value>"
+
+
+def _field_state(struct: CudaStruct, values: Mapping[str, Any]) -> tuple[Any, ...]:
+    """Return what the packed struct depends on, to detect changed fields."""
+    state = []
+    for field in struct.fields:
+        value = values[field.name]
+        if field.pointer or field.view_ndim is not None:
+            ptr = getattr(getattr(value, "data", None), "ptr", None)
+            if ptr is None:
+                state.append(("id", id(value)))
+            elif field.pointer:
+                state.append(ptr)
+            else:
+                state.append((ptr, tuple(value.shape), tuple(value.strides)))
+        elif isinstance(value, (bool, int, float, complex, np.generic)):
+            state.append((type(value), value))
+        else:
+            state.append(("id", id(value)))
+    return tuple(state)
 
 
 class CudaStructArguments(CudaArguments):
@@ -1722,6 +1742,19 @@ class CudaStructArguments(CudaArguments):
             )
         cls.struct = CudaStruct(cls.struct_name, cls.fields)
 
+    def _field_values(self, struct: CudaStruct) -> dict[str, Any]:
+        """Return the current value of every field attribute, by field name."""
+        values = {}
+        for field in struct.fields:
+            try:
+                values[field.name] = getattr(self, field.name)
+            except AttributeError:
+                raise AttributeError(
+                    f"{type(self).__qualname__} has no attribute {field.name!r} "
+                    f"for the field of struct {struct.name}",
+                ) from None
+        return values
+
     def pack(self) -> None:
         """Pack the field attributes into the struct.
 
@@ -1744,19 +1777,6 @@ class CudaStructArguments(CudaArguments):
         values = self._field_values(struct)
         self._struct_value = struct(**values)
         self._packed_state = _field_state(struct, values)
-
-    def _field_values(self, struct: CudaStruct) -> dict[str, Any]:
-        """Return the current value of every field attribute, by field name."""
-        values = {}
-        for field in struct.fields:
-            try:
-                values[field.name] = getattr(self, field.name)
-            except AttributeError:
-                raise AttributeError(
-                    f"{type(self).__qualname__} has no attribute {field.name!r} "
-                    f"for the field of struct {struct.name}",
-                ) from None
-        return values
 
     @property
     def packed(self) -> np.void:
@@ -1787,26 +1807,6 @@ class CudaStructArguments(CudaArguments):
     def __setstate__(self, state: dict[str, Any]) -> None:
         self.__dict__.update(state)
         self.pack()
-
-
-def _field_state(struct: CudaStruct, values: Mapping[str, Any]) -> tuple[Any, ...]:
-    """Return what the packed struct depends on, to detect changed fields."""
-    state = []
-    for field in struct.fields:
-        value = values[field.name]
-        if field.pointer or field.view_ndim is not None:
-            ptr = getattr(getattr(value, "data", None), "ptr", None)
-            if ptr is None:
-                state.append(("id", id(value)))
-            elif field.pointer:
-                state.append(ptr)
-            else:
-                state.append((ptr, tuple(value.shape), tuple(value.strides)))
-        elif isinstance(value, (bool, int, float, complex, np.generic)):
-            state.append((type(value), value))
-        else:
-            state.append(("id", id(value)))
-    return tuple(state)
 
 
 def _is_device_array(value: Any) -> bool:
@@ -1895,6 +1895,17 @@ def _device_arrays_in(args: Sequence[Any]) -> Iterator[tuple[str, Any]]:
                     yield f"{label}[{j}]", value
 
 
+def _is_capturing(stream: Any) -> bool:
+    """Whether `stream` is being captured into a CUDA graph."""
+    is_capturing = getattr(stream, "is_capturing", None)
+    if is_capturing is None:
+        return False
+    try:
+        return bool(is_capturing())
+    except Exception:  # noqa: BLE001 - e.g. the legacy null stream cannot capture
+        return False
+
+
 class CudaKernel:
     """A CUDA C kernel, compiled with NVRTC through CuPy.
 
@@ -1975,6 +1986,17 @@ class CudaKernel:
     ((8,), (128,))
     >>> axpy(2.0, x, y, x.size, n_threads=x.size)  # doctest: +SKIP
     """
+
+    @staticmethod
+    def _check_block(block: tuple[int, ...]) -> tuple[int, ...]:
+        if any(n <= 0 for n in block):
+            raise ValueError(f"block sizes must be positive, got {block}")
+        if math.prod(block) > _MAX_THREADS_PER_BLOCK:
+            raise ValueError(
+                f"a block has at most {_MAX_THREADS_PER_BLOCK} threads, got "
+                f"{block} = {math.prod(block)}",
+            )
+        return block
 
     def __init__(
         self,
@@ -2112,20 +2134,6 @@ class CudaKernel:
             for name in names
         }
 
-    @staticmethod
-    def _check_block(block: tuple[int, ...]) -> tuple[int, ...]:
-        if any(n <= 0 for n in block):
-            raise ValueError(f"block sizes must be positive, got {block}")
-        if math.prod(block) > _MAX_THREADS_PER_BLOCK:
-            raise ValueError(
-                f"a block has at most {_MAX_THREADS_PER_BLOCK} threads, got "
-                f"{block} = {math.prod(block)}",
-            )
-        return block
-
-    def __repr__(self) -> str:
-        return f"CudaKernel(name={self.expression!r}, block_size={self.block_size})"
-
     @property
     def name(self) -> str:
         """Name of the kernel function."""
@@ -2239,6 +2247,9 @@ class CudaKernel:
         """The launch size inference: a callable of the argument tuple, or None; settable as in the constructor."""
         return self._n_threads_from
 
+    def _default_n_threads(self, args: tuple[Any, ...]) -> int | tuple[int, ...]:
+        return _first_array_shape(args, len(self._block))
+
     @n_threads_from.setter
     def n_threads_from(
         self,
@@ -2258,9 +2269,6 @@ class CudaKernel:
             )
         self._automatic_threads = automatic
         self._n_threads_from = value
-
-    def _default_n_threads(self, args: tuple[Any, ...]) -> int | tuple[int, ...]:
-        return _first_array_shape(args, len(self._block))
 
     @property
     def check_finite(self) -> bool:
@@ -2561,88 +2569,6 @@ class CudaKernel:
         grid_shape = tuple((n + b - 1) // b for n, b in zip(threads, block_shape))
         return grid_shape, block_shape
 
-    def __call__(
-        self,
-        *args: Any,
-        n_threads: int | Sequence[int] | None = None,
-        grid: int | Sequence[int] | None = None,
-        block: int | Sequence[int] | None = None,
-        shared_mem: int = 0,
-        stream: Any = None,
-    ) -> None:
-        """Launch the kernel (asynchronously, unless in debug mode).
-
-        The grid is `n_threads` divided by the block, rounded up, or an
-        explicit `grid`; with neither, the size is inferred
-        (:attr:`n_threads_from`).
-
-        Parameters
-        ----------
-        *args
-            Kernel arguments: CuPy arrays, scalars and argument objects, see
-            :meth:`prepare_args`.
-        n_threads : int or sequence of int, optional
-            Number of threads in 1 to 3 dimensions, e.g. ``(nx, ny)``. With a
-            1D block size the block is ``(block_size, 1, ...)``.
-        grid : int or sequence of int, optional
-            Number of blocks in 1 to 3 dimensions, instead of `n_threads`.
-        block : int or sequence of int, optional
-            Block shape for this call, instead of :attr:`block_size`.
-        shared_mem : int, optional
-            Dynamic shared memory per block in bytes (``extern __shared__``).
-        stream : cupy.cuda.Stream, optional
-            Stream to launch on; the current stream by default.
-
-        Raises
-        ------
-        RuntimeError
-            In debug mode, a CUDA error found by synchronizing after the
-            launch (CuPy's error chained); otherwise such errors surface at a
-            later synchronization. Also a NaN or inf with :attr:`check_finite`.
-        ValueError
-            If the launch exceeds the device or kernel limits (dimensions,
-            threads, shared memory), or arrays or stream are on another device.
-        """
-        grid_shape, block_shape = self.launch_shape(
-            n_threads, grid=grid, block=block, args=args
-        )
-        shared_mem = operator.index(shared_mem)
-        if shared_mem < 0:
-            raise ValueError(f"shared_mem must be non-negative, got {shared_mem}")
-        values = self.prepare_args(*args)
-        # RawKernel accepts size-one NumPy arrays for structs passed by value,
-        # but not structured NumPy scalars (np.void). Keep their packed bytes
-        # and alignment intact, including array-view pointers and strides.
-        values = tuple(np.asarray(v) if isinstance(v, np.void) else v for v in values)
-        if 0 in grid_shape:
-            return
-
-        kernel = self.compile()
-        device = _current_device()
-        state = self._compiled[device]
-        self._validate_launch(state, device, grid_shape, block_shape, shared_mem)
-        if stream is not None and getattr(stream, "device_id", device) not in (
-            device,
-            -1,
-        ):
-            raise ValueError(
-                f"kernel {self.expression!r}: stream belongs to another device"
-            )
-        for label, array in _device_arrays_in(args):
-            array_device = getattr(getattr(array, "device", None), "id", None)
-            if array_device is not None and array_device != device:
-                raise ValueError(
-                    f"kernel {self.expression!r} on CUDA device {device}: "
-                    f"{label} belongs to CUDA device {array_device}",
-                )
-        debug = self.debug_active()
-        with stream if stream is not None else nullcontext():
-            kernel(grid_shape, block_shape, values, shared_mem=shared_mem)
-            if debug or self._check_finite:
-                self._synchronize_after_launch(stream, grid_shape, block_shape)
-            if self._check_finite:
-                self._check_finite_arrays(args)
-
     def _validate_launch(
         self,
         state: _CompiledKernel,
@@ -2732,16 +2658,90 @@ class CudaKernel:
                 f"grid {grid} and block {block}: {error}",
             ) from error
 
+    def __call__(
+        self,
+        *args: Any,
+        n_threads: int | Sequence[int] | None = None,
+        grid: int | Sequence[int] | None = None,
+        block: int | Sequence[int] | None = None,
+        shared_mem: int = 0,
+        stream: Any = None,
+    ) -> None:
+        """Launch the kernel (asynchronously, unless in debug mode).
 
-def _is_capturing(stream: Any) -> bool:
-    """Whether `stream` is being captured into a CUDA graph."""
-    is_capturing = getattr(stream, "is_capturing", None)
-    if is_capturing is None:
-        return False
-    try:
-        return bool(is_capturing())
-    except Exception:  # noqa: BLE001 - e.g. the legacy null stream cannot capture
-        return False
+        The grid is `n_threads` divided by the block, rounded up, or an
+        explicit `grid`; with neither, the size is inferred
+        (:attr:`n_threads_from`).
+
+        Parameters
+        ----------
+        *args
+            Kernel arguments: CuPy arrays, scalars and argument objects, see
+            :meth:`prepare_args`.
+        n_threads : int or sequence of int, optional
+            Number of threads in 1 to 3 dimensions, e.g. ``(nx, ny)``. With a
+            1D block size the block is ``(block_size, 1, ...)``.
+        grid : int or sequence of int, optional
+            Number of blocks in 1 to 3 dimensions, instead of `n_threads`.
+        block : int or sequence of int, optional
+            Block shape for this call, instead of :attr:`block_size`.
+        shared_mem : int, optional
+            Dynamic shared memory per block in bytes (``extern __shared__``).
+        stream : cupy.cuda.Stream, optional
+            Stream to launch on; the current stream by default.
+
+        Raises
+        ------
+        RuntimeError
+            In debug mode, a CUDA error found by synchronizing after the
+            launch (CuPy's error chained); otherwise such errors surface at a
+            later synchronization. Also a NaN or inf with :attr:`check_finite`.
+        ValueError
+            If the launch exceeds the device or kernel limits (dimensions,
+            threads, shared memory), or arrays or stream are on another device.
+        """
+        grid_shape, block_shape = self.launch_shape(
+            n_threads, grid=grid, block=block, args=args
+        )
+        shared_mem = operator.index(shared_mem)
+        if shared_mem < 0:
+            raise ValueError(f"shared_mem must be non-negative, got {shared_mem}")
+        values = self.prepare_args(*args)
+        # RawKernel accepts size-one NumPy arrays for structs passed by value,
+        # but not structured NumPy scalars (np.void). Keep their packed bytes
+        # and alignment intact, including array-view pointers and strides.
+        values = tuple(np.asarray(v) if isinstance(v, np.void) else v for v in values)
+        if 0 in grid_shape:
+            return
+
+        kernel = self.compile()
+        device = _current_device()
+        state = self._compiled[device]
+        self._validate_launch(state, device, grid_shape, block_shape, shared_mem)
+        if stream is not None and getattr(stream, "device_id", device) not in (
+            device,
+            -1,
+        ):
+            raise ValueError(
+                f"kernel {self.expression!r}: stream belongs to another device"
+            )
+        for label, array in _device_arrays_in(args):
+            array_device = getattr(getattr(array, "device", None), "id", None)
+            if array_device is not None and array_device != device:
+                raise ValueError(
+                    f"kernel {self.expression!r} on CUDA device {device}: "
+                    f"{label} belongs to CUDA device {array_device}",
+                )
+        debug = self.debug_active()
+        with stream if stream is not None else nullcontext():
+            kernel(grid_shape, block_shape, values, shared_mem=shared_mem)
+            if debug or self._check_finite:
+                self._synchronize_after_launch(stream, grid_shape, block_shape)
+            if self._check_finite:
+                self._check_finite_arrays(args)
+
+    def __repr__(self) -> str:
+        return f"CudaKernel(name={self.expression!r}, block_size={self.block_size})"
 
 
 class CudaKernelVariants:
@@ -2771,9 +2771,6 @@ class CudaKernelVariants:
         self._factory = factory
         self._kernels: dict[tuple[Hashable, ...], CudaKernel] = {}
 
-    def __repr__(self) -> str:
-        return f"CudaKernelVariants({len(self._kernels)} variants)"
-
     def get(self, *key: Hashable) -> CudaKernel:
         """Return the kernel for a variant, created on first use.
 
@@ -2801,13 +2798,6 @@ class CudaKernelVariants:
                 )
             self._kernels[key] = kernel
         return kernel
-
-    def __len__(self) -> int:
-        return len(self._kernels)
-
-    def __iter__(self) -> Iterator[tuple[Hashable, ...]]:
-        """Iterate over the keys of the variants created so far."""
-        return iter(list(self._kernels))
 
     def keys(self) -> list[tuple[Hashable, ...]]:
         """Return the keys of the variants created so far.
@@ -2843,3 +2833,13 @@ class CudaKernelVariants:
             {key: kernel.compile for key, kernel in self._kernels.items()},
             jobs,
         )
+
+    def __iter__(self) -> Iterator[tuple[Hashable, ...]]:
+        """Iterate over the keys of the variants created so far."""
+        return iter(list(self._kernels))
+
+    def __len__(self) -> int:
+        return len(self._kernels)
+
+    def __repr__(self) -> str:
+        return f"CudaKernelVariants({len(self._kernels)} variants)"

@@ -59,12 +59,12 @@ class _DeviceArray:
     def reshape(self, *shape):
         return _DeviceArray(self._data.reshape(*shape))
 
-    def __setitem__(self, key, value):
-        self._data[key] = value
-
     @property
     def size(self):
         return self._data.size
+
+    def __setitem__(self, key, value):
+        self._data[key] = value
 
 
 def test_serial_copies_between_host_and_device_are_counted():

@@ -37,7 +37,18 @@ jobs:
       - name: Code formatting with ruff
         run: |
           pip install ruff
-          ruff format --check src/ tests/
+          ruff format --check .
+
+  ssort:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the code
+        uses: actions/checkout@v4
+
+      - name: Statement order with ssort
+        run: |
+          pip install ssort
+          ssort --check --diff .
 
   mypy:
     runs-on: ubuntu-latest
@@ -72,7 +83,7 @@ jobs:
       - name: Linting with ruff (including import sorting)
         run: |
           pip install ruff
-          ruff check src/ tests/
+          ruff check .
 
   numpydoc:
     runs-on: ubuntu-latest

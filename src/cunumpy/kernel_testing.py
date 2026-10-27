@@ -215,6 +215,16 @@ def cuda_required() -> bool:
     return os.environ.get("CUNUMPY_REQUIRE_CUDA", "").lower() in {"1", "true", "yes"}
 
 
+def _pytest() -> Any:
+    try:
+        import pytest
+    except ImportError:  # pragma: no cover - pytest is installed in the test suite
+        raise ImportError(
+            "cunumpy.kernel_testing needs pytest for this feature: pip install pytest",
+        ) from None
+    return pytest
+
+
 def _skip_or_fail(reason: str) -> None:
     """``pytest.skip``, or ``pytest.fail`` if a GPU is required."""
     if cuda_required():
@@ -527,16 +537,6 @@ def run_in_fake_cupy_subprocess(
 # pytest objects, built on first use so that importing this module does not
 # import pytest (see __getattr__ below)
 _LAZY: dict[str, Any] = {}
-
-
-def _pytest() -> Any:
-    try:
-        import pytest
-    except ImportError:  # pragma: no cover - pytest is installed in the test suite
-        raise ImportError(
-            "cunumpy.kernel_testing needs pytest for this feature: pip install pytest",
-        ) from None
-    return pytest
 
 
 def _build_lazy() -> None:
