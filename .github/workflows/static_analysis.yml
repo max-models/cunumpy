@@ -50,18 +50,6 @@ jobs:
           pip install ssort
           ssort --check --diff .
 
-  mypy:
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - name: Checkout the code
-        uses: actions/checkout@v4
-
-      - name: Type checking with mypy
-        run: |
-          pip install mypy
-          mypy src/ || true
-
   prospector:
     runs-on: ubuntu-latest
     continue-on-error: true
