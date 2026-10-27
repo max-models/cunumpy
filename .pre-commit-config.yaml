@@ -13,3 +13,22 @@ repos:
     rev: 0.8.1
     hooks:
       - id: nbstripout # remove jupyter notebook cell output
+
+  - repo: https://github.com/bwhmather/ssort
+    rev: v0.12.0
+    hooks:
+      - id: ssort # sort statements so definitions come before their use
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.3
+    hooks:
+      - id: ruff-check # lint, including import sorting
+        args: ["--fix"]
+      - id: ruff-format
+
+  - repo: https://github.com/numpy/numpydoc
+    rev: v1.11.0
+    hooks:
+      - id: numpydoc-validation # docstring sections, configured in pyproject.toml
+        files: ^src/cunumpy/
+        exclude: _fake_cupy

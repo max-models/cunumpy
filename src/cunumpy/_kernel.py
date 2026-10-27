@@ -137,12 +137,6 @@ class PyccelKernel:
                     )
             self._outputs = tuple(outputs)
 
-    def __repr__(self) -> str:
-        return (
-            f"PyccelKernel(kernel={self.name!r}, use_cupy={self.use_cupy!r}, "
-            f"outputs={self._outputs!r})"
-        )
-
     def _parameter_names(self) -> Sequence[str] | None:
         """Return the names of the positional parameters, or None if unknown."""
         source = self._parameters
@@ -221,16 +215,6 @@ class PyccelKernel:
 
         return value
 
-    def _convert_from_numpy(self, value: Any) -> Any:
-        """Move host arrays returned by the kernel back to the device."""
-        if self._is_array(value):
-            return self._copy_to_device(value)
-        if isinstance(value, tuple):
-            return tuple(self._convert_from_numpy(item) for item in value)
-        if isinstance(value, list):
-            return [self._convert_from_numpy(item) for item in value]
-        return value
-
     def _copy_to_device(self, value: Any) -> Any:
         result = _host_to_device(value)
         if _COUNTERS:
@@ -240,6 +224,16 @@ class PyccelKernel:
                 nbytes=_nbytes(value),
             )
         return result
+
+    def _convert_from_numpy(self, value: Any) -> Any:
+        """Move host arrays returned by the kernel back to the device."""
+        if self._is_array(value):
+            return self._copy_to_device(value)
+        if isinstance(value, tuple):
+            return tuple(self._convert_from_numpy(item) for item in value)
+        if isinstance(value, list):
+            return [self._convert_from_numpy(item) for item in value]
+        return value
 
     def _collect_host_arrays(self, value: Any, found: set[int], seen: set[int]) -> None:
         """Record the id of every host array reachable from `value`."""
@@ -366,6 +360,38 @@ class PyccelKernel:
         # passed in explicitly.
         return any(self._contains_cupy(value) for value in (*args, *kwargs.values()))
 
+    @property
+    def name(self) -> str:
+        """The name of the wrapped kernel."""
+        return getattr(self._kernel, "__name__", type(self._kernel).__name__)
+
+    @property
+    def kernel(self) -> Callable[..., Any]:
+        """The wrapped kernel."""
+        return self._kernel
+
+    @property
+    def use_cupy(self) -> bool:
+        """Whether calls currently convert between device and host arrays."""
+        if self._use_cupy is not None:
+            return self._use_cupy
+        return _cupy_backend()
+
+    @property
+    def object_modules(self) -> tuple[str, ...]:
+        """The module prefixes whose instances are searched for arrays."""
+        return self._object_modules
+
+    @property
+    def is_array(self) -> Callable[[Any], bool]:
+        """The predicate for host values to move back to the device."""
+        return self._is_array
+
+    @property
+    def outputs(self) -> tuple[int | str, ...] | None:
+        """The declared output arguments, or None if every array is copied back."""
+        return self._outputs
+
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         if not self._needs_conversion(args, kwargs):
             return self._kernel(*args, **kwargs)
@@ -405,37 +431,11 @@ class PyccelKernel:
 
         return self._convert_from_numpy(result)
 
-    @property
-    def name(self) -> str:
-        """The name of the wrapped kernel."""
-        return getattr(self._kernel, "__name__", type(self._kernel).__name__)
-
-    @property
-    def kernel(self) -> Callable[..., Any]:
-        """The wrapped kernel."""
-        return self._kernel
-
-    @property
-    def use_cupy(self) -> bool:
-        """Whether calls currently convert between device and host arrays."""
-        if self._use_cupy is not None:
-            return self._use_cupy
-        return _cupy_backend()
-
-    @property
-    def object_modules(self) -> tuple[str, ...]:
-        """The module prefixes whose instances are searched for arrays."""
-        return self._object_modules
-
-    @property
-    def is_array(self) -> Callable[[Any], bool]:
-        """The predicate for host values to move back to the device."""
-        return self._is_array
-
-    @property
-    def outputs(self) -> tuple[int | str, ...] | None:
-        """The declared output arguments, or None if every array is copied back."""
-        return self._outputs
+    def __repr__(self) -> str:
+        return (
+            f"PyccelKernel(kernel={self.name!r}, use_cupy={self.use_cupy!r}, "
+            f"outputs={self._outputs!r})"
+        )
 
 
 HOST_IMPLEMENTATIONS = ("pyccel", "numba", "numpy", "python")
@@ -693,9 +693,6 @@ class HostImplementations:
         self.errors: dict[str, BaseException] = {}
         self._default: str | None = None
 
-    def __repr__(self) -> str:
-        return f"HostImplementations({self.__name__!r}, {list(self.names)})"
-
     @property
     def names(self) -> tuple[str, ...]:
         """The implementations this kernel has, loaded or not."""
@@ -813,6 +810,9 @@ class HostImplementations:
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self.get(self.selected())(*args, **kwargs)
 
+    def __repr__(self) -> str:
+        return f"HostImplementations({self.__name__!r}, {list(self.names)})"
+
 
 class CompiledHostKernel:
     """Call a host kernel that is compiled on its first call, with a fallback.
@@ -866,14 +866,6 @@ class CompiledHostKernel:
         self._built = False
         self.error: BaseException | None = None
         self._warned = False
-
-    def __repr__(self) -> str:
-        state = (
-            "not built"
-            if not self._built
-            else ("compiled" if self._compiled else "failed")
-        )
-        return f"CompiledHostKernel({self.__name__!r}, {state})"
 
     @property
     def module(self) -> ModuleType:
@@ -929,6 +921,14 @@ class CompiledHostKernel:
                     self._warned = True
                 kernel = self.python
         return kernel(*args, **kwargs)
+
+    def __repr__(self) -> str:
+        state = (
+            "not built"
+            if not self._built
+            else ("compiled" if self._compiled else "failed")
+        )
+        return f"CompiledHostKernel({self.__name__!r}, {state})"
 
 
 def _c_ordered_with_gaps(array: np.ndarray) -> bool:

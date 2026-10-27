@@ -374,6 +374,21 @@ def _radix_argsort(keys: np.ndarray) -> np.ndarray:
     return order.astype(np.int64, copy=False)
 
 
+def _take_along_axis(xpm: Any, array: Any, order: Any, axis: int) -> Any:
+    """Return `array` taken at `order` along `axis`, as a new C-contiguous array.
+
+    A component-major ``(ncomp, n)`` NumPy array is gathered one contiguous row at a
+    time, which is about twice as fast as ``take`` along its last axis; everything
+    else, and CuPy, goes through ``take``.
+    """
+    if xpm is np and array.ndim == 2 and axis == 1:
+        gathered = np.empty((array.shape[0], order.shape[0]), dtype=array.dtype)
+        for row in range(array.shape[0]):
+            gathered[row] = array[row][order]
+        return gathered
+    return xpm.take(array, order, axis=axis)
+
+
 @sp.profile("cunumpy.sort_by_key", tags=_PROFILE_TAGS)
 def sort_by_key(keys: Any, *arrays: Any, axis: int = 0) -> tuple[Any, ...]:
     """Sort `keys` and reorder every array the same way, in one stable argsort.
@@ -447,21 +462,6 @@ def sort_by_key(keys: Any, *arrays: Any, axis: int = 0) -> tuple[Any, ...]:
             for array, array_axis in zip(arrays, axes, strict=True)
         ),
     )
-
-
-def _take_along_axis(xpm: Any, array: Any, order: Any, axis: int) -> Any:
-    """Return `array` taken at `order` along `axis`, as a new C-contiguous array.
-
-    A component-major ``(ncomp, n)`` NumPy array is gathered one contiguous row at a
-    time, which is about twice as fast as ``take`` along its last axis; everything
-    else, and CuPy, goes through ``take``.
-    """
-    if xpm is np and array.ndim == 2 and axis == 1:
-        gathered = np.empty((array.shape[0], order.shape[0]), dtype=array.dtype)
-        for row in range(array.shape[0]):
-            gathered[row] = array[row][order]
-        return gathered
-    return xpm.take(array, order, axis=axis)
 
 
 @sp.profile("cunumpy.compact_by_mask", tags=_PROFILE_TAGS)

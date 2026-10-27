@@ -419,12 +419,6 @@ class Kernel:
             test_args=test_args,
         )
 
-    def __repr__(self) -> str:
-        return (
-            f"Kernel(name={self._name!r}, cuda={self._cuda_kernel is not None}, "
-            f"missing_cuda={self._missing_cuda!r})"
-        )
-
     @property
     def name(self) -> str:
         """Name of the kernel."""
@@ -549,6 +543,32 @@ class Kernel:
         )
         return (*host, "cuda") if self._cuda_kernel is not None else host
 
+    def _device_kernel(self) -> PyccelKernel | CudaKernel:
+        """Resolve the device selection, honoring fallback only in automatic mode."""
+        if self._cuda_kernel is not None:
+            return self._cuda_kernel
+        if get_device_kernel_implementation() == "cuda":
+            raise LookupError(
+                f"kernel {self._name!r} has no 'cuda' implementation "
+                "(explicitly selected device implementation)",
+            )
+        if self._missing_cuda == "raise":
+            expected = (
+                "" if self._cuda_path is None else f" (expected {self._cuda_path})"
+            )
+            raise NotImplementedError(
+                f"No CUDA version of kernel {self._name!r}{expected}.",
+            )
+        if not self._warned:
+            warnings.warn(
+                f"No CUDA version of kernel {self._name!r}: calling the host kernel, "
+                "which copies its arrays to the host and back at every call.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            self._warned = True
+        return self._host_kernel
+
     def selected(self, device: bool = False) -> str:
         """Return the implementation a call runs now, e.g. to rule out a slow path.
 
@@ -607,32 +627,6 @@ class Kernel:
         if get_backend() != "cupy":
             return self._host_kernel
         return self._device_kernel()
-
-    def _device_kernel(self) -> PyccelKernel | CudaKernel:
-        """Resolve the device selection, honoring fallback only in automatic mode."""
-        if self._cuda_kernel is not None:
-            return self._cuda_kernel
-        if get_device_kernel_implementation() == "cuda":
-            raise LookupError(
-                f"kernel {self._name!r} has no 'cuda' implementation "
-                "(explicitly selected device implementation)",
-            )
-        if self._missing_cuda == "raise":
-            expected = (
-                "" if self._cuda_path is None else f" (expected {self._cuda_path})"
-            )
-            raise NotImplementedError(
-                f"No CUDA version of kernel {self._name!r}{expected}.",
-            )
-        if not self._warned:
-            warnings.warn(
-                f"No CUDA version of kernel {self._name!r}: calling the host kernel, "
-                "which copies its arrays to the host and back at every call.",
-                RuntimeWarning,
-                stacklevel=3,
-            )
-            self._warned = True
-        return self._host_kernel
 
     def compile(self) -> bool:
         """Compile the CUDA kernel now, if there is one.
@@ -714,6 +708,12 @@ class Kernel:
                 shared_mem=shared_mem,
                 stream=stream,
             )
+
+    def __repr__(self) -> str:
+        return (
+            f"Kernel(name={self._name!r}, cuda={self._cuda_kernel is not None}, "
+            f"missing_cuda={self._missing_cuda!r})"
+        )
 
 
 class KernelCatalog(Mapping):
@@ -889,23 +889,6 @@ class KernelCatalog(Mapping):
         self._kernels[name] = kernel
         return kernel
 
-    def __getitem__(self, name: str) -> Kernel:
-        return self._kernels[name]
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._kernels)
-
-    def __len__(self) -> int:
-        return len(self._kernels)
-
-    def __repr__(self) -> str:
-        return (
-            f"KernelCatalog({len(self)} kernels, {len(self.without_cuda)} without CUDA)"
-        )
-
-    def __str__(self) -> str:
-        return self.summary()
-
     def summary(self, max_missing: int = 10) -> str:
         """Return one line on the porting status, e.g. for a ``--status`` command.
 
@@ -1015,3 +998,20 @@ class KernelCatalog(Mapping):
             },
             jobs,
         )
+
+    def __getitem__(self, name: str) -> Kernel:
+        return self._kernels[name]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._kernels)
+
+    def __len__(self) -> int:
+        return len(self._kernels)
+
+    def __repr__(self) -> str:
+        return (
+            f"KernelCatalog({len(self)} kernels, {len(self.without_cuda)} without CUDA)"
+        )
+
+    def __str__(self) -> str:
+        return self.summary()

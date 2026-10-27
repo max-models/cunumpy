@@ -59,12 +59,6 @@ class HostStream:
     True
     """
 
-    def __enter__(self) -> Any:
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        pass
-
     @property
     def done(self) -> bool:
         """Whether all work on the stream has completed; always True."""
@@ -105,6 +99,12 @@ class HostStream:
         """
         if not isinstance(event, HostEvent):
             raise TypeError("a host stream requires a host event")
+
+    def __enter__(self) -> Any:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        pass
 
 
 def create_stream(*, non_blocking: bool = True) -> Any:
