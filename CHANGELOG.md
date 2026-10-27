@@ -457,7 +457,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **Dynamic Dispatch Architecture**: Refactored `src/cunumpy/xp.py` to use module-level `__getattr__`. This ensures that `cunumpy.<op>` calls always resolve to the currently active backend module, enabling seamless runtime switching via `set_backend`.
 - **Type Safety**: Updated `src/cunumpy/__init__.pyi` stubs to provide full IDE autocompletion and type-checking for all new API methods.
-- **Documentation**: 
+- **Documentation**:
     - Simplified `README.md` and documentation to exclusively focus on PyPI installation (`pip install cunumpy`).
     - Enhanced `quickstart.md` and `api.md` with usage examples for the new backend control and synchronization features.
 - **CI/CD**: Restricted GitHub Pages documentation deployment to the `devel` branch only.
