@@ -25,3 +25,9 @@ repos:
       - id: ruff-check # lint, including import sorting (the I rules)
         args: [--fix]
       - id: ruff-format
+  - repo: https://github.com/numpy/numpydoc
+    rev: v1.11.0
+    hooks:
+      - id: numpydoc-validation # docstring sections, configured in pyproject.toml
+        files: ^src/cunumpy/
+        exclude: _fake_cupy
