@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   but not NumPy no longer share builds.
 
 ### Added
+- `xp.kernels.KernelPackage(name)`: the `PyccelCache` and the `Kernel.from_folder` options
+  shared by the kernel folders of one package (`host_suffix="_pyccel"`, `dispatch="arrays"`,
+  `block_size=256`, `n_threads_from="last_axis"`), with `from_folder(package, **overrides)`
+  and `metal_kernel(...)` (float32 `MetalKernel`s with zeroed outputs), so packages no longer
+  keep their own copies of these settings.
+- `xp.kernels.source_roots(*packages)`: the source roots of installed packages, for
+  `include_dirs` of a CUDA kernel that includes another package's header.
+- `xp.cuda.shared_memory_fits(num_values, itemsize=8)`: whether a per-block buffer fits
+  `DEFAULT_SHARED_MEMORY_PER_BLOCK`.
 - scope-profiler regions around the coarse operations (`Kernel` calls as
   `cunumpy.kernel.<name>`, CUDA and Pyccel compilation, `sort_by_key`,
   `SegmentPlan.sum`, `compact_by_mask`, `morton_keys`, the solvers, `exchange`,

@@ -286,6 +286,43 @@ Packages that compile their kernels at install time with the `pyccel` command
 do not need `compile_host`: the compiled modules are imported like the Python
 ones.
 
+### One set of options per package
+
+A package with many kernel folders passes the same options to every
+`from_folder()`. A `KernelPackage` holds them, with the package's
+`PyccelCache`, so they are declared once:
+
+```python
+# my_sim/kernels/__init__.py
+KERNEL_PACKAGE = xp.kernels.KernelPackage("my-sim")
+
+# my_sim/kernels/push/__init__.py
+from my_sim.kernels import KERNEL_PACKAGE
+
+kernel = KERNEL_PACKAGE.from_folder(__name__)
+
+# my_sim/kernels/push/push_metal.py
+_KERNEL = KERNEL_PACKAGE.metal_kernel("push", SOURCE, ["x", "v"], ["x_new"])
+```
+
+The defaults are `host_suffix="_pyccel"`, `dispatch="arrays"` (see below),
+`block_size=256` and `n_threads_from="last_axis"` (the marker count of a
+component-major `(ncomp, N)` array). A folder overrides any of them in its own
+call, e.g. `KERNEL_PACKAGE.from_folder(__name__, n_threads_from=rows)`;
+`KERNEL_PACKAGE.options` are the same options for
+`KernelCatalog.from_package()`. `metal_kernel()` builds a `MetalKernel` with
+`threadgroup=256`, `float64="cast"` and `init_value=0`.
+
+A CUDA source that includes another package's header (`#include
+"other_pkg/kernels/cell.cuh"`) needs that package's source root as an include
+directory; `xp.kernels.source_roots()` finds it without importing the package:
+
+```python
+kernel = KERNEL_PACKAGE.from_folder(
+    __name__, include_dirs=xp.kernels.source_roots("my_sim", "other_pkg")
+)
+```
+
 ## Choosing the kernel by where the arrays are
 
 `Kernel` picks the CUDA kernel on the CuPy backend. Real codes also hand host
