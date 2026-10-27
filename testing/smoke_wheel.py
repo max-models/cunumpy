@@ -14,6 +14,7 @@ import cunumpy as xp
 
 
 def main():
+    """Check the installed wheel: its location, assets and the fake CuPy backend."""
     # Catch accidental imports from the checkout or another environment.
     assert Path(xp.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())
     package = files("cunumpy")

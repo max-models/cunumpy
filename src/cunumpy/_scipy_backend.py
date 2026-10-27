@@ -94,9 +94,6 @@ class ScipyNamespace:
         self._path = path
         self._children: dict[str, ScipyNamespace] = {}
 
-    def __repr__(self) -> str:
-        return f"<cunumpy scipy namespace {self._name('<backend>')}>"
-
     def _name(self, root: str) -> str:
         return f"{root}.{self._path}" if self._path else root
 
@@ -121,28 +118,6 @@ class ScipyNamespace:
             raise ImportError(
                 f"xp.scipy on the {backend} backend needs {name}: {_INSTALL[backend]}",
             ) from error
-
-    def __getattr__(self, name: str) -> Any:
-        if name.startswith("__"):
-            raise AttributeError(name)
-        child = f"{self._path}.{name}" if self._path else name
-        if child in SUBMODULES:
-            if name not in self._children:
-                self._children[name] = ScipyNamespace(child)
-            return self._children[name]
-        module = self.resolve()
-        try:
-            return getattr(module, name)
-        except AttributeError:
-            fill = self._fill(name)
-            if fill is not None:
-                return fill
-            other = "cupy" if get_backend() == "numpy" else "numpy"
-            raise AttributeError(
-                f"{module.__name__} has no attribute {name!r}: it is not available "
-                f"on the {get_backend()} backend (it may exist in "
-                f"{self._name(_ROOTS[other])})",
-            ) from None
 
     def _fill(self, name: str) -> Any:
         if get_backend() != "cupy":
@@ -179,6 +154,28 @@ class ScipyNamespace:
         except ImportError:
             return False
 
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("__"):
+            raise AttributeError(name)
+        child = f"{self._path}.{name}" if self._path else name
+        if child in SUBMODULES:
+            if name not in self._children:
+                self._children[name] = ScipyNamespace(child)
+            return self._children[name]
+        module = self.resolve()
+        try:
+            return getattr(module, name)
+        except AttributeError:
+            fill = self._fill(name)
+            if fill is not None:
+                return fill
+            other = "cupy" if get_backend() == "numpy" else "numpy"
+            raise AttributeError(
+                f"{module.__name__} has no attribute {name!r}: it is not available "
+                f"on the {get_backend()} backend (it may exist in "
+                f"{self._name(_ROOTS[other])})",
+            ) from None
+
     def __dir__(self) -> list[str]:
         prefix = f"{self._path}." if self._path else ""
         children = [
@@ -193,6 +190,9 @@ class ScipyNamespace:
         if get_backend() == "cupy":
             names = [*names, *FILLS.get(self._path, {})]
         return sorted(set(names) | set(children) | {"available", "resolve"})
+
+    def __repr__(self) -> str:
+        return f"<cunumpy scipy namespace {self._name('<backend>')}>"
 
 
 scipy = ScipyNamespace()

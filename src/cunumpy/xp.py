@@ -159,21 +159,6 @@ class ArrayBackend:
         If `backend` is neither ``"numpy"`` nor ``"cupy"``.
     """
 
-    def __init__(
-        self,
-        backend: BackendType = "numpy",
-        verbose: bool = False,
-    ) -> None:
-        if backend.lower() not in ("numpy", "cupy"):
-            raise ValueError("Array backend must be either 'numpy' or 'cupy'.")
-
-        self._backend: BackendType = "cupy" if backend.lower() == "cupy" else "numpy"
-        self._xp: ModuleType = np  # Placeholder
-        self._listeners: list[Callable[[ModuleType], None]] = []
-
-        # Import numpy/cupy
-        self._xp = self._load_backend(self._backend, verbose)
-
     def _load_backend(self, backend: BackendType, verbose: bool = False) -> ModuleType:
         if backend == "cupy":
             if cupy_available():
@@ -191,8 +176,20 @@ class ArrayBackend:
         self._backend = "numpy"
         return np
 
-    def __repr__(self) -> str:
-        return f"ArrayBackend(backend={self._backend!r}, module={self._xp.__name__!r})"
+    def __init__(
+        self,
+        backend: BackendType = "numpy",
+        verbose: bool = False,
+    ) -> None:
+        if backend.lower() not in ("numpy", "cupy"):
+            raise ValueError("Array backend must be either 'numpy' or 'cupy'.")
+
+        self._backend: BackendType = "cupy" if backend.lower() == "cupy" else "numpy"
+        self._xp: ModuleType = np  # Placeholder
+        self._listeners: list[Callable[[ModuleType], None]] = []
+
+        # Import numpy/cupy
+        self._xp = self._load_backend(self._backend, verbose)
 
     @property
     def backend(self) -> BackendType:
@@ -278,6 +275,9 @@ class ArrayBackend:
             yield
         finally:
             self._set(old_backend, old_xp)
+
+    def __repr__(self) -> str:
+        return f"ArrayBackend(backend={self._backend!r}, module={self._xp.__name__!r})"
 
 
 array_backend = ArrayBackend(
@@ -366,6 +366,22 @@ def set_backend(backend: BackendType, *, strict: bool = False) -> None:
     array_backend.set(backend, strict=strict)
 
 
+def get_backend() -> BackendType:
+    """Return the name of the active process-wide backend.
+
+    Returns
+    -------
+    {"numpy", "cupy"}
+        The effective backend, after any fallback of :func:`set_backend`.
+
+    Examples
+    --------
+    >>> xp.get_backend()
+    'numpy'
+    """
+    return array_backend.backend
+
+
 def backend_info() -> dict[str, Any]:
     """Return JSON-compatible backend, dependency and CUDA diagnostics.
 
@@ -424,22 +440,6 @@ def backend_info() -> dict[str, Any]:
     return info
 
 
-def get_backend() -> BackendType:
-    """Return the name of the active process-wide backend.
-
-    Returns
-    -------
-    {"numpy", "cupy"}
-        The effective backend, after any fallback of :func:`set_backend`.
-
-    Examples
-    --------
-    >>> xp.get_backend()
-    'numpy'
-    """
-    return array_backend.backend
-
-
 def _cupy_backend() -> bool:
     """Check if the active global backend is CuPy."""
     return array_backend.backend == "cupy"
@@ -496,6 +496,29 @@ def synchronize() -> None:
                 RuntimeWarning,
                 stacklevel=2,
             )
+
+
+def get_array_backend(array: Any) -> BackendType:
+    """Return the backend of `array`, independent of the active backend.
+
+    Parameters
+    ----------
+    array : object
+        Any object; only CuPy arrays count as ``"cupy"``.
+
+    Returns
+    -------
+    {"numpy", "cupy"}
+        ``"cupy"`` for a CuPy array, ``"numpy"`` for anything else.
+
+    Examples
+    --------
+    >>> xp.get_array_backend(np.zeros(3))
+    'numpy'
+    """
+    if type(array) is _NDARRAY:
+        return "numpy"
+    return "cupy" if array_api_compat.is_cupy_array(array) else "numpy"
 
 
 def _to_numpy(array: Any) -> np.ndarray:
@@ -710,29 +733,6 @@ def to_cunumpy(array: Any) -> Any:
     if array_backend.backend == "cupy" and cupy_available():
         return to_cupy(array)
     return to_numpy(array)
-
-
-def get_array_backend(array: Any) -> BackendType:
-    """Return the backend of `array`, independent of the active backend.
-
-    Parameters
-    ----------
-    array : object
-        Any object; only CuPy arrays count as ``"cupy"``.
-
-    Returns
-    -------
-    {"numpy", "cupy"}
-        ``"cupy"`` for a CuPy array, ``"numpy"`` for anything else.
-
-    Examples
-    --------
-    >>> xp.get_array_backend(np.zeros(3))
-    'numpy'
-    """
-    if type(array) is _NDARRAY:
-        return "numpy"
-    return "cupy" if array_api_compat.is_cupy_array(array) else "numpy"
 
 
 def get_array_module(array: Any) -> ModuleType:

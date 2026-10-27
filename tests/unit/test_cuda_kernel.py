@@ -991,6 +991,50 @@ def test_struct_with_view_fields_on_gpu():
     assert np.array_equal(base.get(), expected)
 
 
+BOUNDS_TRAP = f"""
+import cupy as cp
+from cunumpy.kernels import CudaKernel
+
+kernel = CudaKernel({SCALE_COLUMN!r}, "scale_column", options=("-DCUNUMPY_BOUNDS_CHECK",))
+a = cp.ones((4, 3))
+try:
+    kernel(a, 5, 2.0, n_threads=4)  # column out of bounds
+    cp.cuda.Device().synchronize()
+except Exception as error:
+    print("trapped:", type(error).__name__, flush=True)
+else:
+    print("no error", flush=True)
+"""
+
+
+# ---------------------------------------------------------------------------
+# debug mode
+# ---------------------------------------------------------------------------
+
+
+def _run_python(code, env=None):
+    """Run `code` in a fresh interpreter that imports this cunumpy.
+
+    Returns its stdout and stderr."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    environment = {**os.environ, **(env or {})}
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [str(Path(xp.__file__).parents[1]), environment.get("PYTHONPATH", "")],
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=environment,
+        check=False,
+    )
+    return result.stdout, result.stderr
+
+
 @requires_bounds_check_views
 def test_bounds_check_traps_on_gpu():
     _skip_without_cupy()
@@ -1011,22 +1055,6 @@ def test_bounds_check_traps_on_gpu():
     output = "".join(_run_python(BOUNDS_TRAP))
     assert "no error" not in output, output
     assert "trapped" in output, output
-
-
-BOUNDS_TRAP = f"""
-import cupy as cp
-from cunumpy.kernels import CudaKernel
-
-kernel = CudaKernel({SCALE_COLUMN!r}, "scale_column", options=("-DCUNUMPY_BOUNDS_CHECK",))
-a = cp.ones((4, 3))
-try:
-    kernel(a, 5, 2.0, n_threads=4)  # column out of bounds
-    cp.cuda.Device().synchronize()
-except Exception as error:
-    print("trapped:", type(error).__name__, flush=True)
-else:
-    print("no error", flush=True)
-"""
 
 
 # ---------------------------------------------------------------------------
@@ -1390,34 +1418,6 @@ def test_shared_memory_on_gpu():
     out = cp.zeros(grid)
     kernel(x, out, n, n_threads=n, shared_mem=block * 8)
     assert float(out.sum()) == n * (n - 1) / 2
-
-
-# ---------------------------------------------------------------------------
-# debug mode
-# ---------------------------------------------------------------------------
-
-
-def _run_python(code, env=None):
-    """Run `code` in a fresh interpreter that imports this cunumpy.
-
-    Returns its stdout and stderr."""
-    import os
-    import subprocess
-    import sys
-    from pathlib import Path
-
-    environment = {**os.environ, **(env or {})}
-    environment["PYTHONPATH"] = os.pathsep.join(
-        [str(Path(xp.__file__).parents[1]), environment.get("PYTHONPATH", "")],
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        env=environment,
-        check=False,
-    )
-    return result.stdout, result.stderr
 
 
 @pytest.fixture

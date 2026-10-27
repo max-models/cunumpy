@@ -42,14 +42,6 @@ KINDS = (
 )
 """Event kinds, in the order they are reported."""
 
-# The currently active counters, innermost last. Instrumented code checks
-# ``if _ACTIVE:`` before doing any work, so the overhead of an inactive counter
-# is a single truth test. The list object is shared with the instrumented
-# modules and mutated in place; never rebind it.
-_ACTIVE: list[TransferCounter] = []
-
-_PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
-
 
 @dataclass(frozen=True)
 class TransferEvent:
@@ -124,10 +116,6 @@ class TransferCounter:
 
     def __init__(self) -> None:
         self.events: list[TransferEvent] = []
-
-    def __repr__(self) -> str:
-        counts = ", ".join(f"{kind}={self.count(kind)}" for kind in KINDS)
-        return f"TransferCounter({counts})"
 
     def _add(self, event: TransferEvent) -> None:
         self.events.append(event)
@@ -236,6 +224,19 @@ class TransferCounter:
                 times = f" (x{n})" if n > 1 else ""
                 lines.append(f"    {where}: {description}{times}")
         return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        counts = ", ".join(f"{kind}={self.count(kind)}" for kind in KINDS)
+        return f"TransferCounter({counts})"
+
+
+# The currently active counters, innermost last. Instrumented code checks
+# ``if _ACTIVE:`` before doing any work, so the overhead of an inactive counter
+# is a single truth test. The list object is shared with the instrumented
+# modules and mutated in place; never rebind it.
+_ACTIVE: list[TransferCounter] = []
+
+_PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def _caller() -> str:
@@ -486,10 +487,6 @@ class TransferBudget:
         self._stack: list[str] = []
         self._router = _PhaseRouter(self)
 
-    def __getitem__(self, phase: str) -> TransferCounter:
-        """Return the counter of `phase` (empty if it has not run)."""
-        return self.phases.setdefault(phase, TransferCounter())
-
     def start(self) -> None:
         """Count the phases from now on."""
         self.started = True
@@ -665,3 +662,7 @@ class TransferBudget:
         """
         if self.violations():
             raise AssertionError("transfer budget exceeded:\n" + self.report())
+
+    def __getitem__(self, phase: str) -> TransferCounter:
+        """Return the counter of `phase` (empty if it has not run)."""
+        return self.phases.setdefault(phase, TransferCounter())

@@ -77,12 +77,6 @@ class FakeStream:
         self.count = 0
         self.device_id = 0
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        pass
-
     def record(self):
         self.count += 1
         event = FakeEvent(f"{self.name}#{self.count}")
@@ -91,6 +85,12 @@ class FakeStream:
 
     def wait_event(self, event):
         DeviceArray.log.append(("wait", self.name, event.name))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        pass
 
 
 @pytest.fixture

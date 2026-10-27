@@ -75,6 +75,16 @@ def host_buffer(array: object) -> object:
     )
 
 
+def uninstall() -> None:
+    """Remove the fake ``cupy`` package from ``sys.modules`` (no-op otherwise)."""
+    if not is_active():
+        return
+    for name in [n for n in sys.modules if n.split(".")[0] in ("cupy", "cupyx")]:
+        del sys.modules[name]
+    for name in [n for n in sys.modules if n.startswith("array_api_compat.cupy")]:
+        del sys.modules[name]
+
+
 def install() -> types.ModuleType:
     """Install the fake ``cupy`` package into ``sys.modules`` and return it.
 
@@ -114,13 +124,3 @@ def install() -> types.ModuleType:
         uninstall()
         raise
     return module
-
-
-def uninstall() -> None:
-    """Remove the fake ``cupy`` package from ``sys.modules`` (no-op otherwise)."""
-    if not is_active():
-        return
-    for name in [n for n in sys.modules if n.split(".")[0] in ("cupy", "cupyx")]:
-        del sys.modules[name]
-    for name in [n for n in sys.modules if n.startswith("array_api_compat.cupy")]:
-        del sys.modules[name]

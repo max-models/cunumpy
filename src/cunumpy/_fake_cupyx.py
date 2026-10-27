@@ -248,6 +248,18 @@ class _Proxy:
         object.__setattr__(self, "_obj", obj)
         object.__setattr__(self, "_cupy", cupy)
 
+    # copies wrap a copy of the SciPy object and share the fake CuPy module (a
+    # module cannot be copied), as real CuPy splines can be copied
+    def __copy__(self) -> _Proxy:
+        return _Proxy(copy.copy(self._obj), self._cupy)
+
+    def __deepcopy__(self, memo: dict) -> _Proxy:
+        return _Proxy(copy.deepcopy(self._obj, memo), self._cupy)
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        where = f"{type(self._obj).__name__}.__call__"
+        return _device_callable(self._obj, self._cupy, where)(*args, **kwargs)
+
     def __getattr__(self, name: str) -> Any:
         attr = getattr(self._obj, name)
         if callable(attr):
@@ -259,46 +271,8 @@ class _Proxy:
     def __setattr__(self, name: str, value: Any) -> None:
         setattr(self._obj, name, _to_host(value, self._cupy))
 
-    def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        where = f"{type(self._obj).__name__}.__call__"
-        return _device_callable(self._obj, self._cupy, where)(*args, **kwargs)
-
     def __repr__(self) -> str:
         return f"<fake cupyx {self._obj!r}>"
-
-    # copies wrap a copy of the SciPy object and share the fake CuPy module (a
-    # module cannot be copied), as real CuPy splines can be copied
-    def __copy__(self) -> _Proxy:
-        return _Proxy(copy.copy(self._obj), self._cupy)
-
-    def __deepcopy__(self, memo: dict) -> _Proxy:
-        return _Proxy(copy.deepcopy(self._obj, memo), self._cupy)
-
-
-class _ProxyClass:
-    """A SciPy class seen as a CuPy class: instances are :class:`_Proxy`."""
-
-    def __init__(self, cls: type, cupy: Any, where: str) -> None:
-        self._cls = cls
-        self._cupy = cupy
-        self._where = where
-        self.__name__ = cls.__name__
-        self.__doc__ = cls.__doc__
-
-    def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        return _device_callable(self._cls, self._cupy, self._where)(*args, **kwargs)
-
-    def __getattr__(self, name: str) -> Any:
-        attr = getattr(self._cls, name)
-        if callable(attr):
-            return _device_callable(attr, self._cupy, f"{self._where}.{name}")
-        return attr
-
-    def __instancecheck__(self, obj: Any) -> bool:
-        return isinstance(obj, _Proxy) and isinstance(obj._obj, self._cls)
-
-    def __repr__(self) -> str:
-        return f"<fake {self._where}>"
 
 
 def _is_scipy_object(value: Any) -> bool:
@@ -333,6 +307,32 @@ def _device_callable(fun: Any, cupy: Any, where: str) -> Any:
     call.__name__ = getattr(fun, "__name__", where)
     call.__doc__ = getattr(fun, "__doc__", None)
     return call
+
+
+class _ProxyClass:
+    """A SciPy class seen as a CuPy class: instances are :class:`_Proxy`."""
+
+    def __init__(self, cls: type, cupy: Any, where: str) -> None:
+        self._cls = cls
+        self._cupy = cupy
+        self._where = where
+        self.__name__ = cls.__name__
+        self.__doc__ = cls.__doc__
+
+    def __instancecheck__(self, obj: Any) -> bool:
+        return isinstance(obj, _Proxy) and isinstance(obj._obj, self._cls)
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return _device_callable(self._cls, self._cupy, self._where)(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._cls, name)
+        if callable(attr):
+            return _device_callable(attr, self._cupy, f"{self._where}.{name}")
+        return attr
+
+    def __repr__(self) -> str:
+        return f"<fake {self._where}>"
 
 
 def _subpackage(path: str, cupy: Any) -> types.ModuleType:

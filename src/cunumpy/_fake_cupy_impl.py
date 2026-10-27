@@ -30,6 +30,24 @@ def _err(obj, where=""):
     )
 
 
+def _strict(args, where, first_is_data=False):
+    """Raise on NumPy arrays anywhere (top level or inside tuples/lists).
+
+    0-d NumPy arrays pass, like NumPy scalars: CuPy treats them as scalars.
+    With `first_is_data`, a list or tuple as first argument raises too.
+    """
+    for i, a in enumerate(args):
+        if isinstance(a, _HOST) and a.ndim > 0:
+            raise _err(a, f" in {where}")
+        if isinstance(a, (list, tuple)):
+            if i == 0 and first_is_data:
+                raise _err(a, f" as array argument of {where}")
+            _strict(a, where)
+
+
+cuda = types.ModuleType("cupy.cuda")
+
+
 class ndarray:
     __slots__ = ("__weakref__", "_a")
     __array_priority__ = 100
@@ -37,6 +55,12 @@ class ndarray:
     def __init__(self, a):
         assert isinstance(a, _HOST)
         object.__setattr__(self, "_a", a)
+
+    def __copy__(self):
+        return ndarray(self._a.copy())
+
+    def __deepcopy__(self, memo):
+        return ndarray(self._a.copy())
 
     # --- conversions ---------------------------------------------------------
     def __array__(self, *args, **kwargs):
@@ -55,9 +79,6 @@ class ndarray:
 
     def set(self, arr, *args, **kwargs):
         self._a[...] = arr
-
-    def __reduce__(self):
-        return (_from_host, (self._a.copy(),))
 
     @property
     def __cuda_array_interface__(self):
@@ -78,6 +99,21 @@ class ndarray:
     def device(self):
         return cuda.Device(0)
 
+    # --- numpy protocols -----------------------------------------------------
+    def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
+        _strict(inputs, ufunc.__name__)
+        out = kwargs.get("out")
+        res = getattr(ufunc, method)(*_unwrap(inputs), **_unwrap(kwargs))
+        if out is not None:
+            return out[0] if isinstance(out, tuple) and len(out) == 1 else out
+        return _wrap(res)
+
+    def __array_function__(self, func, types_, args, kwargs):
+        mine = globals().get(func.__name__)
+        if mine is None:
+            mine = __getattr__(func.__name__)
+        return mine(*args, **kwargs)
+
     # --- attributes ----------------------------------------------------------
     def __getattr__(self, name):
         # no __array_interface__ etc.: NumPy must not see the host buffer
@@ -93,26 +129,32 @@ class ndarray:
     def __setattr__(self, name, value):
         setattr(self._a, name, _unwrap(value))
 
-    # --- python protocol -----------------------------------------------------
-    def __len__(self):
-        return len(self._a)
+    def __getitem__(self, key):
+        return _wrap(self._a[_unwrap(key)])
+
+    def __setitem__(self, key, value):
+        self._a[_unwrap(key)] = _unwrap(value)
 
     def __iter__(self):
         for x in self._a:
             yield _wrap(x)
 
-    def __repr__(self):
-        return "fakecupy." + repr(self._a)
+    def __contains__(self, x):
+        return _unwrap(x) in self._a
 
-    def __str__(self):
-        return str(self._a)
+    # --- python protocol -----------------------------------------------------
+    def __len__(self):
+        return len(self._a)
 
-    def __format__(self, spec):
-        return format(self._a.item() if self._a.ndim == 0 else self._a, spec)
+    __hash__ = None
 
     def __bool__(self):
         _sync("bool(device array)")
         return bool(self._a)
+
+    def __complex__(self):
+        _sync("complex(device array)")
+        return complex(self._a)
 
     def __int__(self):
         _sync("int(device array)")
@@ -122,45 +164,21 @@ class ndarray:
         _sync("float(device array)")
         return float(self._a)
 
-    def __complex__(self):
-        _sync("complex(device array)")
-        return complex(self._a)
-
     def __index__(self):
         _sync("index of a device array")
         return operator.index(self._a.item() if self._a.ndim == 0 else self._a)
 
-    __hash__ = None
+    def __reduce__(self):
+        return (_from_host, (self._a.copy(),))
 
-    def __contains__(self, x):
-        return _unwrap(x) in self._a
+    def __repr__(self):
+        return "fakecupy." + repr(self._a)
 
-    def __getitem__(self, key):
-        return _wrap(self._a[_unwrap(key)])
+    def __str__(self):
+        return str(self._a)
 
-    def __setitem__(self, key, value):
-        self._a[_unwrap(key)] = _unwrap(value)
-
-    def __copy__(self):
-        return ndarray(self._a.copy())
-
-    def __deepcopy__(self, memo):
-        return ndarray(self._a.copy())
-
-    # --- numpy protocols -----------------------------------------------------
-    def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
-        _strict(inputs, ufunc.__name__)
-        out = kwargs.get("out")
-        res = getattr(ufunc, method)(*_unwrap(inputs), **_unwrap(kwargs))
-        if out is not None:
-            return out[0] if isinstance(out, tuple) and len(out) == 1 else out
-        return _wrap(res)
-
-    def __array_function__(self, func, types_, args, kwargs):
-        mine = globals().get(func.__name__)
-        if mine is None:
-            mine = __getattr__(func.__name__)
-        return mine(*args, **kwargs)
+    def __format__(self, spec):
+        return format(self._a.item() if self._a.ndim == 0 else self._a, spec)
 
 
 def _from_host(a):
@@ -193,21 +211,6 @@ def _unwrap(x):
     if isinstance(x, dict):
         return {k: _unwrap(v) for k, v in x.items()}
     return x
-
-
-def _strict(args, where, first_is_data=False):
-    """Raise on NumPy arrays anywhere (top level or inside tuples/lists).
-
-    0-d NumPy arrays pass, like NumPy scalars: CuPy treats them as scalars.
-    With `first_is_data`, a list or tuple as first argument raises too.
-    """
-    for i, a in enumerate(args):
-        if isinstance(a, _HOST) and a.ndim > 0:
-            raise _err(a, f" in {where}")
-        if isinstance(a, (list, tuple)):
-            if i == 0 and first_is_data:
-                raise _err(a, f" as array argument of {where}")
-            _strict(a, where)
 
 
 # binary / unary operators ------------------------------------------------------
@@ -413,14 +416,14 @@ class _NoGPU:
     def __init__(self, *args, **kwargs):
         pass
 
-    def __call__(self, *args, **kwargs):
-        raise NotImplementedError("fake CuPy cannot run CUDA kernels")
-
     def compile(self, log_stream=None):
         raise NotImplementedError("fake CuPy cannot compile CUDA kernels")
 
     def get_function(self, name):
         return _NoGPU()
+
+    def __call__(self, *args, **kwargs):
+        raise NotImplementedError("fake CuPy cannot run CUDA kernels")
 
 
 RawKernel = RawModule = ElementwiseKernel = ReductionKernel = _NoGPU
@@ -429,12 +432,6 @@ RawKernel = RawModule = ElementwiseKernel = ReductionKernel = _NoGPU
 class _Device:
     def __init__(self, id=0):
         self.id = 0 if id is None else id
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
 
     def use(self):
         pass
@@ -445,6 +442,12 @@ class _Device:
     @property
     def attributes(self):
         return {"MaxSharedMemoryPerBlock": 48 * 1024}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
 
 
 class _Event:
@@ -466,9 +469,6 @@ class _Stream(_Device):
     def __init__(self, *args, **kwargs):
         super().__init__()
 
-    def __enter__(self):
-        return self
-
     def record(self, event=None):
         event = _Event() if event is None else event
         event.record(self)
@@ -481,6 +481,9 @@ class _Stream(_Device):
     def done(self):
         return True
 
+    def __enter__(self):
+        return self
+
 
 _Stream.null = _Stream()
 
@@ -489,7 +492,6 @@ def _alloc_pinned_memory(nbytes):
     raise NotImplementedError("fake CuPy has no pinned memory")
 
 
-cuda = types.ModuleType("cupy.cuda")
 cuda.Device = _Device
 cuda.Stream = _Stream
 cuda.Event = _Event
