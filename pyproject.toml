@@ -45,6 +45,9 @@ optional-dependencies.test = [ "coverage", "pytest", "scipy" ]
 optional-dependencies.test-compiled = [ "cunumpy[test]", "pyccel" ]
 urls."Source" = "https://github.com/max-models/cunumpy"
 
+[project.entry-points."scope_profiler.opt_in_tags"]
+cunumpy = "cunumpy"
+
 [tool.setuptools.packages.find]
 where = [ "src" ]
 
