@@ -20,6 +20,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+          # The newest release, not the runner's cached one: Astro raises its minimum often.
+          check-latest: true
           cache: npm
           cache-dependency-path: tests/pyodide/package-lock.json
       - name: Build wheel and install compiler-free test dependencies
