@@ -35,3 +35,17 @@ def test_regions_are_off_by_default(profiler):
 def test_enabled_tag_records_regions(profiler, tags):
     regions = _cunumpy_regions(enable_tags=tags)
     assert sorted(regions) == ["cunumpy.kernel.noop", "cunumpy.sort_by_key"]
+
+
+def test_the_opt_in_tag_has_an_entry_point():
+    """``scope-profiler tags`` finds the tag through the package's entry point."""
+    from importlib.metadata import entry_points
+
+    from cunumpy._profile_tags import _PROFILE_TAGS
+
+    found = {
+        entry_point.name: entry_point.value
+        for entry_point in entry_points(group="scope_profiler.opt_in_tags")
+    }
+    assert found.get("cunumpy") == "cunumpy"
+    assert "cunumpy" in _PROFILE_TAGS
