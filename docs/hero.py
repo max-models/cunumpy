@@ -40,14 +40,14 @@ fig = HeroFigure(xlim=(0, 8), ylim=(0, 3))
 grid = np.r_[xp.to_numpy(x), 8.0][::2]
 for s in range(strings):
     level = 0.35 + s * 2.3 / (strings - 1)
-    paths = [fig._path(grid, level + np.r_[f[s], f[s, 0]][::2]) for f in frames]
-    line = fig.line(
+    # the last frame is the first again; morph closes the loop itself
+    fig.morph(
         grid,
-        level + np.r_[frames[0][s], frames[0][s, 0]][::2],
+        [level + np.r_[f[s], f[s, 0]][::2] for f in frames[:-1]],
+        12.0,
         tone="high" if s == 3 else "accent",
         width=2.0 if s == 3 else 1.4,
         opacity=0.95 if s == 3 else 0.55,
         title=f"string {s + 1}, on {backend}",
     )
-    line.animate("d", paths, 12.0)
 fig.save(Path(__file__).parent / "src" / "assets" / "hero.svg")
