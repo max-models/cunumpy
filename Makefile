@@ -2,7 +2,7 @@
 PYTHON ?= .venv/bin/python
 DOCS_ENV = DOCS_PYTHON=$(shell $(PYTHON) -c "import sys; print(sys.executable)")
 
-.PHONY: help docs-install docs-dev docs-build docs-preview docs-clean
+.PHONY: help docs-install docs-hero docs-dev docs-build docs-preview docs-clean
 
 help:  ## list the targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-16s %s\n", $$1, $$2}'
@@ -10,6 +10,9 @@ help:  ## list the targets
 docs-install:  ## Python docs extra and the npm packages
 	$(PYTHON) -m pip install -e ".[docs]"
 	cd docs && npm ci
+
+docs-hero:  ## redraw the home page figure (docs/src/assets/hero.svg)
+	$(PYTHON) docs/hero.py
 
 docs-dev:  ## live preview at http://localhost:4321/cunumpy/
 	cd docs && $(DOCS_ENV) DOCS_VALIDATE_LINKS=false npm run dev
