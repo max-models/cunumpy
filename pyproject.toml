@@ -39,6 +39,7 @@ optional-dependencies.dev = [
 optional-dependencies.docs = [ "griffe", "ipykernel" ]
 optional-dependencies.metal = [ "mlx; sys_platform == 'darwin' and platform_machine == 'arm64'" ]
 optional-dependencies.jax = [ "jax" ]
+optional-dependencies.julia = [ "juliacall" ]
 optional-dependencies.mlx = [ "mlx; sys_platform == 'darwin' and platform_machine == 'arm64'" ]
 optional-dependencies.torch = [ "torch" ]
 optional-dependencies.test = [ "coverage", "pytest", "scipy" ]
