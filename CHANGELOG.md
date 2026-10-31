@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `cunumpy.interop.julia` (extra `cunumpy[julia]`, juliacall): `to_julia` / `from_julia`
+  between NumPy arrays and Julia `Array`s that share memory. Julia is column-major, so a
+  C-ordered array arrives with its dimensions reversed and an F-ordered one with the same
+  dimensions; `from_julia(order="C" | "F")` picks the order back. Host arrays only; CuPy to
+  CUDA.jl is planned.
+- `copy=None | True | False` on every interop conversion (as in the array API): `False` raises
+  when the conversion cannot share memory, `True` always copies.
+- `supports_float64(device)` in the JAX, PyTorch and MLX adapters and
+  `cunumpy.interop.jax.enable_x64()`.
+
+### Changed
+- Interop conversions never change a dtype without being asked: float64 into JAX without
+  `jax_enable_x64`, onto an Apple GPU in PyTorch (MPS) or into MLX for the GPU raises a
+  `TypeError` with advice instead of becoming float32. MLX keeps float64 for
+  `device=mlx.core.cpu`.
+- The transfer profiler tells interop conversions apart: a conversion that shares memory records
+  nothing, one between host and device records `to_host` / `to_device`, and one within a
+  memory `device_copy` (before, every conversion was a `device_copy`).
+- `from_framework` copies between host and device explicitly (a recorded transfer, an error
+  under `copy=False`) instead of falling back to `asarray` silently, and a framework that
+  cannot take an array's device raises a `ValueError` naming the device.
+- `from_jax` raises a clear `TypeError` for traced values (inside `jax.jit`, `grad`, `vmap`).
+- `to_mlx(device=...)` names the device the array is meant for (MLX arrays have no device);
+  before, it passed `device` to `mlx.core.array`, which does not take it.
+
 ## [0.7.2] - 2026-10-27
 
 ### Fixed

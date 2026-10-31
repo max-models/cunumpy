@@ -33,6 +33,7 @@ never hide a NumPy name:
 | `xp.profiling` | `timed_region`, `nvtx_range`, `count_transfers` |
 | `xp.memory` | `HostStaging`, `DeviceMirror` |
 | `xp.petsc` | `petsc_vec` |
+| `xp.interop` | `dlpack`, `jax`, `torch`, `mlx`, `julia`: explicit conversions that share memory where they can (`copy=False` to require it) and never change a dtype silently |
 | `cunumpy.kernel_testing` | pytest helpers for host/CUDA kernel pairs |
 
 Everything except `xp.cuda`, `xp.arguments` and `CudaKernel` works on both backends.
