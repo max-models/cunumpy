@@ -432,3 +432,82 @@ def to_backend(
     return finish(
         source, result, copy=copy, target=backend, duplicate=lambda array: array.copy()
     )
+
+
+def is_array(value: Any) -> bool:
+    """Whether a value is an array the adapters convert (not a container).
+
+    Parameters
+    ----------
+    value : object
+        A leaf of a nested container.
+
+    Returns
+    -------
+    bool
+        True for NumPy arrays and scalars and for anything exposing DLPack or
+        the CUDA array interface.
+    """
+    return isinstance(value, (np.ndarray, np.generic)) or any(
+        hasattr(value, name) for name in ("__dlpack__", "__cuda_array_interface__")
+    )
+
+
+def tree_map(
+    function: Callable[[Any], Any], tree: Any, leaf: Callable[[Any], bool]
+) -> Any:
+    """Apply `function` to the array leaves of nested dicts, lists and tuples.
+
+    Containers keep their type (also a named tuple and a dict subclass); a leaf
+    that is not an array (a Python number, a string, None) is returned as is.
+
+    Parameters
+    ----------
+    function : callable
+        Converts one array.
+    tree : object
+        An array, or dicts, lists and tuples of arrays.
+    leaf : callable
+        Tells which leaves `function` converts.
+
+    Returns
+    -------
+    object
+        The same structure with the arrays converted.
+    """
+    if isinstance(tree, dict):
+        items = {key: tree_map(function, value, leaf) for key, value in tree.items()}
+        return items if type(tree) is dict else type(tree)(items)
+    if isinstance(tree, (list, tuple)):
+        items = [tree_map(function, value, leaf) for value in tree]
+        if type(tree) in (list, tuple):
+            return type(tree)(items)
+        if hasattr(tree, "_fields"):
+            return type(tree)(*items)
+        return type(tree)(items)
+    return function(tree) if leaf(tree) else tree
+
+
+def scalar_value(value: Any) -> Any:
+    """Check that an objective or diagnostic holds one value and return it.
+
+    Parameters
+    ----------
+    value : object
+        A Python number, a NumPy or CuPy scalar, or an array of size one.
+
+    Returns
+    -------
+    object
+        `value` as a 0-d array of its library (a Python number unchanged).
+    """
+    if isinstance(value, (bool, int, float, complex)):
+        return value
+    size = getattr(value, "size", None)
+    if size is None:
+        raise TypeError(
+            f"a scalar must be a number or an array, got {type(value).__name__}"
+        )
+    if size != 1:
+        raise ValueError(f"a scalar must have one element, got shape {value.shape}")
+    return value.reshape(())

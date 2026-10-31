@@ -13,8 +13,10 @@ from cunumpy.interop._common import (
     check_dtype,
     device_error,
     finish,
+    is_array,
     memory,
     require,
+    scalar_value,
     to_backend,
 )
 
@@ -153,14 +155,112 @@ def from_framework(
     return to_backend(array, backend, dtype=dtype, copy=copy, host_array=np.asarray)
 
 
+def _tree_map(function: Any, tree: Any, leaf: Any) -> Any:
+    """Map `function` over the leaves of a JAX pytree that `leaf` selects."""
+    jax = require("jax")
+    return jax.tree_util.tree_map(
+        lambda value: function(value) if leaf(value) else value, tree
+    )
+
+
+def scalar(value: Any, *, device: Any = None, dtype: Any = None) -> Any:
+    """Return a scalar objective or diagnostic as a 0-d JAX array.
+
+    A Python number becomes a NumPy scalar first (float64 for a float), so
+    the dtype rules of :func:`to_framework` apply to it as well.
+
+    Parameters
+    ----------
+    value : object
+        A Python number, a NumPy or CuPy scalar, or an array of size one.
+    device : object or None, optional
+        As for :func:`to_framework`.
+    dtype : object or None, optional
+        Dtype for the result.
+
+    Returns
+    -------
+    object
+        0-d JAX array.
+    """
+    value = scalar_value(value)
+    if not is_array(value):
+        value = np.asarray(value)
+    return to_framework(value, device=device, dtype=dtype)
+
+
+def tree_to_framework(
+    tree: Any, *, device: Any = None, dtype: Any = None, copy: bool | None = None
+) -> Any:
+    """Convert the arrays in nested dicts, lists and tuples to JAX arrays.
+
+    The structure is kept and leaves that are not arrays (numbers, strings,
+    None) are returned unchanged; each array goes through
+    :func:`to_framework` with the same arguments.
+    Other JAX pytrees (registered with ``jax.tree_util``) work as well.
+
+    Parameters
+    ----------
+    tree : object
+        An array, or dicts, lists and tuples of arrays.
+    device, dtype, copy : object, optional
+        As for :func:`to_framework`.
+
+    Returns
+    -------
+    object
+        The same structure with JAX arrays.
+    """
+
+    def convert(array: Any) -> Any:
+        return to_framework(array, device=device, dtype=dtype, copy=copy)
+
+    return _tree_map(convert, tree, is_array)
+
+
+def tree_from_framework(
+    tree: Any, *, backend: str = "numpy", dtype: Any = None, copy: bool | None = None
+) -> Any:
+    """Convert the JAX arrays in nested dicts, lists and tuples to NumPy or CuPy.
+
+    The structure is kept and other leaves are returned unchanged; each JAX
+    array goes through :func:`from_framework` with the same arguments.
+
+    Parameters
+    ----------
+    tree : object
+        A JAX array, or dicts, lists and tuples of them.
+    backend, dtype, copy : object, optional
+        As for :func:`from_framework`.
+
+    Returns
+    -------
+    object
+        The same structure with NumPy or CuPy arrays.
+    """
+    jax = require("jax")
+
+    def convert(array: Any) -> Any:
+        return from_framework(array, backend=backend, dtype=dtype, copy=copy)
+
+    return _tree_map(convert, tree, lambda value: isinstance(value, jax.Array))
+
+
 to_jax = to_framework
 from_jax = from_framework
+tree_to_jax = tree_to_framework
+tree_from_jax = tree_from_framework
 
 __all__ = [
     "enable_x64",
     "from_framework",
     "from_jax",
+    "scalar",
     "supports_float64",
     "to_framework",
     "to_jax",
+    "tree_from_framework",
+    "tree_from_jax",
+    "tree_to_framework",
+    "tree_to_jax",
 ]
