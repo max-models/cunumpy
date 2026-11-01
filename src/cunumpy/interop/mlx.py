@@ -14,9 +14,12 @@ from cunumpy.interop._common import (
     device_error,
     dtype_name,
     finish,
+    is_array,
     memory,
     require,
+    scalar_value,
     to_backend,
+    tree_map,
 )
 
 _GPU_ADVICE = (
@@ -131,13 +134,102 @@ def from_framework(
     )
 
 
+def scalar(value: Any, *, device: Any = None, dtype: Any = None) -> Any:
+    """Return a scalar objective or diagnostic as a 0-d MLX array.
+
+    A Python number becomes a NumPy scalar first (float64 for a float), so
+    the dtype rules of :func:`to_framework` apply to it as well.
+
+    Parameters
+    ----------
+    value : object
+        A Python number, a NumPy or CuPy scalar, or an array of size one.
+    device : object or None, optional
+        As for :func:`to_framework`.
+    dtype : object or None, optional
+        Dtype for the result.
+
+    Returns
+    -------
+    object
+        0-d MLX array.
+    """
+    value = scalar_value(value)
+    if not is_array(value):
+        value = np.asarray(value)
+    return to_framework(value, device=device, dtype=dtype)
+
+
+def tree_to_framework(
+    tree: Any, *, device: Any = None, dtype: Any = None, copy: bool | None = None
+) -> Any:
+    """Convert the arrays in nested dicts, lists and tuples to MLX arrays.
+
+    The structure is kept and leaves that are not arrays (numbers, strings,
+    None) are returned unchanged; each array goes through
+    :func:`to_framework` with the same arguments.
+
+    Parameters
+    ----------
+    tree : object
+        An array, or dicts, lists and tuples of arrays.
+    device, dtype, copy : object, optional
+        As for :func:`to_framework`.
+
+    Returns
+    -------
+    object
+        The same structure with MLX arrays.
+    """
+
+    def convert(array: Any) -> Any:
+        return to_framework(array, device=device, dtype=dtype, copy=copy)
+
+    return tree_map(convert, tree, is_array)
+
+
+def tree_from_framework(
+    tree: Any, *, backend: str = "numpy", dtype: Any = None, copy: bool | None = None
+) -> Any:
+    """Convert the MLX arrays in nested dicts, lists and tuples to NumPy or CuPy.
+
+    The structure is kept and other leaves are returned unchanged; each MLX
+    array goes through :func:`from_framework` with the same arguments.
+
+    Parameters
+    ----------
+    tree : object
+        A MLX array, or dicts, lists and tuples of them.
+    backend, dtype, copy : object, optional
+        As for :func:`from_framework`.
+
+    Returns
+    -------
+    object
+        The same structure with NumPy or CuPy arrays.
+    """
+    mx = require("mlx.core", extra="mlx")
+
+    def convert(array: Any) -> Any:
+        return from_framework(array, backend=backend, dtype=dtype, copy=copy)
+
+    return tree_map(convert, tree, lambda value: isinstance(value, mx.array))
+
+
 to_mlx = to_framework
 from_mlx = from_framework
+tree_to_mlx = tree_to_framework
+tree_from_mlx = tree_from_framework
 
 __all__ = [
     "from_framework",
     "from_mlx",
+    "scalar",
     "supports_float64",
     "to_framework",
     "to_mlx",
+    "tree_from_framework",
+    "tree_from_mlx",
+    "tree_to_framework",
+    "tree_to_mlx",
 ]

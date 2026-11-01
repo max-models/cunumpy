@@ -36,6 +36,7 @@ export default defineDocs({
 				'guides/backends',
 				'guides/portable-code',
 				'guides/data-movement',
+				'guides/interop',
 				'guides/array-ordering',
 				'guides/gpu-devices',
 				'guides/execution-helpers',
