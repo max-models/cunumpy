@@ -47,9 +47,9 @@ The submodules are named so that they do not hide a NumPy name (`rng`, not
 | Submodule | Backends | Contents |
 |---|---|---|
 | [`cunumpy`](/cunumpy/api/cunumpy/) | both | NumPy/CuPy namespace, backend selection, array inspection and conversion, `as_device_array`, `to_host_async`, `synchronize`, `host_call`, `evaluate_on_host`, `setup_on_host`, `scipy`, `require_version` |
-| [`cunumpy.kernels`](/cunumpy/api/cunumpy/kernels/) | both | `Kernel`, `KernelCatalog`, `PyccelKernel`, `CudaKernel`, `CudaKernelVariants`, `MetalKernel`, `metal_available`, `PyccelCache`, `KernelPackage`, `source_roots`, host implementations, `as_kernel_array`, `kernel_output`, `kernel_outputs`, `fuse` |
+| [`cunumpy.kernels`](/cunumpy/api/cunumpy/kernels/) | both | `Kernel`, `KernelCatalog`, `PyccelKernel`, `CudaKernel`, `BoundLaunch`, `CudaKernelVariants`, `MetalKernel`, `metal_available`, `PyccelCache`, `KernelPackage`, `source_roots`, host implementations, `as_kernel_array`, `kernel_output`, `kernel_outputs`, `fuse` |
 | [`cunumpy.arguments`](/cunumpy/api/cunumpy/arguments/) | CUDA only | `CudaArguments`, `CudaStruct`, `CudaStructArguments`, `CudaStructValue`, `write_cuda_header` |
-| [`cunumpy.cuda`](/cunumpy/api/cunumpy/cuda/) | CUDA only | device selection and memory, `stream`, streams/events, `pin_memory`, debug mode, CUDA headers and source tools (`cuda_include_dir`, `parse_cuda_signature`) |
+| [`cunumpy.cuda`](/cunumpy/api/cunumpy/cuda/) | CUDA only | device selection and memory, `stream`, streams/events, `capture_graph`, `pin_memory`, debug mode, CUDA headers and source tools (`cuda_include_dir`, `parse_cuda_signature`) |
 | [`cunumpy.rng`](/cunumpy/api/cunumpy/rng/) | both | `random_streams`, `get_rng`, `philox_*` |
 | [`cunumpy.algorithms`](/cunumpy/api/cunumpy/algorithms/) | both | `morton_*`, `sort_by_key`, `segment_sum`, `compact_by_mask` |
 | [`cunumpy.optimize`](/cunumpy/api/cunumpy/optimize/) | both | `newton` (batched Newton/secant), `NewtonResult`; `fsolve`, `root`, `minimize` (SciPy on the host, callbacks on the device) |

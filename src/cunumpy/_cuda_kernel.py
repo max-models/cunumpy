@@ -42,6 +42,7 @@ from cunumpy._transfers import _record_sync
 
 __all__ = [
     "DEBUG_OPTIONS",
+    "BoundLaunch",
     "CudaArguments",
     "CudaKernel",
     "CudaKernelVariants",
@@ -2658,6 +2659,102 @@ class CudaKernel:
                 f"grid {grid} and block {block}: {error}",
             ) from error
 
+    def _prepare_launch(
+        self,
+        args: tuple[Any, ...],
+        n_threads: int | Sequence[int] | None,
+        grid: int | Sequence[int] | None,
+        block: int | Sequence[int] | None,
+        shared_mem: int,
+    ) -> tuple[Any, int, tuple[int, ...], tuple[int, ...], tuple[Any, ...], int] | None:
+        """Check and pack a launch; None for an empty grid (nothing to launch)."""
+        grid_shape, block_shape = self.launch_shape(
+            n_threads, grid=grid, block=block, args=args
+        )
+        shared_mem = operator.index(shared_mem)
+        if shared_mem < 0:
+            raise ValueError(f"shared_mem must be non-negative, got {shared_mem}")
+        values = self.prepare_args(*args)
+        # RawKernel accepts size-one NumPy arrays for structs passed by value,
+        # but not structured NumPy scalars (np.void). Keep their packed bytes
+        # and alignment intact, including array-view pointers and strides.
+        values = tuple(np.asarray(v) if isinstance(v, np.void) else v for v in values)
+        if 0 in grid_shape:
+            return None
+
+        kernel = self.compile()
+        device = _current_device()
+        state = self._compiled[device]
+        self._validate_launch(state, device, grid_shape, block_shape, shared_mem)
+        for label, array in _device_arrays_in(args):
+            array_device = getattr(getattr(array, "device", None), "id", None)
+            if array_device is not None and array_device != device:
+                raise ValueError(
+                    f"kernel {self.expression!r} on CUDA device {device}: "
+                    f"{label} belongs to CUDA device {array_device}",
+                )
+        return kernel, device, grid_shape, block_shape, values, shared_mem
+
+    def _check_stream(self, stream: Any, device: int) -> None:
+        if stream is not None and getattr(stream, "device_id", device) not in (
+            device,
+            -1,
+        ):
+            raise ValueError(
+                f"kernel {self.expression!r}: stream belongs to another device"
+            )
+
+    def bind(
+        self,
+        *args: Any,
+        n_threads: int | Sequence[int] | None = None,
+        grid: int | Sequence[int] | None = None,
+        block: int | Sequence[int] | None = None,
+        shared_mem: int = 0,
+    ) -> BoundLaunch:
+        """Fix the arguments and launch size of repeated launches.
+
+        A call checks every argument against the signature, packs it and
+        validates the launch size, every time. The returned
+        :class:`~cunumpy.kernels.BoundLaunch` does this once, at its first
+        launch, and then only launches: for kernels launched every step on the
+        same arrays (the arrays are passed by pointer, so their contents may
+        change between launches, not their identity or shape). Scalars are
+        fixed too: bind again for other values.
+
+        Parameters
+        ----------
+        *args
+            Kernel arguments, as for a call.
+        n_threads : int or sequence of int, optional
+            Number of threads, as for a call.
+        grid : int or sequence of int, optional
+            Number of blocks, instead of `n_threads`.
+        block : int or sequence of int, optional
+            Block shape, instead of :attr:`block_size`.
+        shared_mem : int, optional
+            Dynamic shared memory per block in bytes.
+
+        Returns
+        -------
+        BoundLaunch
+            Launches with ``launch()`` or ``launch(stream=...)``.
+
+        Examples
+        --------
+        >>> axpy = xp.kernels.CudaKernel(
+        ...     'extern "C" __global__ void axpy(double a, const double* x, double* y,'
+        ...     " int n) { int i = blockIdx.x * blockDim.x + threadIdx.x;"
+        ...     " if (i < n) y[i] += a * x[i]; }",
+        ...     "axpy",
+        ... )
+        >>> x, y = np.arange(3.0), np.zeros(3)
+        >>> launch = axpy.bind(2.0, x, y, 3, n_threads=3)
+        >>> launch  # doctest: +ELLIPSIS
+        BoundLaunch(CudaKernel(name='axpy', ...), 4 arguments)
+        """
+        return BoundLaunch(self, args, n_threads, grid, block, shared_mem)
+
     def __call__(
         self,
         *args: Any,
@@ -2700,38 +2797,11 @@ class CudaKernel:
             If the launch exceeds the device or kernel limits (dimensions,
             threads, shared memory), or arrays or stream are on another device.
         """
-        grid_shape, block_shape = self.launch_shape(
-            n_threads, grid=grid, block=block, args=args
-        )
-        shared_mem = operator.index(shared_mem)
-        if shared_mem < 0:
-            raise ValueError(f"shared_mem must be non-negative, got {shared_mem}")
-        values = self.prepare_args(*args)
-        # RawKernel accepts size-one NumPy arrays for structs passed by value,
-        # but not structured NumPy scalars (np.void). Keep their packed bytes
-        # and alignment intact, including array-view pointers and strides.
-        values = tuple(np.asarray(v) if isinstance(v, np.void) else v for v in values)
-        if 0 in grid_shape:
+        launch = self._prepare_launch(args, n_threads, grid, block, shared_mem)
+        if launch is None:
             return
-
-        kernel = self.compile()
-        device = _current_device()
-        state = self._compiled[device]
-        self._validate_launch(state, device, grid_shape, block_shape, shared_mem)
-        if stream is not None and getattr(stream, "device_id", device) not in (
-            device,
-            -1,
-        ):
-            raise ValueError(
-                f"kernel {self.expression!r}: stream belongs to another device"
-            )
-        for label, array in _device_arrays_in(args):
-            array_device = getattr(getattr(array, "device", None), "id", None)
-            if array_device is not None and array_device != device:
-                raise ValueError(
-                    f"kernel {self.expression!r} on CUDA device {device}: "
-                    f"{label} belongs to CUDA device {array_device}",
-                )
+        kernel, device, grid_shape, block_shape, values, shared_mem = launch
+        self._check_stream(stream, device)
         debug = self.debug_active()
         with stream if stream is not None else nullcontext():
             kernel(grid_shape, block_shape, values, shared_mem=shared_mem)
@@ -2742,6 +2812,107 @@ class CudaKernel:
 
     def __repr__(self) -> str:
         return f"CudaKernel(name={self.expression!r}, block_size={self.block_size})"
+
+
+#: The launch of :class:`CudaKernel`, to notice when emulation replaced it.
+_CUDA_KERNEL_CALL = CudaKernel.__call__
+
+
+class BoundLaunch:
+    """A :class:`~cunumpy.kernels.CudaKernel` launch with fixed arguments.
+
+    Created by :meth:`CudaKernel.bind <cunumpy.kernels.CudaKernel.bind>`. The
+    first launch checks and packs the arguments like a call; later launches
+    only check the current device and launch. In debug mode, with
+    ``check_finite``, and under
+    :func:`~cunumpy.kernel_testing.emulated_launches` every launch is a full call
+    of the kernel.
+
+    Parameters
+    ----------
+    kernel : CudaKernel
+        The kernel.
+    args : tuple
+        Kernel arguments, kept alive by this object.
+    n_threads : int or sequence of int or None
+        Number of threads, see :meth:`CudaKernel.__call__`.
+    grid : int or sequence of int or None
+        Number of blocks, instead of `n_threads`.
+    block : int or sequence of int or None
+        Block shape, or None for the kernel's block size.
+    shared_mem : int
+        Dynamic shared memory per block in bytes.
+    """
+
+    def __init__(
+        self,
+        kernel: CudaKernel,
+        args: tuple[Any, ...],
+        n_threads: int | Sequence[int] | None,
+        grid: int | Sequence[int] | None,
+        block: int | Sequence[int] | None,
+        shared_mem: int,
+    ) -> None:
+        self._kernel = kernel
+        self._args = tuple(args)
+        self._config = {
+            "n_threads": n_threads,
+            "grid": grid,
+            "block": block,
+            "shared_mem": shared_mem,
+        }
+        self._packed: Any = None
+
+    @property
+    def kernel(self) -> CudaKernel:
+        """The kernel."""
+        return self._kernel
+
+    def launch(self, stream: Any = None) -> None:
+        """Launch the kernel (asynchronously, unless in debug mode).
+
+        Parameters
+        ----------
+        stream : cupy.cuda.Stream, optional
+            Stream to launch on; the current stream by default.
+
+        Raises
+        ------
+        ValueError
+            If the current CUDA device or `stream` is not the device of the
+            first launch, or (at the first launch) as for a call.
+        """
+        kernel = self._kernel
+        if (
+            type(kernel).__call__ is not _CUDA_KERNEL_CALL
+            or kernel._check_finite
+            or kernel.debug_active()
+        ):
+            kernel(*self._args, stream=stream, **self._config)
+            return
+        packed = self._packed
+        if packed is None:
+            packed = kernel._prepare_launch(self._args, **self._config) or ()
+            self._packed = packed
+        if not packed:
+            return  # empty grid
+        raw, device, grid, block, values, shared_mem = packed
+        if _current_device() != device:
+            raise ValueError(
+                f"kernel {kernel.expression!r} was bound on CUDA device {device}, "
+                f"but device {_current_device()} is current",
+            )
+        if stream is None:
+            raw(grid, block, values, shared_mem=shared_mem)
+        else:
+            kernel._check_stream(stream, device)
+            with stream:
+                raw(grid, block, values, shared_mem=shared_mem)
+
+    __call__ = launch
+
+    def __repr__(self) -> str:
+        return f"BoundLaunch({self._kernel!r}, {len(self._args)} arguments)"
 
 
 class CudaKernelVariants:

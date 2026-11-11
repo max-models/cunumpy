@@ -98,3 +98,39 @@ kernels](/cunumpy/kernels/cuda-kernel/)).
 Streams help when independent pieces of work (a transfer and an unrelated
 kernel, or several small kernels) can overlap. Most array-level code gains
 nothing from them; reach for streams after a profile shows idle gaps.
+
+## CUDA graphs
+
+A time step made of many small kernels is often limited by launching them from
+Python, not by the GPU. `xp.cuda.capture_graph` records the kernels and copies
+of one call of a step as a CUDA graph; each `launch()` then replays all of them
+with a single launch, on the same arrays:
+
+```python
+# a plan validates its keys with a synchronization: create it outside the step
+plan = xp.algorithms.SegmentPlan(cells, n_cells)
+
+
+def step():
+    push(positions, velocities, dt, n_threads=n)
+    plan.sum(charges, out=density)
+
+
+graph = xp.cuda.capture_graph(step)  # runs step once to warm up, then captures it
+for _ in range(n_steps):
+    graph.launch()
+```
+
+Only GPU work is recorded: the Python code of `step` runs at the capture only.
+So the step must
+
+* use arrays allocated before the capture (`out=` arguments), since the memory
+  pool must not grow during a capture; the warm-up call (`warmup=True`, the
+  default) compiles the kernels and fills the pool;
+* not read device values on the host (`float(x)`, `bool(x.any())`,
+  `check_finite` kernels): this fails during a capture;
+* keep changing host values in device arrays, not in Python scalars.
+
+On NumPy (and the
+fake CuPy) nothing is captured: `launch()` calls the step again, so the same
+code runs on both backends.
