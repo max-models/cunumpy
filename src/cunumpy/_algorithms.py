@@ -150,6 +150,112 @@ def _sum_kernel(dtype: Any) -> Any:
     return _SUM_KERNELS[name]
 
 
+_SORTED_SUM_KERNELS: dict[str, Any] = {}
+
+#: Threads per segment of the sorted (deterministic) CUDA segment sum.
+_SORTED_SUM_BLOCK = 64
+
+
+def _sorted_sum_kernel(dtype: Any) -> Any:
+    """Return the CUDA kernel summing the rows of sorted keys, one block per segment.
+
+    Each block sums its segment's rows with a fixed tree reduction in shared
+    memory, so the result does not depend on the scheduling (no atomics).
+    """
+    name = np.dtype(dtype).name
+    if name not in _SORTED_SUM_KERNELS:
+        from cunumpy._cuda_kernel import CudaKernel
+
+        ctype = "float" if name == "float32" else "double"
+        _SORTED_SUM_KERNELS[name] = CudaKernel(
+            'extern "C" __global__ void segment_sum_sorted('
+            f"const long long* offsets, const {ctype}* values, {ctype}* out, "
+            "long long width) {\n"
+            f"__shared__ {ctype} partial[{_SORTED_SUM_BLOCK}];\n"
+            "long long segment = blockIdx.x;\n"
+            "long long start = offsets[segment], stop = offsets[segment + 1];\n"
+            "for (long long c = 0; c < width; ++c) {\n"
+            f"  {ctype} sum = 0;\n"
+            "  for (long long row = start + threadIdx.x; row < stop; row += blockDim.x)\n"
+            "    sum += values[row * width + c];\n"
+            "  partial[threadIdx.x] = sum;\n"
+            "  __syncthreads();\n"
+            "  for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {\n"
+            "    if (threadIdx.x < s) partial[threadIdx.x] += partial[threadIdx.x + s];\n"
+            "    __syncthreads();\n"
+            "  }\n"
+            "  if (threadIdx.x == 0) out[segment * width + c] = partial[0];\n"
+            "  __syncthreads();\n"
+            "}\n"
+            "}",
+            "segment_sum_sorted",
+            block_size=_SORTED_SUM_BLOCK,
+        )
+    return _SORTED_SUM_KERNELS[name]
+
+
+class _HostLayout:
+    """How the host sums rows per key: by runs of sorted keys or by ``bincount``.
+
+    Sorted keys (the usual case after :func:`sort_by_key`) are summed per run with
+    ``np.add.reduceat``; other keys per component with ``np.bincount``. Both are
+    several times faster than ``np.add.at``. Negative keys drop their rows.
+    """
+
+    def __init__(self, keys: Any, n_segments: int) -> None:
+        self.n_segments = n_segments
+        self.sorted = bool((keys[1:] >= keys[:-1]).all())
+        if self.sorted:
+            # negative keys come first: the valid rows are a slice, not a copy
+            self.first = int(np.searchsorted(keys, 0, side="left"))
+            valid = keys[self.first :]
+            self.starts = np.flatnonzero(
+                np.concatenate(([valid.size > 0], valid[1:] != valid[:-1])),
+            )
+            self.unique = valid[self.starts]
+            self.dense = self.unique.size == n_segments
+        else:
+            valid = keys >= 0
+            self.valid = None if bool(valid.all()) else valid
+            self.keys = keys if self.valid is None else keys[valid]
+
+    def sum(self, values: Any, out: Any, dtype: Any) -> None:
+        """Write the sums of the rows of `values` per key into `out`.
+
+        Parameters
+        ----------
+        values : numpy.ndarray, shape (n, ...)
+            One row per key.
+        out : numpy.ndarray, shape (n_segments, ...)
+            C-contiguous output of dtype `dtype`, overwritten.
+        dtype : numpy.dtype
+            Floating-point or complex dtype of the sums.
+        """
+        if self.sorted:
+            if self.unique.size == 0:
+                out.fill(0)
+                return
+            rows = values[self.first :].astype(dtype, copy=False)
+            sums = np.add.reduceat(rows, self.starts, axis=0)
+            if self.dense:
+                out[...] = sums
+            else:
+                out.fill(0)
+                out[self.unique] = sums
+            return
+        rows = values if self.valid is None else values[self.valid]
+        rows = rows.reshape(rows.shape[0], math.prod(rows.shape[1:]))
+        target = out.reshape(self.n_segments, rows.shape[1])
+        n = self.n_segments
+        for j in range(rows.shape[1]):
+            column = rows[:, j]
+            if np.dtype(dtype).kind == "c":
+                target.real[:, j] = np.bincount(self.keys, column.real, minlength=n)
+                target.imag[:, j] = np.bincount(self.keys, column.imag, minlength=n)
+            else:
+                target[:, j] = np.bincount(self.keys, column, minlength=n)
+
+
 class SegmentPlan:
     """Validated segment keys, reused by repeated :meth:`sum` calls.
 
@@ -157,6 +263,12 @@ class SegmentPlan:
     plan. Setup may synchronize on CUDA; repeated sums do not validate the keys
     again or read GPU values back to the host. A GPU plan is bound to its CUDA
     device, which must be current when it is created and used.
+
+    Sorted keys (e.g. from :func:`sort_by_key`) are faster: on the host the rows
+    are summed per run of equal keys (``np.add.reduceat``), and on CUDA one
+    block sums each segment in a fixed order, so the result is reproducible
+    (:attr:`deterministic`). Unsorted keys use ``np.bincount`` per component on
+    the host and atomics on CUDA.
 
     Parameters
     ----------
@@ -197,7 +309,28 @@ class SegmentPlan:
             if cp.cuda.Device().id != self._device:
                 raise ValueError("segment keys require their CUDA device current")
         self._keys = self._xp.array(keys, dtype=np.int64, copy=True)
-        self._valid = None if self._device is not None else self._keys >= 0
+        self._host: _HostLayout | None = None
+        self._offsets = None
+        if self._device is None:
+            self._host = _HostLayout(self._keys, self.n_segments)
+        elif _fake_cupy.is_active():
+            self._host = _HostLayout(
+                _fake_cupy.host_buffer(self._keys), self.n_segments
+            )
+        elif bool((self._keys[1:] >= self._keys[:-1]).all()):
+            # sorted keys: one block per segment over its rows, no atomics
+            self._offsets = self._xp.searchsorted(
+                self._keys,
+                self._xp.arange(self.n_segments + 1, dtype=np.int64),
+                side="left",
+            ).astype(np.int64, copy=False)
+
+    @property
+    def deterministic(self) -> bool:
+        """Whether sums are bitwise reproducible: on the host, and on CUDA for sorted keys."""
+        return (
+            self._device is None or self._host is not None or self._offsets is not None
+        )
 
     @property
     def n_segments(self) -> int:
@@ -274,22 +407,39 @@ class SegmentPlan:
                 raise ValueError("out must be on the segment plan's CUDA device")
             if xpm.may_share_memory(out, values):
                 raise ValueError("out must not alias values")
-        out.fill(0)
         if self._device is None:
-            np.add.at(
-                out,
-                self._keys[self._valid],
-                values[self._valid].astype(dtype, copy=False),
-            )
-        elif values.size and self.n_segments and _fake_cupy.is_active():
-            keys = _fake_cupy.host_buffer(self._keys)
-            valid = keys >= 0
-            np.add.at(
+            self._host.sum(values, out, dtype)
+            return out
+        if self._host is not None:  # the fake CuPy: sum its host buffers
+            self._host.sum(
+                _fake_cupy.host_buffer(values),
                 _fake_cupy.host_buffer(out),
-                keys[valid],
-                _fake_cupy.host_buffer(values)[valid].astype(dtype, copy=False),
+                dtype,
             )
-        elif values.size and self.n_segments:
+            return out
+        if self._offsets is not None and self.n_segments:
+            half = np.dtype(dtype) == np.dtype(np.float16)
+            packed = xpm.ascontiguousarray(values, dtype=np.float32 if half else dtype)
+            if np.dtype(dtype).kind == "c":
+                real_dtype = np.float32 if np.dtype(dtype).itemsize == 8 else np.float64
+                packed, target = packed.view(real_dtype), out.view(real_dtype)
+            else:
+                target = xpm.empty(shape, dtype=np.float32) if half else out
+            width = math.prod(values.shape[1:]) * (
+                2 if np.dtype(dtype).kind == "c" else 1
+            )
+            _sorted_sum_kernel(packed.dtype)(
+                self._offsets,
+                packed,
+                target,
+                width,
+                grid=self.n_segments,
+            )
+            if half:
+                out[...] = target
+            return out
+        out.fill(0)
+        if values.size and self.n_segments:
             half = np.dtype(dtype) == np.dtype(np.float16)
             packed = xpm.ascontiguousarray(values, dtype=np.float32 if half else dtype)
             if np.dtype(dtype).kind == "c":
@@ -374,23 +524,66 @@ def _radix_argsort(keys: np.ndarray) -> np.ndarray:
     return order.astype(np.int64, copy=False)
 
 
-def _take_along_axis(xpm: Any, array: Any, order: Any, axis: int) -> Any:
-    """Return `array` taken at `order` along `axis`, as a new C-contiguous array.
+def _take_along_axis(
+    xpm: Any, array: Any, order: Any, axis: int, out: Any = None
+) -> Any:
+    """Return `array` taken at `order` along `axis`, in `out` or a new array.
 
     A component-major ``(ncomp, n)`` NumPy array is gathered one contiguous row at a
     time, which is about twice as fast as ``take`` along its last axis; everything
     else, and CuPy, goes through ``take``.
     """
     if xpm is np and array.ndim == 2 and axis == 1:
-        gathered = np.empty((array.shape[0], order.shape[0]), dtype=array.dtype)
+        gathered = (
+            np.empty((array.shape[0], order.shape[0]), dtype=array.dtype)
+            if out is None
+            else out
+        )
         for row in range(array.shape[0]):
-            gathered[row] = array[row][order]
+            # mode="clip" skips the bounds check and the buffered copy of "raise"
+            np.take(array[row], order, out=gathered[row], mode="clip")
         return gathered
-    return xpm.take(array, order, axis=axis)
+    if out is None:
+        return xpm.take(array, order, axis=axis)
+    if xpm is np:
+        np.take(array, order, axis=axis, out=out, mode="clip")
+    else:
+        xpm.take(array, order, axis=axis, out=out)
+    return out
+
+
+def _check_sort_outputs(
+    xpm: Any, out: Any, expected: list[tuple[tuple[int, ...], Any, Any]]
+) -> tuple[Any, ...]:
+    """Validate the `out` arrays of :func:`sort_by_key` (None entries allocate)."""
+    out = tuple(out)
+    if len(out) != len(expected):
+        raise ValueError(
+            f"out must have {len(expected)} entries (keys, order and one per "
+            f"array), got {len(out)}",
+        )
+    for i, (target, (shape, dtype, source)) in enumerate(zip(out, expected)):
+        if target is None:
+            continue
+        assert_same_backend(target, *(() if source is None else (source,)))
+        if tuple(target.shape) != shape or target.dtype != dtype:
+            raise ValueError(
+                f"out[{i}] must have shape {shape} and dtype {np.dtype(dtype)}, "
+                f"got {tuple(target.shape)} and {target.dtype}",
+            )
+        if not target.flags.c_contiguous:
+            raise ValueError(f"out[{i}] must be C-contiguous")
+        if not getattr(target.flags, "writeable", True):
+            raise ValueError(f"out[{i}] must be writable")
+        if source is not None and xpm.may_share_memory(target, source):
+            raise ValueError(f"out[{i}] must not share memory with its input")
+    return out
 
 
 @sp.profile("cunumpy.sort_by_key", tags=_PROFILE_TAGS)
-def sort_by_key(keys: Any, *arrays: Any, axis: int = 0) -> tuple[Any, ...]:
+def sort_by_key(
+    keys: Any, *arrays: Any, axis: int = 0, out: Any = None
+) -> tuple[Any, ...]:
     """Sort `keys` and reorder every array the same way, in one stable argsort.
 
     The usual first step of a particle code: sort the particles by cell index or
@@ -412,23 +605,39 @@ def sort_by_key(keys: Any, *arrays: Any, axis: int = 0) -> tuple[Any, ...]:
         The axis of every array that `keys` indexes, 0 by default; ``-1`` is the
         last axis of each array, for component-major ``(ncomp, n)`` markers next
         to ``(n,)`` arrays.
+    out : sequence of array or None, optional
+        Arrays to write the results into, one per result: ``(keys_out,
+        order_out, *arrays_out)``, each of the result's shape and dtype,
+        C-contiguous, writable and not sharing memory with its input. A None
+        entry allocates that result. Reusing the outputs of the previous step
+        saves allocating (and on the host, page-faulting) every array per sort.
 
     Returns
     -------
     tuple of arrays
         ``(keys[order], order, *sorted_arrays)``, with the int64 permutation
-        ``order`` and each array taken along `axis` (new arrays).
+        ``order`` and each array taken along `axis`: the `out` arrays where
+        given, else new arrays.
 
     Raises
     ------
     ValueError
-        If `keys` is not 1D or an array does not have ``n`` entries along `axis`.
+        If `keys` is not 1D, an array does not have ``n`` entries along `axis`,
+        or an `out` array does not fit.
 
     Examples
     --------
     >>> keys = xp.asarray([2, 0, 1, 0])
     >>> xp.algorithms.sort_by_key(keys, xp.asarray([10.0, 11.0, 12.0, 13.0]))
     (array([0, 0, 1, 2]), array([1, 3, 2, 0]), array([11., 13., 12., 10.]))
+
+    Reusing buffers, e.g. sorting particles every step:
+
+    >>> values = xp.asarray([10.0, 11.0, 12.0, 13.0])
+    >>> buffers = (None, None, xp.empty_like(values))
+    >>> sorted_values = xp.algorithms.sort_by_key(keys, values, out=buffers)[2]
+    >>> sorted_values is buffers[2]
+    True
     """
     if get_array_backend(keys) == "cupy":
         import cupy as xpm  # its argsort is a stable radix sort
@@ -450,16 +659,39 @@ def sort_by_key(keys: Any, *arrays: Any, axis: int = 0) -> tuple[Any, ...]:
                 f"entries along axis {axis}",
             )
         axes.append(array_axis)
+    if out is not None:
+        out = _check_sort_outputs(
+            xpm,
+            out,
+            [
+                (tuple(keys.shape), keys.dtype, keys),
+                (tuple(keys.shape), np.dtype(np.int64), None),
+                *((tuple(array.shape), array.dtype, array) for array in arrays),
+            ],
+        )
+        assert_same_backend(keys, *(o for o in out if o is not None))
     if xpm is np and keys.dtype.kind in "iu" and keys.size > _RADIX_MIN_SIZE:
         order = _radix_argsort(keys)
     else:
         order = xpm.argsort(keys, kind="stable").astype(xpm.int64, copy=False)
+    if out is None:
+        return (
+            keys[order],
+            order,
+            *(
+                _take_along_axis(xpm, array, order, array_axis)
+                for array, array_axis in zip(arrays, axes, strict=True)
+            ),
+        )
+    if out[1] is not None:
+        out[1][...] = order
+        order = out[1]
     return (
-        keys[order],
+        _take_along_axis(xpm, keys, order, 0, out[0]),
         order,
         *(
-            _take_along_axis(xpm, array, order, array_axis)
-            for array, array_axis in zip(arrays, axes, strict=True)
+            _take_along_axis(xpm, array, order, array_axis, target)
+            for array, array_axis, target in zip(arrays, axes, out[2:], strict=True)
         ),
     )
 

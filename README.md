@@ -26,7 +26,7 @@ never hide a NumPy name:
 |---|---|
 | `xp.kernels` | `Kernel`, `KernelCatalog`, `PyccelKernel`, `CudaKernel`, `MetalKernel`, host implementations, `fuse` |
 | `xp.arguments` | CUDA only: `CudaStruct`, `CudaStructArguments`, `CudaArguments` |
-| `xp.cuda` | CUDA only: devices, streams, debug mode, CUDA headers |
+| `xp.cuda` | CUDA only: devices, streams, CUDA graphs (`capture_graph`), debug mode, CUDA headers |
 | `xp.rng` | `random_streams`, `get_rng`, `philox_*` |
 | `xp.algorithms` | `morton_*`, `sort_by_key`, `cell_offsets`, `segment_boundaries`, `segment_sum`, `SegmentPlan` |
 | `xp.mpi` | `mpi_buffer`, reusable `MPIStaging`, CUDA-aware MPI |

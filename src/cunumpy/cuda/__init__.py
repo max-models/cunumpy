@@ -8,7 +8,9 @@ code runs on both::
         kernel(positions, velocities, dt, n_threads=n)
 
 :func:`create_stream` and :func:`create_event` return synchronous
-:class:`HostStream` and :class:`HostEvent` objects on NumPy. The CUDA headers
+:class:`HostStream` and :class:`HostEvent` objects on NumPy.
+:func:`capture_graph` records a step of GPU work once as a CUDA graph, replayed
+with one launch (on NumPy, the step is called again). The CUDA headers
 shipped with cunumpy (``cunumpy/atomic.cuh``, ...) are in
 :func:`cuda_include_dir`; :func:`parse_cuda_signature` and the other source
 tools inspect CUDA sources. The kernel classes are in :mod:`cunumpy.kernels`,
@@ -45,6 +47,7 @@ from cunumpy._device import (
     shared_memory_fits,
     stream,
 )
+from cunumpy._graphs import CudaGraph, capture_graph
 from cunumpy._streams import (
     HostEvent,
     HostStream,
@@ -57,10 +60,12 @@ from cunumpy._streams import (
 __all__ = [
     "DEBUG_OPTIONS",
     "DEFAULT_SHARED_MEMORY_PER_BLOCK",
+    "CudaGraph",
     "CudaParameter",
     "HostEvent",
     "HostStream",
     "bind_local_device",
+    "capture_graph",
     "create_event",
     "create_stream",
     "ctype_of",

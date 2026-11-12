@@ -14,7 +14,9 @@ device dispatch can require CUDA with :func:`set_device_kernel_implementation`
 or :func:`use_device_kernel_implementation` (``DEVICE_IMPLEMENTATIONS``).
 :func:`as_kernel_array` and :func:`kernel_output` (several outputs at once:
 :func:`kernel_outputs`) bring the arguments of a kernel to the side of its
-main array. :func:`fuse` turns an elementwise
+main array. For calls in a tight loop, :meth:`Kernel.resolve` returns the
+function a call runs, and :meth:`CudaKernel.bind` a :class:`BoundLaunch` that
+checks its arguments once. :func:`fuse` turns an elementwise
 function into one CuPy kernel. See :doc:`/kernels/overview`.
 
 A :class:`PyccelCache` compiles Pyccel kernel modules on first use and keeps
@@ -33,7 +35,7 @@ mode) in :mod:`cunumpy.cuda`, and the pytest helpers for kernel pairs in
 :mod:`cunumpy.kernel_testing`.
 """
 
-from cunumpy._cuda_kernel import CudaKernel, CudaKernelVariants
+from cunumpy._cuda_kernel import BoundLaunch, CudaKernel, CudaKernelVariants
 from cunumpy._dispatch import Kernel, KernelCatalog
 from cunumpy._fusion import fuse
 from cunumpy._kernel import (
@@ -60,6 +62,7 @@ from cunumpy._pyccel_cache import PyccelCache
 __all__ = [
     "DEVICE_IMPLEMENTATIONS",
     "HOST_IMPLEMENTATIONS",
+    "BoundLaunch",
     "CompiledHostKernel",
     "CudaKernel",
     "CudaKernelVariants",
