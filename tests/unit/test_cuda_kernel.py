@@ -90,15 +90,15 @@ class FakeDeviceArray:
         self.data = SimpleNamespace(ptr=ptr)
         self.shape = tuple(shape)
         self.ndim = len(self.shape)
+        # C-contiguous strides, computed without allocating an array of this shape.
+        c_strides, stride = [], self.dtype.itemsize
+        for n in reversed(self.shape):
+            c_strides.insert(0, stride)
+            stride *= n
         if strides is None:
-            strides, stride = [], self.dtype.itemsize
-            for n in reversed(self.shape):
-                strides.insert(0, stride)
-                stride *= n
+            strides = c_strides
         self.strides = tuple(strides)
-        c_contiguous = self.strides == tuple(
-            np.zeros(self.shape, dtype=self.dtype).strides,
-        )
+        c_contiguous = self.strides == tuple(c_strides)
         self.flags = SimpleNamespace(c_contiguous=c_contiguous)
         if flags is not None:
             self.flags = flags
