@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-16
+
 ### Added
+- Faster hot paths for particle codes: host segment sums with `np.add.reduceat` (sorted keys)
+  and `np.bincount` (unsorted), up to 10x faster for three components; deterministic CUDA
+  segment sums for sorted keys; `sort_by_key(..., out=...)`; `Kernel.resolve(*args)` and
+  `PyccelKernel.resolve(*args)`, the plain host function of a call for tight loops (0.1 µs
+  instead of 1.2-2 µs per call); `CudaKernel.bind(...)`, a `BoundLaunch` for repeated launches;
+  and CUDA graphs (`capture_graph`).
+- The interop adapters convert nested containers and scalar objectives.
+- The `scope_profiler.opt_in_tags` entry point.
 - `cunumpy.interop.julia` (extra `cunumpy[julia]`, juliacall): `to_julia` / `from_julia`
   between NumPy arrays and Julia `Array`s that share memory. Julia is column-major, so a
   C-ordered array arrives with its dimensions reversed and an F-ordered one with the same
@@ -32,6 +42,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `from_jax` raises a clear `TypeError` for traced values (inside `jax.jit`, `grad`, `vmap`).
 - `to_mlx(device=...)` names the device the array is meant for (MLX arrays have no device);
   before, it passed `device` to `mlx.core.array`, which does not take it.
+
+### Fixed
+- The fake `cupy.random` no longer answers dunder names (`__file__`, ...) with a wrapped NumPy
+  function, which broke module introspection: importing astropy after cunumpy failed under
+  `CUNUMPY_FAKE_CUPY`.
 
 ## [0.7.2] - 2026-10-27
 
