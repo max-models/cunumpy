@@ -26,13 +26,14 @@ never hide a NumPy name:
 |---|---|
 | `xp.kernels` | `Kernel`, `KernelCatalog`, `PyccelKernel`, `CudaKernel`, `MetalKernel`, host implementations, `fuse` |
 | `xp.arguments` | CUDA only: `CudaStruct`, `CudaStructArguments`, `CudaArguments` |
-| `xp.cuda` | CUDA only: devices, streams, debug mode, CUDA headers |
+| `xp.cuda` | CUDA only: devices, streams, CUDA graphs (`capture_graph`), debug mode, CUDA headers |
 | `xp.rng` | `random_streams`, `get_rng`, `philox_*` |
 | `xp.algorithms` | `morton_*`, `sort_by_key`, `cell_offsets`, `segment_boundaries`, `segment_sum`, `SegmentPlan` |
 | `xp.mpi` | `mpi_buffer`, reusable `MPIStaging`, CUDA-aware MPI |
 | `xp.profiling` | `timed_region`, `nvtx_range`, `count_transfers` |
 | `xp.memory` | `HostStaging`, `DeviceMirror` |
 | `xp.petsc` | `petsc_vec` |
+| `xp.interop` | `dlpack`, `jax`, `torch`, `mlx`, `julia`: explicit conversions that share memory where they can (`copy=False` to require it) and never change a dtype silently |
 | `cunumpy.kernel_testing` | pytest helpers for host/CUDA kernel pairs |
 
 Everything except `xp.cuda`, `xp.arguments` and `CudaKernel` works on both backends.

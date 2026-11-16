@@ -341,12 +341,16 @@ def count_transfers(
     * ``to_host`` / ``to_device``: a physical copy between host and device
       (conversions such as :func:`~cunumpy.to_numpy` and
       :func:`~cunumpy.to_cupy`, mirrors, staging, serial MPI, kernel output
-      copy-back), with its size in bytes;
+      copy-back, an :mod:`~cunumpy.interop` conversion between host and
+      device), with its size in bytes;
     * ``kernel_conversion``: a :class:`~cunumpy.kernels.PyccelKernel` call that
       copied device arrays to the host and back, one marker per call;
     * ``fallback``: a :class:`~cunumpy.kernels.Kernel` without CUDA version
       that ran its host kernel on the CuPy backend, one marker per call;
-    * ``device_copy``: a device-only dtype/layout conversion;
+    * ``device_copy``: a copy that stays in one memory: a device-only
+      dtype/layout conversion, or an :mod:`~cunumpy.interop` conversion
+      that could not share memory (an interop conversion that shares memory
+      records nothing);
     * ``sync``: the host waited for the device (:func:`~cunumpy.synchronize`,
       the MPI helpers, the CUDA debug mode and, on the fake CuPy, scalar
       reads such as ``float(a)``). Not included in

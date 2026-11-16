@@ -5,7 +5,7 @@ requires = [ "setuptools", "wheel" ]
 
 [project]
 name = "cunumpy"
-version = "0.7.2"
+version = "0.8.0"
 description = "Simple wrapper for numpy and cupy. Replace `import numpy as np` with `import cunumpy as xp`."
 readme = "README.md"
 keywords = [ "python" ]
@@ -39,11 +39,15 @@ optional-dependencies.dev = [
 optional-dependencies.docs = [ "griffe", "ipykernel" ]
 optional-dependencies.metal = [ "mlx; sys_platform == 'darwin' and platform_machine == 'arm64'" ]
 optional-dependencies.jax = [ "jax" ]
+optional-dependencies.julia = [ "juliacall" ]
 optional-dependencies.mlx = [ "mlx; sys_platform == 'darwin' and platform_machine == 'arm64'" ]
 optional-dependencies.torch = [ "torch" ]
 optional-dependencies.test = [ "coverage", "pytest", "scipy" ]
 optional-dependencies.test-compiled = [ "cunumpy[test]", "pyccel" ]
 urls."Source" = "https://github.com/max-models/cunumpy"
+
+[project.entry-points."scope_profiler.opt_in_tags"]
+cunumpy = "cunumpy"
 
 [tool.setuptools.packages.find]
 where = [ "src" ]

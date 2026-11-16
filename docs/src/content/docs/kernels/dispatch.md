@@ -428,6 +428,26 @@ push(args_markers, dt)  # no n_threads needed, on either backend
 
 An explicit `n_threads` or `grid` still wins.
 
+## Calls in a tight loop
+
+A call of a `Kernel` costs one to two microseconds on top of the kernel: it
+picks the kernel, opens its profiling region and checks whether arrays must be
+converted. That adds up for many small calls, e.g. one per patch and step.
+`resolve` returns what a call with such arguments runs, the plain host function
+(for example the Pyccel-compiled one) for host arrays:
+
+```python
+deposit_patch = deposit.resolve(*patch_arguments[0])
+for args in patch_arguments:
+    deposit_patch(*args)  # no dispatch, no profiling region
+```
+
+For device arguments it returns the `CudaKernel` (see `bind` in [Writing CUDA
+kernels](/cunumpy/kernels/cuda-kernel/#repeated-launches) for its launch
+overhead). Resolve again after changing the backend, the host implementation
+or the kind of arguments. `PyccelKernel.resolve` does the same for a single
+host kernel.
+
 ## Recommended project layout
 
 * One folder per kernel, the host kernel and its CUDA port side by side, so a

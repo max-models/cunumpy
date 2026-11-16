@@ -45,7 +45,17 @@ Apply `order` to every per-marker array (positions, velocities, weights, ids),
 e.g. by keeping them as columns of one `(n, k)` array. A stable sort keeps the
 result independent of how the markers were ordered before.
 `xp.algorithms.sort_by_key(keys, positions, velocities, weights)` does the argsort and
-the reordering of several arrays in one call.
+the reordering of several arrays in one call. Sorting every step, pass the
+arrays of the previous step as `out=` so that no array is allocated per sort:
+
+```python
+buffers = [None, None, xp.empty_like(positions), xp.empty_like(velocities)]
+keys, order, positions_sorted, velocities_sorted = xp.algorithms.sort_by_key(
+    keys, positions, velocities, out=buffers
+)  # sorted arrays written into buffers[2:]; None entries are allocated
+positions, buffers[2] = positions_sorted, positions  # swap for the next step
+velocities, buffers[3] = velocities_sorted, velocities
+```
 
 For a tree code, or for better locality in 2D and 3D, sort by Morton key
 (`xp.algorithms.morton_keys`, see [CUDA headers](/cunumpy/kernels/cuda-headers/) for
@@ -58,6 +68,12 @@ With markers sorted by cell, a nearest-cell deposit is a segmented sum,
 deterministic on both backends:
 
 <Code code={recipe("deposit_nearest_cell")} lang="python" />
+
+`xp.algorithms.SegmentPlan` sums the rows of sorted keys per run of equal keys
+(`np.add.reduceat` on the host; one CUDA block per segment, without atomics, on
+the GPU), several times faster than for unsorted keys on the host.
+`plan.deterministic` tells whether repeated sums are bitwise identical: always
+on the host, on CUDA only for sorted keys (unsorted ones use atomics).
 
 For linear (cloud-in-cell) weights, deposit each of the two (2D: four, 3D:
 eight) neighbours with its weight, one `segment_sum` each.

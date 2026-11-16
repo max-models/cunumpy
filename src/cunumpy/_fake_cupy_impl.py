@@ -532,11 +532,21 @@ class _RNGProxy:
 
 random = types.ModuleType("cupy.random")
 random.default_rng = lambda seed=None: _RNGProxy(_np.random.default_rng(_unwrap(seed)))
-random.__getattr__ = lambda attr: _wrap_callable(
-    getattr(_np.random, attr),
-    strict=False,
-    name=f"cupy.random.{attr}",
-)
+
+
+def _random_getattr(attr):
+    # dunder names (``__file__``, ``__path__``, ...) are not NumPy functions:
+    # answering them with a wrapper breaks module introspection (astropy's import)
+    if attr.startswith("__"):
+        raise AttributeError(attr)
+    return _wrap_callable(
+        getattr(_np.random, attr),
+        strict=False,
+        name=f"cupy.random.{attr}",
+    )
+
+
+random.__getattr__ = _random_getattr
 
 for _m in (cuda, cuda.device, cuda.runtime, linalg, fft, random):
     _sys.modules[_m.__name__] = _m

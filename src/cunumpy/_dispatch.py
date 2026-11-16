@@ -39,6 +39,7 @@ from cunumpy._kernel import (
     PyccelKernel,
     get_device_kernel_implementation,
     outputs_from_annotations,
+    resolve_host,
 )
 from cunumpy._profile_tags import _PROFILE_TAGS
 from cunumpy._transfers import _ACTIVE as _COUNTERS
@@ -627,6 +628,61 @@ class Kernel:
         if get_backend() != "cupy":
             return self._host_kernel
         return self._device_kernel()
+
+    def resolve(self, *args: Any) -> Callable[..., Any]:
+        """Return what a call with these arguments runs, for calls in a tight loop.
+
+        A call costs one to two microseconds more than the kernel itself (the
+        choice of kernel, the profiling region, the conversion check), which adds
+        up for many small calls, e.g. one per patch and step. Resolve once, with
+        arguments like those of the calls, and call the result in the loop. For
+        host arguments the result is the plain host function (e.g. the
+        Pyccel-compiled one); for device arguments the
+        :class:`~cunumpy.kernels.CudaKernel`, which takes the launch keywords
+        (see also :meth:`CudaKernel.bind <cunumpy.kernels.CudaKernel.bind>`).
+        The result skips the ``cunumpy.kernel.<name>`` profiling region and the
+        transfer counters. Resolve again after changing the backend, the host or
+        device implementation, or the kind of arguments.
+
+        Parameters
+        ----------
+        *args
+            Example arguments of the calls.
+
+        Returns
+        -------
+        callable
+            Takes the same arguments as a call of this kernel.
+
+        Raises
+        ------
+        LookupError
+            If CUDA is explicitly selected but missing.
+        NotImplementedError
+            For device arguments without CUDA kernel and ``missing_cuda="raise"``.
+
+        Examples
+        --------
+        >>> def scale(x, out):
+        ...     out[:] = 2 * x
+        >>> kernel = xp.kernels.Kernel(scale)
+        >>> x, out = np.arange(3.0), np.zeros(3)
+        >>> run = kernel.resolve(x, out)
+        >>> for _ in range(3):
+        ...     run(x, out)
+        >>> run is scale
+        True
+        """
+        if self._dispatch == "arrays":
+            on_device = any(_on_device(arg) for arg in args)
+            kernel = self._device_kernel() if on_device else self._host_kernel
+            if not on_device and kernel._use_cupy is not True:
+                return resolve_host(kernel.kernel)
+        else:
+            kernel = self.get_kernel()
+        if isinstance(kernel, PyccelKernel):
+            return kernel.resolve(*args)
+        return kernel
 
     def compile(self) -> bool:
         """Compile the CUDA kernel now, if there is one.

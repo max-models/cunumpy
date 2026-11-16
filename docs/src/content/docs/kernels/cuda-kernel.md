@@ -321,6 +321,28 @@ current device; other devices keep their compiled versions. Finish in-flight
 launches before rebuilding. Scope-profiler can inspect the returned CuPy kernel's
 existing `attributes`; CuNumpy does not add a separate resource-reporting API.
 
+## Repeated launches
+
+A call checks every argument against the signature, packs it and validates the
+launch size, which costs tens of microseconds in Python. A kernel launched
+every step on the same arrays can do that once: `bind` fixes the arguments and
+launch size, and the returned `BoundLaunch` only launches (it checks and packs at
+its first launch):
+
+```python
+push_step = push.bind(positions, velocities, dt, n, n_threads=n)
+for _ in range(n_steps):
+    push_step()  # or push_step(stream=s)
+```
+
+The arrays are passed by pointer: their contents may change between launches,
+their identity and shape may not. Scalars (`dt` above) are fixed too; bind again
+for other values. In debug mode, with `check_finite`, and in
+`emulated_launches()` every launch is a full call.
+
+For a step of many small kernels, capture all of them once as a CUDA graph,
+replayed with a single launch (see [GPU devices](/cunumpy/guides/gpu-devices/#cuda-graphs)).
+
 ## Tips for writing kernels
 
 * **Mirror the host kernel's argument list.** Same order, same names. Then the

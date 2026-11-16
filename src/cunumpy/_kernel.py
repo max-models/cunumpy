@@ -43,6 +43,29 @@ _device_to_host = _to_numpy
 _host_to_device = _to_cupy
 
 
+def resolve_host(function: Callable[..., Any]) -> Callable[..., Any]:
+    """Unwrap a host kernel to the function a call of it runs now.
+
+    Objects with a ``resolve()`` method (:class:`HostImplementations`,
+    :class:`CompiledHostKernel`) are resolved; other callables are returned as
+    they are.
+
+    Parameters
+    ----------
+    function : callable
+        The host kernel.
+
+    Returns
+    -------
+    callable
+        The function a call runs.
+    """
+    resolve = getattr(type(function), "resolve", None)
+    if resolve is None or isinstance(function, PyccelKernel):
+        return function
+    return function.resolve()
+
+
 class PyccelKernel:
     """Call a host kernel (Pyccel-compiled or any NumPy callable) with CuPy arrays.
 
@@ -391,6 +414,41 @@ class PyccelKernel:
     def outputs(self) -> tuple[int | str, ...] | None:
         """The declared output arguments, or None if every array is copied back."""
         return self._outputs
+
+    def resolve(self, *args: Any, **kwargs: Any) -> Callable[..., Any]:
+        """Return what a call with these arguments runs, for calls in a tight loop.
+
+        Without conversion (host arrays, NumPy backend) this is the plain host
+        function, e.g. the Pyccel-compiled one, which skips the per-call checks
+        of about a microsecond; otherwise this kernel itself. Resolve again
+        after changing the backend, the host implementation or the kind of
+        arguments.
+
+        Parameters
+        ----------
+        *args, **kwargs
+            Example arguments of the calls, as for a call.
+
+        Returns
+        -------
+        callable
+            Takes the same arguments as this kernel.
+
+        Examples
+        --------
+        >>> def scale(a, x, out):
+        ...     out[:] = a * x
+        >>> kernel = xp.kernels.PyccelKernel(scale)
+        >>> x, out = np.arange(3.0), np.zeros(3)
+        >>> run = kernel.resolve(2.0, x, out)
+        >>> for _ in range(3):
+        ...     run(2.0, x, out)
+        >>> run is scale
+        True
+        """
+        if self._needs_conversion(args, kwargs):
+            return self
+        return resolve_host(self._kernel)
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         if not self._needs_conversion(args, kwargs):
@@ -807,6 +865,16 @@ class HostImplementations:
         """
         return self.selected()
 
+    def resolve(self) -> Callable[..., Any]:
+        """Return the implementation a call runs now (see :meth:`selected`).
+
+        Returns
+        -------
+        callable
+            The selected implementation.
+        """
+        return resolve_host(self.get(self.selected()))
+
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self.get(self.selected())(*args, **kwargs)
 
@@ -904,6 +972,24 @@ class CompiledHostKernel:
     def compiled(self) -> bool:
         """Whether the compiled version is available (compiles on first access)."""
         return self.build() is not None
+
+    def resolve(self) -> Callable[..., Any]:
+        """Return the function a call runs: compiled, else the fallback or Python.
+
+        Compiles on first use, like a call.
+
+        Returns
+        -------
+        callable
+            The compiled function or the fallback; this object if neither
+            exists (its call warns once and runs the Python function).
+        """
+        kernel = self.build()
+        if kernel is not None:
+            return kernel
+        if self._fallback is not None:
+            return self._fallback
+        return self
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         kernel = self.build()

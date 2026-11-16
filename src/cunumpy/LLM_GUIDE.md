@@ -203,6 +203,11 @@ offsets = xp.algorithms.cell_offsets(sorted_cells, n_cells)
 unique, starts, stops = xp.algorithms.segment_boundaries(sorted_keys)
 plan = xp.algorithms.SegmentPlan(keys, n_segments)  # copied, validated keys
 plan.sum(values, out=out)  # overwrite; arbitrary trailing dimensions
+plan.deterministic  # host always; CUDA for sorted keys (no atomics)
+keys, order, a = xp.algorithms.sort_by_key(keys, a, out=[None, None, a_buffer])
+run = kernel.resolve(*args)  # plain host function for tight loops (no dispatch)
+launch = cuda_kernel.bind(*args, n_threads=n)  # checks once; launch() repeatedly
+graph = xp.cuda.capture_graph(step)  # replay a whole step: graph.launch()
 ```
 
 CUDA streams/plans require their device current. Re-record an event only after
