@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `Kernel.from_folder` (and `KernelPackage.from_folder`, `KernelCatalog.from_package`) no longer
+  imports the host kernel module (`<name>_pyccel.py`) when it builds the kernel, only when its
+  `"python"` or `"pyccel"` implementation is first used. A host module that cannot be imported,
+  e.g. a Pyccel source that imports `pyccel.stdlib.internal.openmp` in a Python without Pyccel
+  (Pyodide), now leaves the kernel on its NumPy or numba version instead of failing the import of
+  the package. The parameter names and `outputs="annotations"` come from the new
+  `HostImplementations.reference`: the Python version, else the NumPy or numba one.
+
 ## [0.8.0] - 2026-11-16
 
 ### Added

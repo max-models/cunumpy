@@ -165,7 +165,11 @@ class PyccelKernel:
         source = self._parameters
         if source is not None:
             return source() if callable(source) else tuple(source)
-        function = getattr(self._kernel, "python", self._kernel)
+        function = self._kernel
+        if isinstance(function, HostImplementations):
+            function = function.reference
+        else:
+            function = getattr(function, "python", function)
         try:
             signature = inspect.signature(function)
         except (TypeError, ValueError):
@@ -760,6 +764,28 @@ class HostImplementations:
     def python(self) -> Callable[..., Any]:
         """The uncompiled Python function (for signatures and reference results)."""
         return self.get("python")
+
+    @property
+    def reference(self) -> Callable[..., Any]:  # numpydoc ignore=RT01
+        """The function whose signature and annotations stand for the kernel.
+
+        The Python version, or, if its module cannot be imported (e.g. a Pyccel
+        source without Pyccel, as in Pyodide), the first that loads of the
+        NumPy and numba versions (the Python function of a numba dispatcher).
+
+        Raises
+        ------
+        LookupError
+            If none of them loads; the load errors are in `errors`.
+        """
+        for name in ("python", "numpy", "numba"):
+            if self.available(name):
+                function = self.get(name)
+                return getattr(function, "py_func", function)
+        raise LookupError(
+            f"kernel {self.__name__!r}: no Python, NumPy or numba version loads "
+            f"({self.errors!r})",
+        )
 
     def available(self, name: str) -> bool:
         """Return whether implementation `name` exists and loads (loads it now).
