@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Pyccel kernels can import functions from other modules, also of other packages
+  (`from other_pkg.kernels.boris_pyccel import boris_rotate`): `PyccelCache` builds those modules
+  with the kernel (copied under flat names, imports rewritten, so Pyccel also inlines their
+  `@inline` functions, which it does only from top-level modules), keeps only the kernel's
+  extension (it contains their code), and puts their sources into the build key, so editing one
+  rebuilds the kernel. `PyccelCache.dependencies(module)` lists them in build order.
+
 ### Changed
 - `Kernel.from_folder` (and `KernelPackage.from_folder`, `KernelCatalog.from_package`) no longer
   imports the host kernel module (`<name>_pyccel.py`) when it builds the kernel, only when its
