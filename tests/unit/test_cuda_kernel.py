@@ -90,15 +90,14 @@ class FakeDeviceArray:
         self.data = SimpleNamespace(ptr=ptr)
         self.shape = tuple(shape)
         self.ndim = len(self.shape)
-        if strides is None:
-            strides, stride = [], self.dtype.itemsize
-            for n in reversed(self.shape):
-                strides.insert(0, stride)
-                stride *= n
-        self.strides = tuple(strides)
-        c_contiguous = self.strides == tuple(
-            np.zeros(self.shape, dtype=self.dtype).strides,
-        )
+        # The C-order strides of the shape, computed: a fake array stands for device memory
+        # that is never allocated, and may be far larger than the runner's memory.
+        c_strides, stride = [], self.dtype.itemsize
+        for n in reversed(self.shape):
+            c_strides.insert(0, stride)
+            stride *= n
+        self.strides = tuple(c_strides if strides is None else strides)
+        c_contiguous = self.strides == tuple(c_strides)
         self.flags = SimpleNamespace(c_contiguous=c_contiguous)
         if flags is not None:
             self.flags = flags
