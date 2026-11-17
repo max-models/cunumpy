@@ -278,7 +278,11 @@ class Kernel:
         ``<name>_numba.py`` gives ``"numba"``, ``<name>_numpy.py`` gives
         ``"numpy"`` and ``<name><cuda_suffix>`` the CUDA kernel. The host ones
         form a :class:`~cunumpy.kernels.HostImplementations`. Nothing is
-        compiled here: the host module is imported, the CUDA source parsed.
+        compiled or imported here, only the CUDA source parsed: each host
+        module is imported when its implementation is first used, so a host
+        module that cannot be imported (e.g. a Pyccel source in a Python
+        without Pyccel, such as Pyodide) leaves the other implementations
+        usable.
 
         Parameters
         ----------
@@ -369,28 +373,22 @@ class Kernel:
             and (folder / f"{name}{test_args_suffix}.py").is_file()
         ):
             test_args = f"{package}.{name}{test_args_suffix}"
-        module = importlib.import_module(f"{package}.{name}{host_suffix}")
-        python = getattr(module, name)
-        if outputs is not None and "outputs" not in (host_options or {}):
-            declared = (
-                outputs_from_annotations(python)
-                if isinstance(outputs, str) and outputs == "annotations"
-                else outputs
+        if isinstance(outputs, str) and outputs != "annotations":
+            raise ValueError(
+                f"outputs must be a sequence of names/indices or 'annotations', "
+                f"got {outputs!r}",
             )
-            if isinstance(outputs, str) and outputs != "annotations":
-                raise ValueError(
-                    f"outputs must be a sequence of names/indices or 'annotations', "
-                    f"got {outputs!r}",
-                )
-            if declared is not None:
-                host_options = {**(host_options or {}), "outputs": declared}
+        host_module = f"{package}.{name}{host_suffix}"
+
+        def python() -> Callable[..., Any]:
+            return getattr(importlib.import_module(host_module), name)
+
+        def pyccel() -> Callable[..., Any]:
+            return getattr(compile_host(importlib.import_module(host_module)), name)
+
         loaders: dict[str, Callable[[], Callable[..., Any]]] = {
-            "python": lambda: python,
-            "pyccel": (
-                (lambda: getattr(compile_host(module), name))
-                if compile_host is not None
-                else (lambda: python)
-            ),
+            "python": python,
+            "pyccel": pyccel if compile_host is not None else python,
         }
         for implementation in ("numba", "numpy"):
             if (folder / f"{name}_{implementation}.py").is_file():
@@ -400,6 +398,14 @@ class Kernel:
                 )
         loaders.update(extra_implementations or {})
         host = HostImplementations(name, loaders)
+        if outputs is not None and "outputs" not in (host_options or {}):
+            declared = (
+                outputs_from_annotations(host.reference)
+                if outputs == "annotations"
+                else outputs
+            )
+            if declared is not None:
+                host_options = {**(host_options or {}), "outputs": declared}
         if include_dirs is None:
             include_dirs = (_source_root(package),)
         cuda_options["include_dirs"] = tuple(include_dirs)
@@ -471,7 +477,9 @@ class Kernel:
         """Return the parameter names of the host kernel.
 
         Read from the Python function (the uncompiled version of a
-        :class:`~cunumpy.kernels.CompiledHostKernel`), or else from the
+        :class:`~cunumpy.kernels.CompiledHostKernel`, the
+        :attr:`~cunumpy.kernels.HostImplementations.reference` of a
+        :class:`~cunumpy.kernels.HostImplementations`), or else from the
         ``__pyccel__/<module>.pyi`` stub Pyccel writes next to a compiled module.
 
         Returns
@@ -480,8 +488,10 @@ class Kernel:
             The names, or None if neither source is available.
         """
         function = self._host_kernel.kernel
-        if isinstance(function, (CompiledHostKernel, HostImplementations)):
+        if isinstance(function, CompiledHostKernel):
             function = function.python
+        elif isinstance(function, HostImplementations):
+            function = function.reference
         parameters = _positional_parameters(function)
         return (
             parameters if parameters is not None else _pyccel_stub_parameters(function)
