@@ -1341,8 +1341,8 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'test'" },
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "scipy", marker = "extra == 'test'" },
-    { name = "scope-profiler", git = "https://github.com/max-models/scope-profiler?branch=claude%2Fprofiling-catalog-astro-embed-9fills" },
-    { name = "scope-profiler", extras = ["pproc", "site"], marker = "extra == 'docs'", git = "https://github.com/max-models/scope-profiler?branch=claude%2Fprofiling-catalog-astro-embed-9fills" },
+    { name = "scope-profiler", git = "https://github.com/max-models/scope-profiler?branch=devel" },
+    { name = "scope-profiler", extras = ["pproc", "site"], marker = "extra == 'docs'", git = "https://github.com/max-models/scope-profiler?branch=devel" },
     { name = "torch", marker = "extra == 'torch'" },
 ]
 provides-extras = ["dev", "docs", "metal", "jax", "julia", "mlx", "torch", "test", "test-compiled"]
@@ -6227,7 +6227,7 @@ wheels = [
 [[package]]
 name = "scope-profiler"
 version = "0.8.0"
-source = { git = "https://github.com/max-models/scope-profiler?branch=claude%2Fprofiling-catalog-astro-embed-9fills#02d161a7b1e02ab831c28e06c8fff1b68ac08bf3" }
+source = { git = "https://github.com/max-models/scope-profiler?branch=devel#186dd30df4dfaa09e41c8ce20c19ce9e7d54456d" }
 dependencies = [
     { name = "h5py" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
