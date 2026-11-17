@@ -4,7 +4,7 @@
 #   scope-profiler jobs run profiling/particles_weak.toml --scheduler dry-run
 #
 # --upload pushes every finished run to the profiling catalogue, where the Profiling section of
-# the docs picks it up (profiling.yaml).
+# the docs picks it up (profiling.yaml), and starts a docs build ([store] below).
 
 [case]
 label = "particles_weak"
@@ -23,3 +23,8 @@ sbatch = { time = "00:10:00" }
 [store]
 url = "https://github.com/max-models/profiling-catalog.git"
 path = "cunumpy/{label}"
+# The catalogue is public: host names and private paths are left out of the packaged metadata.
+public = true
+# Rebuild the docs after every push, so the Profiling section shows the new run at once (needs a
+# logged-in `gh`; without one the run is pushed anyway and the next docs build shows it).
+after_push = ["gh workflow run docs.yml -R max-models/cunumpy --ref devel"]
