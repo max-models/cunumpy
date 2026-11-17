@@ -25,6 +25,8 @@ jobs:
     uses: max-models/starlight-theme/.github/workflows/docs.yml@v0
     with:
       notebooks: false
+      # fetch the profiling runs and write the Profiling section (profiling/profiling.yaml)
+      pre-build: make profiling PYTHON=.venv/bin/python
       # stable-branch: main  # deploy the latest release at /<repo>/ and devel at /<repo>/dev/
       smoke-paths: |
         index.html
@@ -42,3 +44,6 @@ jobs:
         api/cunumpy/cuda/index.html
         api/cunumpy/objects.inv
         installation.html/index.html
+        profiling/index.html
+        profiling/particles-weak/index.html
+        profiling/index.json

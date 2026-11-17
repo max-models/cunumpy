@@ -35,8 +35,9 @@ optional-dependencies.dev = [
   "ruff",
 ]
 # the API reference of the docs site (docs/, Astro + Starlight) reads the docstrings with griffe;
-# the shared docs workflow registers an ipykernel even without notebooks
-optional-dependencies.docs = [ "griffe", "ipykernel" ]
+# the shared docs workflow registers an ipykernel even without notebooks; scope-profiler writes
+# the Profiling section (make profiling)
+optional-dependencies.docs = [ "griffe", "ipykernel", "scope-profiler[pproc,site]" ]
 optional-dependencies.metal = [ "mlx; sys_platform == 'darwin' and platform_machine == 'arm64'" ]
 optional-dependencies.jax = [ "jax" ]
 optional-dependencies.julia = [ "juliacall" ]
@@ -59,7 +60,7 @@ cunumpy = [ "py.typed", "*.pyi", "LLM_GUIDE.md", "cuda/include/cunumpy/*.cuh" ]
 # and the release use PyPI only.
 [tool.uv.sources]
 maybempi = { git = "https://github.com/max-models/maybempi", branch = "devel" }
-scope-profiler = { git = "https://github.com/max-models/scope-profiler", branch = "devel" }
+scope-profiler = { git = "https://github.com/max-models/scope-profiler", branch = "claude/profiling-catalog-astro-embed-9fills" }
 
 [tool.ruff]
 # agent worktrees and scratch scripts are local copies, not part of the project
