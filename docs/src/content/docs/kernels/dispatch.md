@@ -270,8 +270,8 @@ Python versions and the platform, so only the first run after an edit compiles:
   import fails or crashes the interpreter (an extension linked to `libpython` in
   a Python that has it built in), `compile` raises instead and nothing is
   stored, so the process that uses the cache does not crash;
-- the key covers the module's own source only: after editing a module the
-  kernel imports, edit the kernel or clear the cache.
+- the key covers the sources of the modules the kernel imports too (below), so
+  editing one of them rebuilds the kernel.
 
 `<NAME>` is the name in upper case with `-` and `.` replaced by `_` (pass
 `env_prefix=` to choose it). To build every kernel before a run, for example
@@ -285,6 +285,34 @@ for name in catalog:
 Packages that compile their kernels at install time with the `pyccel` command
 do not need `compile_host`: the compiled modules are imported like the Python
 ones.
+
+### Code shared between kernels
+
+A Pyccel kernel can import functions from other modules, also from other
+packages, and the cache builds them with it:
+
+```python
+# other_pkg/kernels/boris_pyccel.py
+from pyccel.decorators import inline
+
+
+@inline
+def boris_rotate(vx: float, vy: float, vz: float, tx: float, ty: float, tz: float): ...
+
+
+# my_sim/kernels/push/push_pyccel.py
+from other_pkg.kernels.boris_pyccel import boris_rotate
+```
+
+`PyccelCache.dependencies(module)` lists them: every `from <module> import ...`
+(also relative) of a module with a Python source outside the standard library,
+NumPy and Pyccel, and their own imports in turn. They are copied into the
+staging folder under flat names (`other_pkg__kernels__boris_pyccel`, with the
+imports rewritten) and built before the kernel, into the same output folder.
+Pyccel links their code into the kernel's extension, which is the only file
+kept, and inlines their `@inline` functions, which it does only from a
+top-level module. A cycle of imports is an `ImportError`. In Python (the
+`"python"` implementation) the imports work as written.
 
 ### One set of options per package
 

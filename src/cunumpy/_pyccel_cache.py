@@ -9,6 +9,11 @@ first run after an edit compiles. A new build is imported once in a subprocess
 before it is stored, so a build this interpreter cannot load is an error, not a
 crash of the process that uses it.
 
+A kernel may import functions from other Python modules, also of other packages
+(``from mpiparticles.kernels.boris_pyccel import boris_rotate``): those modules
+are built first, with the kernel, and their sources are part of its key (see
+:meth:`PyccelCache.dependencies`).
+
 cunumpy needs no Pyccel to import this module: Pyccel is looked up when a
 module is compiled, and a missing Pyccel is an :class:`ImportError` there, which
 the host-kernel dispatch records like any other failed compilation.
@@ -16,6 +21,7 @@ the host-kernel dispatch records like any other failed compilation.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.machinery
 import importlib.metadata
@@ -39,16 +45,20 @@ from cunumpy._profile_tags import _PROFILE_TAGS
 #: folder before the ``pyccel compile`` command line was used). Part of the key.
 _LAYOUT = "pyccel-cli-1"
 
+#: Top-level modules whose imports are never built with a kernel: the standard
+#: library, NumPy and Pyccel (Pyccel knows them).
+_NOT_DEPENDENCIES = frozenset(sys.stdlib_module_names) | {"numpy", "pyccel"}
+
 _FALSE = ("0", "false", "no", "off")
 
 
-def _uses_openmp_runtime(source: Path) -> bool:
+def _uses_openmp_runtime(source: str) -> bool:
     """Whether the module calls the OpenMP runtime (thread ids, thread counts).
 
     Such a module only compiles with OpenMP, so it is built with it even when
     OpenMP is turned off; ``OMP_NUM_THREADS=1`` then runs it on one thread.
     """
-    return "pyccel.stdlib.internal.openmp" in source.read_text()
+    return "pyccel.stdlib.internal.openmp" in source
 
 
 def _source_path(module: ModuleType) -> Path:
@@ -56,6 +66,68 @@ def _source_path(module: ModuleType) -> Path:
     if source is None:
         raise FileNotFoundError(f"No source file for {module.__name__}")
     return Path(source)
+
+
+def _module_file(name: str) -> Path | None:
+    """Return the Python source of module `name`, or None if it has none."""
+    if name.split(".", 1)[0] in _NOT_DEPENDENCIES:
+        return None
+    try:
+        spec = importlib.util.find_spec(name)
+    except (ImportError, ValueError):
+        return None
+    if spec is None or spec.origin is None or not spec.origin.endswith(".py"):
+        return None
+    return Path(spec.origin)
+
+
+def _flat_name(name: str) -> str:
+    """Return the module name of a dependency in the staging folder (no dots).
+
+    Pyccel inlines an ``@inline`` function only from a top-level module, so every
+    dependency is built as one: ``a.b.c`` becomes ``a__b__c``.
+    """
+    return name.replace(".", "__")
+
+
+def _dependency_imports(source: str, package: str) -> list[tuple[ast.ImportFrom, str]]:
+    """Return the ``from <module> import ...`` statements of `source` that are dependencies.
+
+    Returns each statement with the absolute name of its module; `package` resolves
+    relative imports. A dependency is a module with a Python source outside the
+    standard library, NumPy and Pyccel.
+    """
+    found = []
+    for node in ast.parse(source).body:
+        if not isinstance(node, ast.ImportFrom) or node.module is None:
+            continue
+        name = node.module
+        if node.level:
+            try:
+                name = importlib.util.resolve_name("." * node.level + name, package)
+            except ImportError:
+                continue
+        if _module_file(name) is not None:
+            found.append((node, name))
+    return found
+
+
+def _rewrite_imports(source: str, package: str) -> str:
+    """Return `source` with its dependency imports from their flat module names.
+
+    The line numbers do not change, so Pyccel's messages point at the original lines.
+    """
+    lines = source.splitlines(keepends=True)
+    for node, name in reversed(_dependency_imports(source, package)):
+        names = ", ".join(
+            alias.name + (f" as {alias.asname}" if alias.asname else "")
+            for alias in node.names
+        )
+        first, last = node.lineno - 1, node.end_lineno - 1
+        indent = lines[first][: node.col_offset]
+        statement = f"{indent}from {_flat_name(name)} import {names}\n"
+        lines[first : last + 1] = [statement] + ["\n"] * (last - first)
+    return "".join(lines)
 
 
 def _writable(directory: Path) -> bool:
@@ -234,15 +306,68 @@ class PyccelCache:
         return os.environ.get(self.openmp_env, "1").lower() not in _FALSE
 
     def _openmp_for(self, module: ModuleType) -> bool:
-        return self.openmp_enabled() or _uses_openmp_runtime(_source_path(module))
+        return self.openmp_enabled() or any(
+            _uses_openmp_runtime(text)
+            for text in (
+                _source_path(module).read_text(),
+                *self.dependencies(module).values(),
+            )
+        )
+
+    def dependencies(self, module: ModuleType) -> dict[str, str]:
+        """Return the modules `module` imports that are built with it, and their sources.
+
+        A dependency is a module imported with ``from <module> import ...`` (also
+        relative, and in other packages) that has a Python source outside the standard
+        library, NumPy and Pyccel; its own dependencies count too. They come in build
+        order, every module after the ones it imports. The kernel's build contains them
+        (Pyccel links them in, and inlines their ``@inline`` functions), and their
+        sources are part of its key, so editing one rebuilds the kernel.
+
+        Parameters
+        ----------
+        module : module
+            The kernel module.
+
+        Returns
+        -------
+        dict of str to str
+            The absolute module names and their sources, in build order.
+
+        Raises
+        ------
+        ImportError
+            If the modules import each other in a cycle.
+        """
+        package = module.__package__ or module.__name__.rpartition(".")[0]
+        found: dict[str, str] = {}
+        visiting: list[str] = []
+
+        def visit(source: str, package: str) -> None:
+            for _, name in _dependency_imports(source, package):
+                if name in found:
+                    continue
+                if name in visiting:
+                    cycle = " -> ".join([*visiting, name])
+                    raise ImportError(f"kernel modules import each other: {cycle}")
+                path = _module_file(name)
+                assert path is not None  # a dependency has a source
+                text = path.read_text()
+                visiting.append(name)
+                visit(text, name.rpartition(".")[0])
+                visiting.pop()
+                found[name] = text
+
+        visit(_source_path(module).read_text(), package)
+        return found
 
     def build_key(self, module: ModuleType, language: str | None = None) -> str:
         """Return the key of `module`'s build, which changes with anything that changes it.
 
         The module's own source, the language, the OpenMP setting, the Pyccel,
-        NumPy and Python versions and the platform. Modules the kernel imports
-        are not part of it: edit the kernel (or clear the cache) after changing
-        one.
+        NumPy and Python versions and the platform, and the names and sources of
+        the modules built with it (:meth:`dependencies`), so editing one of them
+        rebuilds the kernel.
 
         Parameters
         ----------
@@ -262,6 +387,8 @@ class PyccelCache:
             If Pyccel is not installed.
         """
         digest = hashlib.sha256()
+        for name, source in self.dependencies(module).items():
+            digest.update(f"dependency {name}\n{source}".encode())
         for part in (
             inspect.getsource(module),
             language or self.language,
@@ -275,24 +402,21 @@ class PyccelCache:
             digest.update(part.encode())
         return digest.hexdigest()[:20]
 
-    def _build(self, module: ModuleType, language: str, staging: Path) -> Path:
-        """Run ``pyccel compile`` on a copy of the module's file; return the build folder."""
-        source = _source_path(module)
-        stem = module.__name__.rsplit(".", 1)[-1]
-        sources = staging / "src"
-        sources.mkdir()
-        shutil.copy(source, sources / f"{stem}.py")
-        output = staging / "build"
+    @staticmethod
+    def _run_pyccel(
+        source: Path, language: str, output: Path, openmp: bool, staging: Path
+    ) -> None:
+        """Compile `source` into `output` with ``pyccel compile``; raise on failure."""
         command = [
             *_pyccel_command(),
             "compile",
-            str(sources / f"{stem}.py"),
+            str(source),
             "--language",
             language,
             "--output",
             str(output),
         ]
-        if self._openmp_for(module):
+        if openmp:
             command.append("--openmp")
         # Pyccel writes lock files (``.lock_acquisition.lock``, ``stc.lock``) to
         # the directory it runs in: run it in the staging folder, removed after
@@ -305,6 +429,34 @@ class PyccelCache:
                 f"{' '.join(command)} failed ({result.returncode}):\n"
                 f"{result.stdout}{result.stderr}"
             )
+
+    def _build(self, module: ModuleType, language: str, staging: Path) -> Path:
+        """Run ``pyccel compile`` on copies of the module and its dependencies.
+
+        The dependencies are copied under flat names (:func:`_flat_name`), with the
+        imports rewritten to them, and built first into the same output folder, where
+        Pyccel finds their headers; the kernel's extension contains their code, so
+        only it is kept. Returns the build folder.
+        """
+        stem = module.__name__.rsplit(".", 1)[-1]
+        package = module.__package__ or module.__name__.rpartition(".")[0]
+        sources = staging / "src"
+        sources.mkdir()
+        output = staging / "build"
+        openmp = self._openmp_for(module)
+        dependencies = self.dependencies(module)
+        for name, source in dependencies.items():
+            flat = _flat_name(name)
+            path = sources / f"{flat}.py"
+            path.write_text(_rewrite_imports(source, name.rpartition(".")[0]))
+            self._run_pyccel(path, language, output, openmp, staging)
+        path = sources / f"{stem}.py"
+        path.write_text(_rewrite_imports(_source_path(module).read_text(), package))
+        self._run_pyccel(path, language, output, openmp, staging)
+        for name in dependencies:
+            extension = _extension_path(output, _flat_name(name))
+            if extension is not None:
+                extension.unlink()
         return output
 
     @sp.profile("cunumpy.PyccelCache.compile", tags=_PROFILE_TAGS)

@@ -7,7 +7,7 @@ import os
 import stat
 import sys
 import tempfile
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -272,3 +272,133 @@ def test_the_cache_is_a_host_compiler(make_module, cache):
     kernel = xp.kernels.CompiledHostKernel(module, "add_one", cache)
     assert kernel.compiled
     assert kernel(4.0) == 5.0
+
+
+# A kernel that imports functions of another package: the package `kdeps` with an
+# @inline helper, a plain helper that imports from a third module, and a relative import.
+DEPENDENCY_FILES = {
+    "kdeps/__init__.py": "",
+    "kdeps/base.py": """
+def scale() -> float:
+    return 3.0
+""",
+    "kdeps/helpers.py": """
+from pyccel.decorators import inline
+
+from .base import scale
+
+
+@inline
+def twice(x: float) -> float:
+    return 2.0 * x
+
+
+def add_scaled(x: float, y: float) -> float:
+    return x + scale() * y
+""",
+}
+
+KERNEL_WITH_DEPENDENCIES = """
+import numpy as np
+
+from kdeps.helpers import add_scaled, twice
+
+
+def combine(x: float, y: float) -> float:
+    return twice(x) + add_scaled(0.0, y) + np.sqrt(4.0)
+"""
+
+
+@pytest.fixture
+def dependency_package(tmp_path, monkeypatch):
+    """Write the package `kdeps` on sys.path and return its folder."""
+    root = tmp_path / "deps"
+    for name, text in DEPENDENCY_FILES.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    monkeypatch.syspath_prepend(str(root))
+    yield root / "kdeps"
+    for name in [n for n in sys.modules if n == "kdeps" or n.startswith("kdeps.")]:
+        sys.modules.pop(name)
+
+
+def test_the_dependencies_are_found_in_build_order(
+    make_module, cache, dependency_package
+):
+    module = make_module(KERNEL_WITH_DEPENDENCIES, name="kernel_with_deps")
+    dependencies = cache.dependencies(module)
+    # numpy and pyccel are not built with the kernel; base before helpers
+    assert list(dependencies) == ["kdeps.base", "kdeps.helpers"]
+    assert dependencies["kdeps.base"] == DEPENDENCY_FILES["kdeps/base.py"]
+    assert cache.dependencies(make_module(SOURCE)) == {}
+
+
+def test_a_kernel_builds_with_its_dependencies_and_inlines_them(
+    make_module, cache, dependency_package
+):
+    pytest.importorskip("pyccel")
+    module = make_module(KERNEL_WITH_DEPENDENCIES, name="kernel_with_deps")
+    assert module.combine(1.0, 2.0) == 10.0  # the Python version
+    compiled = cache.compile(module)
+    assert compiled.combine(1.0, 2.0) == 10.0
+    assert compiled is not module
+    (build,) = [p for p in cache.cache_root().iterdir() if not p.name.startswith(".")]
+    # only the kernel's extension is kept: it contains the dependencies
+    extensions = [p.name for p in build.iterdir() if p.suffix in (".so", ".pyd")]
+    assert len(extensions) == 1 and extensions[0].startswith("kernel_with_deps")
+    # the @inline helper is inlined, the plain one called
+    generated = (build / "__pyccel__" / "kernel_with_deps.c").read_text()
+    assert "twice(" not in generated
+    assert "add_scaled(" in generated
+
+
+def test_editing_a_dependency_rebuilds_the_kernel(
+    make_module, cache, dependency_package
+):
+    pytest.importorskip("pyccel")
+    module = make_module(KERNEL_WITH_DEPENDENCIES, name="kernel_with_deps")
+    key = cache.build_key(module)
+    assert cache.compile(module).combine(1.0, 2.0) == 10.0
+    (dependency_package / "base.py").write_text(
+        DEPENDENCY_FILES["kdeps/base.py"].replace("3.0", "5.0")
+    )
+    assert cache.build_key(module) != key
+    assert cache.compile(module).combine(1.0, 2.0) == 14.0
+
+
+def test_import_cycles_are_an_error(cache, dependency_package, tmp_path):
+    (dependency_package / "base.py").write_text(
+        "from kdeps.helpers import twice\n" + DEPENDENCY_FILES["kdeps/base.py"]
+    )
+    # not executed: Python would refuse the cycle on import
+    path = tmp_path / "kernel_with_deps.py"
+    path.write_text(KERNEL_WITH_DEPENDENCIES)
+    module = ModuleType("kernel_with_deps")
+    module.__file__ = str(path)
+    with pytest.raises(
+        ImportError, match="kdeps.helpers -> kdeps.base -> kdeps.helpers"
+    ):
+        cache.dependencies(module)
+
+
+def test_the_rewritten_imports_keep_the_line_numbers(dependency_package):
+    source = (
+        "import math\n"
+        "from kdeps.helpers import (\n"
+        "    add_scaled,\n"
+        "    twice as double,\n"
+        ")\n"
+        "from .base import scale\n"
+        "x = 1\n"
+    )
+    rewritten = _pyccel_cache._rewrite_imports(source, "kdeps")
+    assert rewritten.splitlines() == [
+        "import math",
+        "from kdeps__helpers import add_scaled, twice as double",
+        "",
+        "",
+        "",
+        "from kdeps__base import scale",
+        "x = 1",
+    ]
