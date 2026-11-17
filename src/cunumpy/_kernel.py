@@ -165,11 +165,10 @@ class PyccelKernel:
         source = self._parameters
         if source is not None:
             return source() if callable(source) else tuple(source)
-        function = self._kernel
-        if isinstance(function, HostImplementations):
-            function = function.reference
-        else:
-            function = getattr(function, "python", function)
+        # a HostImplementations' reference (the Python version, else the NumPy one)
+        function = getattr(self._kernel, "reference", None) or getattr(
+            self._kernel, "python", self._kernel
+        )
         try:
             signature = inspect.signature(function)
         except (TypeError, ValueError):
