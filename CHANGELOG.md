@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- A docs page, "Shared kernel blocks": where blocks shared between the kernels of several
+  packages live, how each backend uses them, and the rules (no locals in `@inline` Pyccel
+  blocks under OpenMP, no `min`/`max`, `-0.0` for a zero term, tests of fused kernels against
+  the plain path; the hand-written versions of a block checked against its Pyccel source
+  run in Python).
 - Pyccel kernels can import functions from other modules, also of other packages
   (`from other_pkg.kernels.boris_pyccel import boris_rotate`): `PyccelCache` builds those modules
   with the kernel (copied under flat names, imports rewritten, so Pyccel also inlines their
