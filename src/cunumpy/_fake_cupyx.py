@@ -16,7 +16,8 @@ matters for finding host/device bugs:
   that the installed SciPy lacks is missing too.
 
 ``cupyx.empty_pinned`` and ``cupyx.zeros_pinned`` return NumPy arrays, like
-CuPy's (which are backed by pinned memory).
+CuPy's (which are backed by pinned memory). ``cupyx.jit`` runs raw kernels on the
+CPU, thread by thread (see :mod:`cunumpy._fake_cupyx_jit`).
 """
 
 from __future__ import annotations
@@ -28,6 +29,8 @@ import types
 from typing import Any
 
 import numpy as np
+
+from cunumpy import _fake_cupyx_jit
 
 SUBPACKAGES = (
     "fft",
@@ -372,7 +375,11 @@ def install(cupy: Any) -> None:
     )
     scipy = types.ModuleType("cupyx.scipy")
     cupyx.scipy = scipy
-    modules = {"cupyx": cupyx, "cupyx.scipy": scipy}
+    modules = {
+        "cupyx": cupyx,
+        "cupyx.scipy": scipy,
+        "cupyx.jit": _fake_cupyx_jit.make_module(cupy),
+    }
     for path in SUBPACKAGES:
         modules[f"cupyx.scipy.{path}"] = _subpackage(path, cupy)
     # parents expose their subpackages as attributes, like real packages

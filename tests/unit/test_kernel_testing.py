@@ -190,7 +190,7 @@ def test_assert_kernels_agree_on_gpu():
     ]
 
     wrong = Kernel(scale_wrong, CudaKernel(SCALE_CUDA, "scale"), name="scale")
-    with pytest.raises(AssertionError, match="scale: argument 0 differs"):
+    with pytest.raises(AssertionError, match=r"scale \(cuda_c\): argument 0 differs"):
         assert_kernels_agree(wrong, make_scale_args, n_threads=300)
 
 

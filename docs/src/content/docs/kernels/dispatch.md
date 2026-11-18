@@ -97,11 +97,15 @@ catalog["push"](markers, dt, n_markers, n_threads=n_markers)
 ```
 
 For every subfolder `<name>` containing `<name>_kernels.py`, the function
-`<name>` in that module is the host kernel, and `<name>_cuda.cu` in the same
-folder, if present, provides the CUDA kernel `__global__ void <name>(...)`.
-Other `__global__` functions in that file are ignored by the catalog (load them
-with `CudaKernel.all_from_file`). The suffixes are configurable with
-`host_suffix` and `cuda_suffix`.
+`<name>` in that module is the host kernel, and `<name>_cuda.cu` (or
+`<name>_cuda_c.cu`) in the same folder, if present, provides the CUDA C kernel
+`__global__ void <name>(...)`. Other `__global__` functions in that file are
+ignored by the catalog (load them with `CudaKernel.all_from_file`). CUDA
+kernels written in Python, the function `<name>` of `<name>_cupy_jit.py`
+(`cupyx.jit`) or `<name>_numba_cuda.py` (numba-cuda), are device
+implementations too, see [CUDA kernels in Python](/cunumpy/kernels/python-kernels/).
+The suffixes are configurable with `host_suffix`, `cuda_suffix`,
+`cupy_jit_suffix` and `numba_cuda_suffix`.
 
 Options:
 
@@ -193,7 +197,13 @@ now (`kernel.selected(device=True)` for device arrays), and
 
 ### Device implementation selection
 
-Currently CUDA is the only device implementation. To require it explicitly:
+A kernel can have three device implementations, tried in this order
+(`xp.kernels.DEVICE_KERNEL_ORDER`): `"cuda_c"` (a `CudaKernel`), `"cupy_jit"`
+and `"numba_cuda"` (CUDA kernels in Python, see [CUDA kernels in
+Python](/cunumpy/kernels/python-kernels/)). A call with device arrays runs the
+first one that loads. `"cuda"` requires any of them (no host fallback), and
+`"cuda_c"`, `"cupy_jit"` or `"numba_cuda"` select exactly one, e.g. to compare a
+Python port with the C one:
 
 ```python
 xp.kernels.set_device_kernel_implementation("cuda")
@@ -207,9 +217,9 @@ xp.kernels.set_device_kernel_implementation(None)  # restore automatic selection
 value is case-insensitive and stripped of whitespace; an unsupported value makes
 the import fail). The setter raises `ValueError` for unsupported values and
 keeps the previous setting. The getter reports the requested setting, so it
-returns `None` in automatic mode even when calls use CUDA. An explicit CUDA choice raises
-`LookupError` for a missing device implementation, including kernels configured
-with `missing_cuda="fallback"`. The default (`None`, or an unset/empty environment
+returns `None` in automatic mode even when calls use CUDA. An explicit choice raises
+`LookupError` for a missing (or not loadable) device implementation, including
+kernels configured with `missing_cuda="fallback"`. The default (`None`, or an unset/empty environment
 variable) preserves that fallback policy. This setting controls the device
 dispatch of `Kernel` and `KernelCatalog` only: the array backend and host
 implementation are selected independently, and direct `CudaKernel` (or CuPy

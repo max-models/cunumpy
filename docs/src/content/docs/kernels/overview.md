@@ -19,8 +19,9 @@ unchanged.
 | --- | --- | --- |
 | `PyccelKernel` | calls a host kernel with CuPy arrays by copying them to the host and back | [Host kernels with GPU data](/cunumpy/kernels/pyccel-kernel/) |
 | `CudaKernel` | wraps a CUDA C kernel, checks every call against its signature | [Writing CUDA kernels](/cunumpy/kernels/cuda-kernel/) |
+| `CupyJitKernel`, `NumbaCudaKernel` | a CUDA kernel written in Python (`cupyx.jit`, numba-cuda), launched like a `CudaKernel` | [CUDA kernels in Python](/cunumpy/kernels/python-kernels/) |
 | `MetalKernel` | runs a Metal kernel on the GPU of an Apple silicon Mac, on NumPy float32 arrays | [Metal kernels on Apple silicon](/cunumpy/kernels/metal-kernel/) |
-| `Kernel` | a host kernel plus its CUDA kernel; calls the one matching the backend | [Pairing host and CUDA kernels](/cunumpy/kernels/dispatch/) |
+| `Kernel` | a host kernel plus its CUDA kernels (C or Python); calls the one matching the backend | [Pairing host and CUDA kernels](/cunumpy/kernels/dispatch/) |
 | `KernelCatalog` | all `Kernel`s of a package, found by folder convention | [Pairing host and CUDA kernels](/cunumpy/kernels/dispatch/) |
 | `CudaArguments`, `CudaStruct`, `CudaStructArguments` | pass a group of arrays and scalars as one argument | [Kernel arguments and structs](/cunumpy/kernels/arguments/) |
 | `DeviceMirror`, `cunumpy/atomic.cuh` | scatter-add into a buffer owned by a host library | [Accumulation kernels](/cunumpy/kernels/accumulation/) |
@@ -34,6 +35,10 @@ unchanged.
   a fast one.
 * **"I have one hot kernel and want it fast on the GPU."** Write a CUDA version
   and launch it with `CudaKernel`.
+* **"I want my kernels on the GPU without writing C."** Write them in Python
+  with `cupyx.jit` or numba-cuda (`CupyJitKernel`, `NumbaCudaKernel`), and
+  rewrite in CUDA C only those a profile points at; a `Kernel` prefers the C
+  version once it exists.
 * **"I have dozens of kernels and will port them over months."** Put each
   host/CUDA pair in a `Kernel`, collect them in a `KernelCatalog`, and test each
   pair with `assert_kernels_agree`. Unported kernels either raise or fall back
@@ -52,8 +57,9 @@ unchanged.
    `count_transfers()` shows how many copies each step makes; `catalog.summary()`
    shows how many kernels are left (`CUDA kernels: 0 of 42`).
 3. **Port the most expensive kernel.** Write `name/name_cuda.cu` next to the
-   host kernel, mirroring its argument list. The catalog picks it up
-   automatically. A parity test compares it with the host version.
+   host kernel, mirroring its argument list, or a Python version
+   `name/name_cupy_jit.py` (`name_numba_cuda.py` for numba-cuda). The catalog
+   picks it up automatically. A parity test compares it with the host version.
 4. **Repeat**, ordered by a profile (see [Timing and
    profiling](/cunumpy/guides/profiling/)), until the kernels in the time loop are
    ported. `assert_no_transfers()` around a time step verifies that no fallback

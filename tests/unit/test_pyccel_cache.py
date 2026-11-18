@@ -326,6 +326,7 @@ def dependency_package(tmp_path, monkeypatch):
 def test_the_dependencies_are_found_in_build_order(
     make_module, cache, dependency_package
 ):
+    pytest.importorskip("pyccel")  # the helpers import pyccel.decorators
     module = make_module(KERNEL_WITH_DEPENDENCIES, name="kernel_with_deps")
     dependencies = cache.dependencies(module)
     # numpy and pyccel are not built with the kernel; base before helpers

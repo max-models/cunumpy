@@ -87,7 +87,7 @@ def test_explicit_device_implementation_dispatch(fake_gpu, dispatch):
     missing = Kernel(scale, dispatch=dispatch, missing_cuda="fallback")
     x = FakeDeviceArray(4)
     with xp.kernels.use_device_kernel_implementation("cuda"):
-        assert kernel.selected(device=True) == "cuda"
+        assert kernel.selected(device=True) == "cuda_c"
         kernel(x, 3.0, 4)
         assert [name for name, *_ in fake_gpu] == ["scale"]
         with pytest.raises(LookupError, match="has no 'cuda' implementation"):
@@ -300,7 +300,7 @@ def test_from_package_with_compiled_hosts_and_array_dispatch(pyccel_style_packag
     kernel = catalog["scale"]
     assert kernel.dispatch == "arrays"
     assert isinstance(kernel.host_kernel.kernel, HostImplementations)
-    assert kernel.implementations == ("pyccel", "python", "cuda")
+    assert kernel.implementations == ("pyccel", "python", "cuda_c")
     catalog.check_signatures()  # x, factor, n on both sides
     x = np.ones(3)
     kernel(x, 2.0, 3)
@@ -396,11 +396,11 @@ def test_from_folder_finds_every_implementation(self_declaring_package):
     folder = self_declaring_package
     kernel = folder.kernel
     assert kernel.name == "scale" and kernel.dispatch == "arrays"
-    assert kernel.implementations == ("pyccel", "numba", "numpy", "python", "cuda")
+    assert kernel.implementations == ("pyccel", "numba", "numpy", "python", "cuda_c")
     assert kernel.cuda_kernel.n_threads_from is not None
     kernel.check_signature()  # pyccel, NumPy and CUDA: x, factor, n; numba skipped
     assert kernel.selected() == "pyccel"  # the compiled version by default
-    assert kernel.selected(device=True) == "cuda"
+    assert kernel.selected(device=True) == "cuda_c"
     x = np.ones(3)
     kernel(x, 2.0, 3)
     assert x.tolist() == [2.0] * 3
