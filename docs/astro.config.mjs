@@ -58,6 +58,7 @@ export default defineDocs({
 				'kernels/python-kernels',
 				'kernels/metal-kernel',
 				'kernels/dispatch',
+				'kernels/blocks',
 				'kernels/arguments',
 				'kernels/accumulation',
 				'kernels/debugging',
