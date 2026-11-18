@@ -17,7 +17,8 @@ https://max-models.github.io/cunumpy/ and in `docs/` of the repository.
 * Helpers for explicit host/device transfers, device/stream/memory control, MPI
   with one rank per GPU, profiling.
 * A kernel layer for porting compiled CPU kernels (Pyccel, Numba, Python loops)
-  to CUDA one at a time: `PyccelKernel`, `CudaKernel`, `Kernel`,
+  to CUDA one at a time: `PyccelKernel`, `CudaKernel`, `CupyJitKernel`,
+  `NumbaCudaKernel`, `Kernel`,
   `KernelCatalog`, `CudaStruct`, `CudaStructArguments`, `DeviceMirror`, and test
   helpers in `cunumpy.kernel_testing`.
 
@@ -72,6 +73,7 @@ https://max-models.github.io/cunumpy/ and in `docs/` of the repository.
 | hand data to SciPy/matplotlib/h5py | `xp.to_numpy(a)` |
 | call an existing NumPy-only kernel with GPU arrays (slow, correct) | `xp.kernels.PyccelKernel(fn, outputs=(...))` |
 | launch a hand-written CUDA C kernel | `xp.kernels.CudaKernel(source, "name")` / `CudaKernel.from_file(path)` |
+| write a CUDA kernel in Python | `xp.kernels.CupyJitKernel(fn)` (`cupyx.jit`: `jit.grid(1)`, `jit.atomic_add`) or `xp.kernels.NumbaCudaKernel(fn)` (numba-cuda: `cuda.grid(1)`); same launch keywords as `CudaKernel`; CuPy arrays only, `CudaArguments` flattened, no C structs; in a kernel folder `<name>_cupy_jit.py` / `<name>_numba_cuda.py`, or `Kernel(host, cupy_jit_kernel=fn, numba_cuda_kernel=fn)` |
 | run a Metal (MSL) kernel on an Apple silicon GPU, NumPy float32 in and out (float64 raises; `float64="cast"` computes in float32); not part of `Kernel` dispatch | `xp.kernels.MetalKernel(body, inputs=[...], outputs=[...])(*args, out=arrays, n_threads=n)`; check `xp.kernels.metal_available()` |
 | call host-only code (SciPy, file readers) with arguments of either backend | `xp.host_call(fun, *args)`; `@xp.evaluate_on_host` on a method; `@xp.setup_on_host` on `__init__` |
 | keep the live rows of particle arrays at the front | `n = xp.algorithms.compact_by_mask(alive, markers, weights)`; component-major `(ncomp, N)`: `axis=-1` |
@@ -85,7 +87,7 @@ https://max-models.github.io/cunumpy/ and in `docs/` of the repository.
 | one kernel folder declares its kernel in its own `__init__.py` | `kernel = xp.kernels.Kernel.from_folder(__name__, host_suffix="_pyccel", compile_host=..., dispatch="arrays")`; `<name>_numba.py`, `<name>_numpy.py` in the folder are further host implementations |
 | bring a `dispatch="arrays"` kernel's arguments to the side of the main array | `xp.kernels.as_kernel_array(a, like=grid, dtype=float)`; outputs: `with xp.kernels.kernel_output(out, like=grid, dtype=float) as buf:` (several: `with xp.kernels.kernel_outputs(a, b, like=grid, dtype=float) as (buf_a, buf_b):`); `strided=True` passes NumPy views in C order with gaps (`a[:, :n]`) to Pyccel hosts without a copy |
 | choose the host implementation (pyccel/numba/numpy/python) | `xp.kernels.set_host_kernel_implementation("numpy")`, `with xp.kernels.use_host_kernel_implementation(...)`, `CUNUMPY_HOST_KERNEL_IMPLEMENTATION=numpy`; default: first available of pyccel, numba, numpy; `kernel.selected()` |
-| require CUDA for device kernel dispatch | `xp.kernels.set_device_kernel_implementation("cuda")`, `get_device_kernel_implementation()`, `with xp.kernels.use_device_kernel_implementation(...)`, `CUNUMPY_DEVICE_KERNEL_IMPLEMENTATION=cuda`; default `None` preserves `missing_cuda` policy; explicit CUDA rejects host fallback |
+| choose or require the device implementation | default: first loadable of `cuda_c` (CudaKernel), `cupy_jit`, `numba_cuda`, then `missing_cuda` policy; `xp.kernels.set_device_kernel_implementation("cuda")` = any of them, never the host fallback; `"cuda_c"`/`"cupy_jit"`/`"numba_cuda"` = only that one; `with xp.kernels.use_device_kernel_implementation(...)`, `CUNUMPY_DEVICE_KERNEL_IMPLEMENTATION=...`; `kernel.selected(device=True)` |
 | check host and CUDA kernels take the same parameters | `catalog.check_signatures()` (in a unit test) |
 | test a CUDA kernel's arithmetic without a GPU | `cunumpy.kernel_testing.emulate_cuda_kernel(kernel, *numpy_args, n_threads=n)` (C++ compiler; shared memory and __syncthreads ok, no warp ops; inline asm traps; compiled once per kernel and cached; `shared_mem=` for extern shared) |
 | shared-memory budget of a block | `xp.cuda.max_shared_memory_per_block()` (48 KiB without a GPU) |
@@ -115,7 +117,7 @@ https://max-models.github.io/cunumpy/ and in `docs/` of the repository.
 | check transfers per phase of a time loop | `b = xp.profiling.TransferBudget()`; `b.count("step")(fn)` or `with b.phase("output"):`; `b.require("step", allow={"to_host": {"max_nbytes": 8}})`; `b.check()` |
 | debug an illegal memory access | `CUNUMPY_CUDA_DEBUG=1`, then `compute-sanitizer` |
 | test on both backends | `cunumpy.kernel_testing.BACKENDS`, `backend` fixture, `requires_cupy` |
-| test CUDA vs host kernel | `cunumpy.kernel_testing.assert_kernels_agree(kernel, make_args, n_threads=...)` |
+| test CUDA vs host kernel | `cunumpy.kernel_testing.assert_kernels_agree(kernel, make_args, n_threads=...)` (every device implementation, or `implementations=[...]`; on the fake CuPy runs `cupy_jit` emulated and `numba_cuda` under `NUMBA_ENABLE_CUDASIM=1`) |
 
 ## API cheat sheet
 

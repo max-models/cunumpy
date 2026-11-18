@@ -1907,7 +1907,165 @@ def _is_capturing(stream: Any) -> bool:
         return False
 
 
-class CudaKernel:
+class _LaunchConfig:
+    """The launch configuration of a device kernel: block shape, launch size, debug mode.
+
+    Shared by :class:`~cunumpy.kernels.CudaKernel` and the Python device kernels
+    (:class:`~cunumpy.kernels.CupyJitKernel`, :class:`~cunumpy.kernels.NumbaCudaKernel`),
+    so that all of them take the same launch keywords.
+    """
+
+    _block: tuple[int, ...]
+    _debug: bool | None
+
+    @staticmethod
+    def _check_block(block: tuple[int, ...]) -> tuple[int, ...]:
+        if any(n <= 0 for n in block):
+            raise ValueError(f"block sizes must be positive, got {block}")
+        if math.prod(block) > _MAX_THREADS_PER_BLOCK:
+            raise ValueError(
+                f"a block has at most {_MAX_THREADS_PER_BLOCK} threads, got "
+                f"{block} = {math.prod(block)}",
+            )
+        return block
+
+    def _init_launch(
+        self,
+        block_size: int | Sequence[int],
+        n_threads_from: Callable[[tuple[Any, ...]], Any] | str | None,
+        debug: bool | None,
+    ) -> None:
+        self._block = self._check_block(_as_shape(block_size, "block_size"))
+        self.n_threads_from = n_threads_from
+        self._debug = None if debug is None else bool(debug)
+
+    @property
+    def block_size(self) -> int | tuple[int, ...]:
+        """The threads per block: an integer for 1D blocks, else a tuple."""
+        return self._block[0] if len(self._block) == 1 else self._block
+
+    @property
+    def debug(self) -> bool | None:
+        """The kernel's debug setting: True, False, or None for the global one."""
+        return self._debug
+
+    def debug_active(self) -> bool:
+        """Return whether debug mode applies to this kernel now.
+
+        Returns
+        -------
+        bool
+            The kernel's own `debug` setting, else the current global one
+            (:func:`~cunumpy.cuda.get_cuda_debug`).
+        """
+        if self._debug is not None:
+            return self._debug
+        from cunumpy._device import get_cuda_debug
+
+        return get_cuda_debug()
+
+    @property
+    def n_threads_from(self) -> Callable[[tuple[Any, ...]], Any] | None:
+        """The launch size inference: a callable of the argument tuple, or None; settable as in the constructor."""
+        return self._n_threads_from
+
+    def _default_n_threads(self, args: tuple[Any, ...]) -> int | tuple[int, ...]:
+        return _first_array_shape(args, len(self._block))
+
+    @n_threads_from.setter
+    def n_threads_from(
+        self,
+        value: Callable[[tuple[Any, ...]], Any] | str | None,
+    ) -> None:
+        automatic = isinstance(value, str) and value == "auto"
+        if automatic:
+            value = self._default_n_threads
+        elif isinstance(value, str) and value == "first_array":
+            value = _first_array_length
+        elif isinstance(value, str) and value == "last_axis":
+            value = _last_axis_length
+        if value is not None and not callable(value):
+            raise TypeError(
+                "n_threads_from must be callable, 'auto', 'first_array', "
+                "'last_axis' or None"
+            )
+        self._automatic_threads = automatic
+        self._n_threads_from = value
+
+    def launch_shape(
+        self,
+        n_threads: int | Sequence[int] | None = None,
+        *,
+        grid: int | Sequence[int] | None = None,
+        block: int | Sequence[int] | None = None,
+        args: Sequence[Any] | None = None,
+    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        """Return the ``(grid, block)`` a call with these launch arguments uses.
+
+        Parameters
+        ----------
+        n_threads : int or sequence of int, optional
+            Number of threads, as for :meth:`~cunumpy.kernels.CudaKernel.__call__`.
+        grid : int or sequence of int, optional
+            Number of blocks, instead of `n_threads`.
+        block : int or sequence of int, optional
+            Block shape, instead of :attr:`block_size`.
+        args : sequence, optional
+            Call arguments, to infer the launch size (:attr:`n_threads_from`)
+            when neither `n_threads` nor `grid` is given.
+
+        Returns
+        -------
+        tuple of (tuple of int, tuple of int)
+            The grid and block shapes. A grid with a zero dimension launches
+            nothing.
+
+        Raises
+        ------
+        TypeError
+            If not exactly one of `n_threads` and `grid` is given or inferred.
+
+        Examples
+        --------
+        >>> kernel = xp.kernels.CudaKernel(
+        ...     'extern "C" __global__ void f(double* a) {}', "f", block_size=(16, 16))
+        >>> kernel.launch_shape((100, 50))
+        ((7, 4), (16, 16))
+        """
+        block_shape = (
+            self._block
+            if block is None
+            else self._check_block(_as_shape(block, "block"))
+        )
+        if n_threads is None and grid is None and args is not None:
+            if self._automatic_threads:
+                n_threads = _first_array_shape(args, len(block_shape))
+            elif self._n_threads_from is not None:
+                n_threads = self._n_threads_from(tuple(args))
+        if (n_threads is None) == (grid is None):
+            raise TypeError("pass exactly one of n_threads and grid")
+
+        if grid is not None:
+            grid_shape = _as_shape(grid, "grid")
+            if any(n < 0 for n in grid_shape):
+                raise ValueError(f"grid must be non-negative, got {grid_shape}")
+            return grid_shape, block_shape
+
+        threads = _as_shape(n_threads, "n_threads")
+        if any(n < 0 for n in threads):
+            raise ValueError(f"n_threads must be non-negative, got {threads}")
+        if len(block_shape) != len(threads):
+            if len(block_shape) != 1:
+                raise ValueError(
+                    f"block {block_shape} and n_threads {threads} have different "
+                    "numbers of dimensions",
+                )
+            block_shape = block_shape + (1,) * (len(threads) - 1)
+        grid_shape = tuple((n + b - 1) // b for n, b in zip(threads, block_shape))
+        return grid_shape, block_shape
+
+
+class CudaKernel(_LaunchConfig):
     """A CUDA C kernel, compiled with NVRTC through CuPy.
 
     The ``__global__`` signature is parsed at construction (no GPU needed)
@@ -1988,17 +2146,6 @@ class CudaKernel:
     >>> axpy(2.0, x, y, x.size, n_threads=x.size)  # doctest: +SKIP
     """
 
-    @staticmethod
-    def _check_block(block: tuple[int, ...]) -> tuple[int, ...]:
-        if any(n <= 0 for n in block):
-            raise ValueError(f"block sizes must be positive, got {block}")
-        if math.prod(block) > _MAX_THREADS_PER_BLOCK:
-            raise ValueError(
-                f"a block has at most {_MAX_THREADS_PER_BLOCK} threads, got "
-                f"{block} = {math.prod(block)}",
-            )
-        return block
-
     def __init__(
         self,
         source: str,
@@ -2015,10 +2162,8 @@ class CudaKernel:
         n_threads_from: Callable[[tuple[Any, ...]], Any] | str | None = "auto",
         check_finite: bool = False,
     ) -> None:
-        self._block = self._check_block(_as_shape(block_size, "block_size"))
-        self.n_threads_from = n_threads_from
+        self._init_launch(block_size, n_threads_from, debug)
         self._check_finite = bool(check_finite)
-        self._debug = None if debug is None else bool(debug)
         self._source = source
         self._name = name
         self._include_dirs = tuple(Path(d) for d in include_dirs)
@@ -2154,34 +2299,9 @@ class CudaKernel:
         return self._source
 
     @property
-    def block_size(self) -> int | tuple[int, ...]:
-        """The threads per block: an integer for 1D blocks, else a tuple."""
-        return self._block[0] if len(self._block) == 1 else self._block
-
-    @property
     def options(self) -> tuple[str, ...]:
         """NVRTC options as given, with ``-I`` for `include_dirs` (see :meth:`compile_options`)."""
         return self._options
-
-    @property
-    def debug(self) -> bool | None:
-        """The kernel's debug setting: True, False, or None for the global one."""
-        return self._debug
-
-    def debug_active(self) -> bool:
-        """Return whether debug mode applies to this kernel now.
-
-        Returns
-        -------
-        bool
-            The kernel's own `debug` setting, else the current global one
-            (:func:`~cunumpy.cuda.get_cuda_debug`).
-        """
-        if self._debug is not None:
-            return self._debug
-        from cunumpy._device import get_cuda_debug
-
-        return get_cuda_debug()
 
     @property
     def include_dirs(self) -> tuple[Path, ...]:
@@ -2242,34 +2362,6 @@ class CudaKernel:
     def structs(self) -> tuple[CudaStruct, ...]:
         """Struct types passed to the kernel by value."""
         return self._structs
-
-    @property
-    def n_threads_from(self) -> Callable[[tuple[Any, ...]], Any] | None:
-        """The launch size inference: a callable of the argument tuple, or None; settable as in the constructor."""
-        return self._n_threads_from
-
-    def _default_n_threads(self, args: tuple[Any, ...]) -> int | tuple[int, ...]:
-        return _first_array_shape(args, len(self._block))
-
-    @n_threads_from.setter
-    def n_threads_from(
-        self,
-        value: Callable[[tuple[Any, ...]], Any] | str | None,
-    ) -> None:
-        automatic = isinstance(value, str) and value == "auto"
-        if automatic:
-            value = self._default_n_threads
-        elif isinstance(value, str) and value == "first_array":
-            value = _first_array_length
-        elif isinstance(value, str) and value == "last_axis":
-            value = _last_axis_length
-        if value is not None and not callable(value):
-            raise TypeError(
-                "n_threads_from must be callable, 'auto', 'first_array', "
-                "'last_axis' or None"
-            )
-        self._automatic_threads = automatic
-        self._n_threads_from = value
 
     @property
     def check_finite(self) -> bool:
@@ -2497,78 +2589,6 @@ class CudaKernel:
                 f"flattening argument objects, got {len(values)}",
             )
         return tuple([check(v) for check, v in zip(self._checkers, values)])
-
-    def launch_shape(
-        self,
-        n_threads: int | Sequence[int] | None = None,
-        *,
-        grid: int | Sequence[int] | None = None,
-        block: int | Sequence[int] | None = None,
-        args: Sequence[Any] | None = None,
-    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
-        """Return the ``(grid, block)`` a call with these launch arguments uses.
-
-        Parameters
-        ----------
-        n_threads : int or sequence of int, optional
-            Number of threads, as for :meth:`~cunumpy.kernels.CudaKernel.__call__`.
-        grid : int or sequence of int, optional
-            Number of blocks, instead of `n_threads`.
-        block : int or sequence of int, optional
-            Block shape, instead of :attr:`block_size`.
-        args : sequence, optional
-            Call arguments, to infer the launch size (:attr:`n_threads_from`)
-            when neither `n_threads` nor `grid` is given.
-
-        Returns
-        -------
-        tuple of (tuple of int, tuple of int)
-            The grid and block shapes. A grid with a zero dimension launches
-            nothing.
-
-        Raises
-        ------
-        TypeError
-            If not exactly one of `n_threads` and `grid` is given or inferred.
-
-        Examples
-        --------
-        >>> kernel = xp.kernels.CudaKernel(
-        ...     'extern "C" __global__ void f(double* a) {}', "f", block_size=(16, 16))
-        >>> kernel.launch_shape((100, 50))
-        ((7, 4), (16, 16))
-        """
-        block_shape = (
-            self._block
-            if block is None
-            else self._check_block(_as_shape(block, "block"))
-        )
-        if n_threads is None and grid is None and args is not None:
-            if self._automatic_threads:
-                n_threads = _first_array_shape(args, len(block_shape))
-            elif self._n_threads_from is not None:
-                n_threads = self._n_threads_from(tuple(args))
-        if (n_threads is None) == (grid is None):
-            raise TypeError("pass exactly one of n_threads and grid")
-
-        if grid is not None:
-            grid_shape = _as_shape(grid, "grid")
-            if any(n < 0 for n in grid_shape):
-                raise ValueError(f"grid must be non-negative, got {grid_shape}")
-            return grid_shape, block_shape
-
-        threads = _as_shape(n_threads, "n_threads")
-        if any(n < 0 for n in threads):
-            raise ValueError(f"n_threads must be non-negative, got {threads}")
-        if len(block_shape) != len(threads):
-            if len(block_shape) != 1:
-                raise ValueError(
-                    f"block {block_shape} and n_threads {threads} have different "
-                    "numbers of dimensions",
-                )
-            block_shape = block_shape + (1,) * (len(threads) - 1)
-        grid_shape = tuple((n + b - 1) // b for n, b in zip(threads, block_shape))
-        return grid_shape, block_shape
 
     def _validate_launch(
         self,

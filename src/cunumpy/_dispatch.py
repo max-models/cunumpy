@@ -1,16 +1,21 @@
-"""Pairs of host and CUDA kernels, chosen by the backend or by the arguments.
+"""Host kernels and their CUDA counterparts, chosen by the backend or by the arguments.
 
 A :class:`~cunumpy.kernels.Kernel` holds a host kernel (a
-:class:`~cunumpy.kernels.PyccelKernel`) and, optionally, its CUDA counterpart
-(a :class:`~cunumpy.kernels.CudaKernel`), so a code base can port its kernels
-to CUDA one by one. :class:`~cunumpy.kernels.KernelCatalog` collects such
-pairs from a package with one folder per kernel (see :doc:`/kernels/dispatch`)::
+:class:`~cunumpy.kernels.PyccelKernel`) and, optionally, CUDA versions of it:
+in CUDA C (a :class:`~cunumpy.kernels.CudaKernel`) or in Python
+(a :class:`~cunumpy.kernels.CupyJitKernel` or
+:class:`~cunumpy.kernels.NumbaCudaKernel`), so a code base can port its kernels
+to the GPU one by one. :class:`~cunumpy.kernels.KernelCatalog` collects them
+from a package with one folder per kernel (see :doc:`/kernels/dispatch`)::
 
     my_kernels/
     ├── __init__.py              # catalog = KernelCatalog.from_package(__name__)
     ├── push/
     │   ├── push_kernels.py      # def push(...): ...   (host kernel)
-    │   └── push_cuda.cu         # __global__ void push(...)   (CUDA kernel)
+    │   └── push_cuda.cu         # __global__ void push(...)   (CUDA C kernel)
+    ├── sort/
+    │   ├── sort_kernels.py
+    │   └── sort_cupy_jit.py     # @jit.rawkernel() def sort(...)   (Python CUDA kernel)
     └── deposit/
         └── deposit_kernels.py   # not ported yet
 """
@@ -34,6 +39,7 @@ import scope_profiler as sp
 
 from cunumpy._cuda_kernel import CudaKernel, _compile_in_threads
 from cunumpy._kernel import (
+    DEVICE_KERNEL_ORDER,
     CompiledHostKernel,
     HostImplementations,
     PyccelKernel,
@@ -42,11 +48,17 @@ from cunumpy._kernel import (
     resolve_host,
 )
 from cunumpy._profile_tags import _PROFILE_TAGS
+from cunumpy._python_kernels import CupyJitKernel, NumbaCudaKernel, PythonDeviceKernel
 from cunumpy._transfers import _ACTIVE as _COUNTERS
 from cunumpy._transfers import _record
 from cunumpy.xp import get_backend
 
 __all__ = ["Kernel", "KernelCatalog"]
+
+DeviceKernel = CudaKernel | CupyJitKernel | NumbaCudaKernel
+
+#: The other file name suffix of a CUDA C kernel in a kernel folder (besides ``_cuda.cu``).
+CUDA_C_SUFFIX = "_cuda_c.cu"
 
 _MISSING_CUDA = ("raise", "fallback")
 _DISPATCH = ("backend", "arrays")
@@ -133,6 +145,27 @@ def _positional_parameters(function: Any) -> list[str] | None:
     return [p.name for p in signature.parameters.values() if p.kind in positional]
 
 
+def _device_kernel_argument(
+    kernel: Any,
+    cls: type[PythonDeviceKernel],
+    keyword: str,
+) -> PythonDeviceKernel | None:
+    """Return `kernel` as an instance of `cls`, wrapping a function."""
+    if kernel is None or isinstance(kernel, cls):
+        return kernel
+    if isinstance(kernel, (CudaKernel, PythonDeviceKernel)) or not callable(kernel):
+        raise TypeError(
+            f"{keyword} must be a {cls.__name__}, a function or None, "
+            f"got {type(kernel).__name__}",
+        )
+    return cls(kernel)
+
+
+def _load_error(kernel: Any) -> str:
+    error = getattr(kernel, "error", None)
+    return "" if error is None else f": {type(error).__name__}: {error}"
+
+
 def _source_root(package: str) -> Path:
     """Return the directory containing the top-level package of `package`."""
     top = importlib.import_module(package.partition(".")[0])
@@ -142,9 +175,15 @@ def _source_root(package: str) -> Path:
 
 
 class Kernel:
-    """A host kernel and its CUDA counterpart; a call runs the one matching the backend.
+    """A host kernel and its CUDA versions; a call runs the one matching the backend.
 
-    See :doc:`/kernels/dispatch` for the porting workflow.
+    The device side can have up to three implementations: a CUDA C kernel
+    (``"cuda_c"``), and CUDA kernels written in Python with ``cupyx.jit``
+    (``"cupy_jit"``) or numba-cuda (``"numba_cuda"``). On the device a call
+    runs the first available one in this order, or the one chosen with
+    :func:`~cunumpy.kernels.set_device_kernel_implementation`. See
+    :doc:`/kernels/dispatch` for the porting workflow and
+    :doc:`/kernels/python-kernels` for the Python ones.
 
     Parameters
     ----------
@@ -152,14 +191,20 @@ class Kernel:
         The host kernel. A plain callable is wrapped in a
         :class:`~cunumpy.kernels.PyccelKernel`.
     cuda_kernel : CudaKernel, optional
-        The CUDA kernel; None if it has not been written yet.
+        The CUDA C kernel; None if it has not been written yet.
+    cupy_jit_kernel : CupyJitKernel or callable, optional
+        The kernel in Python with ``cupyx.jit``; a function is wrapped in a
+        :class:`~cunumpy.kernels.CupyJitKernel`.
+    numba_cuda_kernel : NumbaCudaKernel or callable, optional
+        The kernel in Python with numba-cuda; a function is wrapped in a
+        :class:`~cunumpy.kernels.NumbaCudaKernel`.
     name : str, optional
         Name of the kernel; by default the name of the host kernel.
     missing_cuda : {"raise", "fallback"}, optional
-        Behavior on the device without CUDA kernel: ``"raise"`` (default)
-        raises ``NotImplementedError``; ``"fallback"`` calls the host kernel,
-        which copies the arrays to the host and back at every call (a
-        ``RuntimeWarning`` is emitted once).
+        Behavior on the device without a (loadable) device implementation:
+        ``"raise"`` (default) raises ``NotImplementedError``; ``"fallback"``
+        calls the host kernel, which copies the arrays to the host and back at
+        every call (a ``RuntimeWarning`` is emitted once).
     cuda_path : str or Path, optional
         Where the CUDA kernel is expected, named in the error if it is missing.
     host_options : mapping, optional
@@ -184,15 +229,17 @@ class Kernel:
         If `dispatch` or `missing_cuda` is unknown, or `host_options` is
         given with a ``PyccelKernel``.
     TypeError
-        If `cuda_kernel` is not a :class:`~cunumpy.kernels.CudaKernel`.
+        If `cuda_kernel` is not a :class:`~cunumpy.kernels.CudaKernel`, or a
+        Python device kernel is of the wrong kind.
 
     Notes
     -----
-    Both kernels take the same arguments, except that the CUDA kernel gets the
-    launch size and argument objects in their CUDA form: the caller passes
-    the host object (e.g. a Pyccel class) on the host and the CUDA one (e.g. a
-    :class:`~cunumpy.arguments.CudaStructArguments`) on the device; see
-    :doc:`/kernels/arguments`.
+    All implementations take the same arguments, except that the device ones
+    get the launch size and argument objects in their CUDA form: the caller
+    passes the host object (e.g. a Pyccel class) on the host and the CUDA one
+    (e.g. a :class:`~cunumpy.arguments.CudaStructArguments`) on the device; see
+    :doc:`/kernels/arguments`. The Python device kernels take no C structs:
+    group their arguments in a :class:`~cunumpy.arguments.CudaArguments`.
 
     Examples
     --------
@@ -210,6 +257,8 @@ class Kernel:
         host_kernel: PyccelKernel | Callable[..., Any],
         cuda_kernel: CudaKernel | None = None,
         *,
+        cupy_jit_kernel: CupyJitKernel | Callable[..., Any] | None = None,
+        numba_cuda_kernel: NumbaCudaKernel | Callable[..., Any] | None = None,
         name: str | None = None,
         missing_cuda: str = "raise",
         cuda_path: str | Path | None = None,
@@ -242,6 +291,20 @@ class Kernel:
             host_kernel._parameters = self.host_parameters
         self._host_kernel = host_kernel
         self._cuda_kernel = cuda_kernel
+        candidates = {
+            "cuda_c": cuda_kernel,
+            "cupy_jit": _device_kernel_argument(
+                cupy_jit_kernel, CupyJitKernel, "cupy_jit_kernel"
+            ),
+            "numba_cuda": _device_kernel_argument(
+                numba_cuda_kernel, NumbaCudaKernel, "numba_cuda_kernel"
+            ),
+        }
+        self._device_kernels: dict[str, DeviceKernel] = {
+            key: candidates[key]
+            for key in DEVICE_KERNEL_ORDER
+            if candidates[key] is not None
+        }
         self._name = name if name is not None else host_kernel.name
         self._region = f"cunumpy.kernel.{self._name}"
         self._missing_cuda = missing_cuda
@@ -257,6 +320,8 @@ class Kernel:
         *,
         host_suffix: str = "_kernels",
         cuda_suffix: str = "_cuda.cu",
+        cupy_jit_suffix: str = "_cupy_jit",
+        numba_cuda_suffix: str = "_numba_cuda",
         test_args_suffix: str | None = "_test_args",
         check_name_length: bool = True,
         missing_cuda: str = "raise",
@@ -276,13 +341,17 @@ class Kernel:
         ``<name><host_suffix>.py`` gives ``"pyccel"`` (compiled with
         `compile_host` on first use) and ``"python"`` (uncompiled),
         ``<name>_numba.py`` gives ``"numba"``, ``<name>_numpy.py`` gives
-        ``"numpy"`` and ``<name><cuda_suffix>`` the CUDA kernel. The host ones
-        form a :class:`~cunumpy.kernels.HostImplementations`. Nothing is
-        compiled or imported here, only the CUDA source parsed: each host
-        module is imported when its implementation is first used, so a host
-        module that cannot be imported (e.g. a Pyccel source in a Python
-        without Pyccel, such as Pyodide) leaves the other implementations
-        usable.
+        ``"numpy"``; on the device ``<name><cuda_suffix>`` (or
+        ``<name>_cuda_c.cu``) gives ``"cuda_c"``, ``<name><cupy_jit_suffix>.py``
+        gives ``"cupy_jit"`` and ``<name><numba_cuda_suffix>.py`` gives
+        ``"numba_cuda"`` (the function ``<name>`` of the module, plain or
+        decorated by its JIT). The host ones form a
+        :class:`~cunumpy.kernels.HostImplementations`. Nothing is compiled or
+        imported here, only the CUDA C source parsed: each module is imported
+        when its implementation is first used, so a module that cannot be
+        imported (e.g. a Pyccel source in a Python without Pyccel, such as
+        Pyodide, or a ``cupyx.jit`` kernel without CuPy) leaves the other
+        implementations usable.
 
         Parameters
         ----------
@@ -291,7 +360,12 @@ class Kernel:
         host_suffix : str, optional
             Module name suffix of the host kernel.
         cuda_suffix : str, optional
-            File name suffix of the CUDA kernel.
+            File name suffix of the CUDA C kernel. With the default,
+            ``<name>_cuda_c.cu`` is found too.
+        cupy_jit_suffix : str, optional
+            Module name suffix of the ``cupyx.jit`` kernel.
+        numba_cuda_suffix : str, optional
+            Module name suffix of the numba-cuda kernel.
         test_args_suffix : str or None, optional
             Module name suffix of the test arguments; None disables them.
         check_name_length : bool, optional
@@ -320,7 +394,9 @@ class Kernel:
             ``{"numpy": lambda: push_numpy}``.
         **cuda_options
             Passed on to :meth:`CudaKernel.from_file
-            <cunumpy.kernels.CudaKernel.from_file>`, e.g. ``block_size``.
+            <cunumpy.kernels.CudaKernel.from_file>`, e.g. ``block_size``;
+            ``block_size``, ``n_threads_from`` and ``debug`` also to the Python
+            device kernels.
 
         Returns
         -------
@@ -333,6 +409,8 @@ class Kernel:
             If `package` is not a package.
         FileNotFoundError
             If the folder has no host kernel module.
+        ValueError
+            If the folder has both ``<name>_cuda.cu`` and ``<name>_cuda_c.cu``.
 
         See Also
         --------
@@ -408,16 +486,42 @@ class Kernel:
                 host_options = {**(host_options or {}), "outputs": declared}
         if include_dirs is None:
             include_dirs = (_source_root(package),)
+        python_options = {
+            key: cuda_options[key]
+            for key in ("block_size", "n_threads_from", "debug")
+            if key in cuda_options
+        }
         cuda_options["include_dirs"] = tuple(include_dirs)
         cuda_path = folder / f"{name}{cuda_suffix}"
+        if cuda_suffix == "_cuda.cu":
+            alternative = folder / f"{name}{CUDA_C_SUFFIX}"
+            if alternative.is_file():
+                if cuda_path.is_file():
+                    raise ValueError(
+                        f"kernel folder {folder} has both {cuda_path.name} and "
+                        f"{alternative.name}; keep one",
+                    )
+                cuda_path = alternative
         cuda_kernel = (
             CudaKernel.from_file(cuda_path, name, **cuda_options)
             if cuda_path.is_file()
             else None
         )
+        python_kernels: dict[str, PythonDeviceKernel] = {}
+        for keyword, cls_, suffix in (
+            ("cupy_jit_kernel", CupyJitKernel, cupy_jit_suffix),
+            ("numba_cuda_kernel", NumbaCudaKernel, numba_cuda_suffix),
+        ):
+            if (folder / f"{name}{suffix}.py").is_file():
+                python_kernels[keyword] = cls_(
+                    name=name,
+                    loader=_import_loader(f"{package}.{name}{suffix}", name),
+                    **python_options,
+                )
         return cls(
             host,
             cuda_kernel,
+            **python_kernels,
             name=name,
             missing_cuda=missing_cuda,
             cuda_path=cuda_path,
@@ -442,13 +546,28 @@ class Kernel:
         return self._cuda_kernel
 
     @property
+    def cupy_jit_kernel(self) -> CupyJitKernel | None:
+        """The ``cupyx.jit`` kernel, or None if there is none."""
+        return self._device_kernels.get("cupy_jit")  # type: ignore[return-value]
+
+    @property
+    def numba_cuda_kernel(self) -> NumbaCudaKernel | None:
+        """The numba-cuda kernel, or None if there is none."""
+        return self._device_kernels.get("numba_cuda")  # type: ignore[return-value]
+
+    @property
+    def device_kernels(self) -> dict[str, DeviceKernel]:
+        """The device kernels by implementation name, in the order of automatic selection."""
+        return dict(self._device_kernels)
+
+    @property
     def has_cuda(self) -> bool:
-        """Whether there is a CUDA kernel."""
-        return self._cuda_kernel is not None
+        """Whether there is a device kernel (CUDA C or Python), loadable or not."""
+        return bool(self._device_kernels)
 
     @property
     def missing_cuda(self) -> str:
-        """Behavior on the device without CUDA kernel: ``"raise"`` or ``"fallback"``."""
+        """Behavior on the device without device kernel: ``"raise"`` or ``"fallback"``."""
         return self._missing_cuda
 
     @property
@@ -501,11 +620,11 @@ class Kernel:
         """Check that all implementations of the kernel take the same parameters.
 
         Compares the host parameter names with the parsed ``__global__``
-        signature, the numba and NumPy implementations of a
-        :class:`~cunumpy.kernels.HostImplementations` (nothing is compiled;
-        one that fails to import is skipped) and the fallback of a
-        :class:`~cunumpy.kernels.CompiledHostKernel`. A side without a
-        signature is skipped.
+        signature, the Python device kernels, the numba and NumPy
+        implementations of a :class:`~cunumpy.kernels.HostImplementations`
+        (nothing is compiled; one that fails to import is skipped) and the
+        fallback of a :class:`~cunumpy.kernels.CompiledHostKernel`. A side
+        without a signature is skipped.
 
         Raises
         ------
@@ -521,6 +640,15 @@ class Kernel:
                 raise ValueError(
                     f"kernel {self._name!r}: the host kernel takes "
                     f"({', '.join(host)}), the CUDA kernel ({', '.join(cuda)})",
+                )
+        for key, kernel in self._device_kernels.items():
+            if key == "cuda_c" or not kernel.available():
+                continue
+            parameters = kernel.parameters()
+            if parameters is not None and parameters != host:
+                raise ValueError(
+                    f"kernel {self._name!r}: the host kernel takes "
+                    f"({', '.join(host)}), the {key} kernel ({', '.join(parameters)})",
                 )
         function = self._host_kernel.kernel
         others: dict[str, Any] = {}
@@ -543,37 +671,58 @@ class Kernel:
 
     @property
     def implementations(self) -> tuple[str, ...]:  # numpydoc ignore=RT01
-        """The names of the implementations, e.g. ``("pyccel", "python", "cuda")``.
+        """The names of the implementations, e.g. ``("pyccel", "python", "cuda_c")``.
 
-        A host kernel that is not a :class:`~cunumpy.kernels.HostImplementations`
+        The host ones first, then the device ones (``"cuda_c"``,
+        ``"cupy_jit"``, ``"numba_cuda"``), whether they load or not. A host
+        kernel that is not a :class:`~cunumpy.kernels.HostImplementations`
         counts as ``"host"``.
         """
         function = self._host_kernel.kernel
         host = (
             function.names if isinstance(function, HostImplementations) else ("host",)
         )
-        return (*host, "cuda") if self._cuda_kernel is not None else host
+        return (*host, *self._device_kernels)
 
-    def _device_kernel(self) -> PyccelKernel | CudaKernel:
+    def _device_kernel(self) -> PyccelKernel | DeviceKernel:
         """Resolve the device selection, honoring fallback only in automatic mode."""
-        if self._cuda_kernel is not None:
-            return self._cuda_kernel
-        if get_device_kernel_implementation() == "cuda":
+        setting = get_device_kernel_implementation()
+        if setting not in (None, "cuda"):
+            kernel = self._device_kernels.get(setting)
+            if kernel is None:
+                raise LookupError(
+                    f"kernel {self._name!r} has no {setting!r} implementation "
+                    "(explicitly selected device implementation)",
+                )
+            if isinstance(kernel, PythonDeviceKernel) and not kernel.available():
+                raise LookupError(
+                    f"the {setting!r} implementation of kernel {self._name!r} "
+                    f"cannot be loaded{_load_error(kernel)}",
+                ) from kernel.error
+            return kernel
+        for key, kernel in self._device_kernels.items():
+            if key == "cuda_c" or kernel.available():
+                return kernel
+        failed = "".join(
+            f"; {key} cannot be loaded{_load_error(kernel)}"
+            for key, kernel in self._device_kernels.items()
+        )
+        if setting == "cuda":
             raise LookupError(
                 f"kernel {self._name!r} has no 'cuda' implementation "
-                "(explicitly selected device implementation)",
+                f"(explicitly selected device implementation){failed}",
             )
         if self._missing_cuda == "raise":
             expected = (
                 "" if self._cuda_path is None else f" (expected {self._cuda_path})"
             )
             raise NotImplementedError(
-                f"No CUDA version of kernel {self._name!r}{expected}.",
+                f"No CUDA version of kernel {self._name!r}{expected}{failed}.",
             )
         if not self._warned:
             warnings.warn(
-                f"No CUDA version of kernel {self._name!r}: calling the host kernel, "
-                "which copies its arrays to the host and back at every call.",
+                f"No CUDA version of kernel {self._name!r}{failed}: calling the host "
+                "kernel, which copies its arrays to the host and back at every call.",
                 RuntimeWarning,
                 stacklevel=3,
             )
@@ -594,12 +743,14 @@ class Kernel:
             For host arguments the implementation chosen by
             :func:`~cunumpy.kernels.set_host_kernel_implementation` or the
             default (loaded now), or ``"host"`` for a plain host kernel. For
-            device arguments ``"cuda"``, or ``"host"`` for the fallback.
+            device arguments ``"cuda_c"``, ``"cupy_jit"`` or ``"numba_cuda"``,
+            or ``"host"`` for the fallback.
 
         Raises
         ------
         LookupError
-            With `device`, if CUDA is explicitly selected but missing.
+            With `device`, if a device implementation is explicitly selected
+            but missing.
         NotImplementedError
             With `device`, if there is no CUDA kernel and
             ``missing_cuda="raise"``.
@@ -610,27 +761,32 @@ class Kernel:
         'host'
         """
         if device:
-            return "cuda" if self._device_kernel() is self._cuda_kernel else "host"
+            kernel = self._device_kernel()
+            if kernel is self._host_kernel:
+                return "host"
+            return next(k for k, v in self._device_kernels.items() if v is kernel)
         function = self._host_kernel.kernel
         return (
             function.selected() if isinstance(function, HostImplementations) else "host"
         )
 
-    def get_kernel(self) -> PyccelKernel | CudaKernel:
+    def get_kernel(self) -> PyccelKernel | DeviceKernel:
         """Return the kernel for the active backend.
 
         Call this once at setup to fail early if a CUDA kernel is missing.
 
         Returns
         -------
-        PyccelKernel or CudaKernel
-            The host kernel on the NumPy backend; on the CuPy backend the CUDA
-            kernel, or the host kernel with ``missing_cuda="fallback"``.
+        PyccelKernel, CudaKernel, CupyJitKernel or NumbaCudaKernel
+            The host kernel on the NumPy backend; on the CuPy backend the
+            selected device kernel, or the host kernel with
+            ``missing_cuda="fallback"``.
 
         Raises
         ------
         LookupError
-            On the CuPy backend, if CUDA is explicitly selected but missing.
+            On the CuPy backend, if a device implementation is explicitly
+            selected but missing.
         NotImplementedError
             On the CuPy backend, if there is no CUDA kernel and
             ``missing_cuda="raise"``.
@@ -647,9 +803,9 @@ class Kernel:
         up for many small calls, e.g. one per patch and step. Resolve once, with
         arguments like those of the calls, and call the result in the loop. For
         host arguments the result is the plain host function (e.g. the
-        Pyccel-compiled one); for device arguments the
-        :class:`~cunumpy.kernels.CudaKernel`, which takes the launch keywords
-        (see also :meth:`CudaKernel.bind <cunumpy.kernels.CudaKernel.bind>`).
+        Pyccel-compiled one); for device arguments the selected device kernel
+        (e.g. the :class:`~cunumpy.kernels.CudaKernel`), which takes the launch
+        keywords (see also :meth:`CudaKernel.bind <cunumpy.kernels.CudaKernel.bind>`).
         The result skips the ``cunumpy.kernel.<name>`` profiling region and the
         transfer counters. Resolve again after changing the backend, the host or
         device implementation, or the kind of arguments.
@@ -695,17 +851,20 @@ class Kernel:
         return kernel
 
     def compile(self) -> bool:
-        """Compile the CUDA kernel now, if there is one.
+        """Compile the device kernels now, if there are any.
+
+        The CUDA C kernel is compiled; the Python ones are loaded and wrapped
+        in their JIT, which compiles them at their first launch with each set
+        of argument types.
 
         Returns
         -------
         bool
-            Whether there is a CUDA kernel (and it was compiled).
+            Whether there is a device kernel (and all were compiled).
         """
-        if self._cuda_kernel is None:
-            return False
-        self._cuda_kernel.compile()
-        return True
+        for kernel in self._device_kernels.values():
+            kernel.compile()
+        return bool(self._device_kernels)
 
     def __call__(
         self,
@@ -746,7 +905,7 @@ class Kernel:
                 on_device = get_backend() == "cupy"
                 kernel = self.get_kernel()
             if kernel is self._host_kernel:
-                if _COUNTERS and self._cuda_kernel is None and on_device:
+                if _COUNTERS and on_device:
                     _record(
                         "fallback",
                         f"Kernel {self._name!r} has no CUDA kernel: host kernel "
@@ -776,8 +935,9 @@ class Kernel:
             )
 
     def __repr__(self) -> str:
+        device = ", ".join(self._device_kernels) or "none"
         return (
-            f"Kernel(name={self._name!r}, cuda={self._cuda_kernel is not None}, "
+            f"Kernel(name={self._name!r}, device=({device}), "
             f"missing_cuda={self._missing_cuda!r})"
         )
 
@@ -813,6 +973,8 @@ class KernelCatalog(Mapping):
         *,
         host_suffix: str = "_kernels",
         cuda_suffix: str = "_cuda.cu",
+        cupy_jit_suffix: str = "_cupy_jit",
+        numba_cuda_suffix: str = "_numba_cuda",
         test_args_suffix: str | None = "_test_args",
         check_name_length: bool = True,
         missing_cuda: str = "raise",
@@ -841,7 +1003,9 @@ class KernelCatalog(Mapping):
         a kernel (see :meth:`Kernel.from_folder
         <cunumpy.kernels.Kernel.from_folder>`): the function ``<name>`` of that
         module is the host kernel, the ``__global__`` function ``<name>`` of
-        ``<name><cuda_suffix>``, if present, the CUDA kernel. Other
+        ``<name><cuda_suffix>``, if present, the CUDA C kernel, and the
+        function ``<name>`` of ``<name><cupy_jit_suffix>.py`` and
+        ``<name><numba_cuda_suffix>.py`` the Python device kernels. Other
         ``__global__`` functions are ignored; load them with
         :meth:`CudaKernel.all_from_file <cunumpy.kernels.CudaKernel.all_from_file>`.
 
@@ -852,7 +1016,12 @@ class KernelCatalog(Mapping):
         host_suffix : str, optional
             Module name suffix of the host kernels.
         cuda_suffix : str, optional
-            File name suffix of the CUDA kernels.
+            File name suffix of the CUDA C kernels (with the default,
+            ``<name>_cuda_c.cu`` is found too).
+        cupy_jit_suffix : str, optional
+            Module name suffix of the ``cupyx.jit`` kernels.
+        numba_cuda_suffix : str, optional
+            Module name suffix of the numba-cuda kernels.
         test_args_suffix : str or None, optional
             Module name suffix of the test arguments: a module
             ``<name><test_args_suffix>.py`` in a kernel folder is recorded as
@@ -912,6 +1081,8 @@ class KernelCatalog(Mapping):
                 f"{package}.{name}",
                 host_suffix=host_suffix,
                 cuda_suffix=cuda_suffix,
+                cupy_jit_suffix=cupy_jit_suffix,
+                numba_cuda_suffix=numba_cuda_suffix,
                 test_args_suffix=test_args_suffix,
                 check_name_length=check_name_length,
                 missing_cuda=missing_cuda,
@@ -981,12 +1152,12 @@ class KernelCatalog(Mapping):
 
     @property
     def with_cuda(self) -> list[str]:
-        """The names of the kernels with a CUDA kernel."""
+        """The names of the kernels with a device kernel (CUDA C or Python)."""
         return [name for name, kernel in self._kernels.items() if kernel.has_cuda]
 
     @property
     def without_cuda(self) -> list[str]:
-        """The names of the kernels without a CUDA kernel, i.e. still to port."""
+        """The names of the kernels without a device kernel, i.e. still to port."""
         return [name for name, kernel in self._kernels.items() if not kernel.has_cuda]
 
     def parity_cases(self) -> list[tuple[str, Kernel]]:
@@ -1033,7 +1204,7 @@ class KernelCatalog(Mapping):
 
     @sp.profile("cunumpy.KernelCatalog.compile_all", tags=_PROFILE_TAGS)
     def compile_all(self, jobs: int | None = 1) -> list[str]:
-        """Compile all CUDA kernels now, e.g. at setup instead of in the first step.
+        """Compile all device kernels now, e.g. at setup instead of in the first step.
 
         CuPy caches compilations on disk, so later runs mostly load them. All
         kernels are compiled even if one fails; the first error is raised

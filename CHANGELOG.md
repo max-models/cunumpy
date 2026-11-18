@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- CUDA kernels written in Python: `xp.kernels.CupyJitKernel` (`cupyx.jit`) and
+  `xp.kernels.NumbaCudaKernel` (numba-cuda), launched like a `CudaKernel` (`n_threads`, `grid`,
+  `block`, `shared_mem`, `stream`, launch size from the first array). Device arrays only (NumPy
+  arrays raise instead of being copied), `CudaArguments` flattened, the number of arguments
+  checked; numba-cuda launches on CuPy's current stream. A `Kernel` takes them as
+  `cupy_jit_kernel=` and `numba_cuda_kernel=`, and kernel folders as `<name>_cupy_jit.py` and
+  `<name>_numba_cuda.py` (imported at the first device call). On the device a call runs the first
+  of `"cuda_c"`, `"cupy_jit"`, `"numba_cuda"` that loads; `set_device_kernel_implementation`
+  takes these names (`DEVICE_IMPLEMENTATIONS`) besides `"cuda"` (any of them, no host fallback).
+  `assert_kernels_agree` compares every device implementation with the host kernel
+  (`implementations=` to choose). The fake CuPy emulates `cupyx.jit` on the CPU, and numba's
+  simulator (`NUMBA_ENABLE_CUDASIM=1`, `kernel_testing.numba_simulator_active()`) runs
+  numba-cuda kernels on fake CuPy arrays, so both kinds are tested without a GPU.
+- A CUDA C kernel in a kernel folder may also be named `<name>_cuda_c.cu`.
 - Pyccel kernels can import functions from other modules, also of other packages
   (`from other_pkg.kernels.boris_pyccel import boris_rotate`): `PyccelCache` builds those modules
   with the kernel (copied under flat names, imports rewritten, so Pyccel also inlines their
@@ -16,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rebuilds the kernel. `PyccelCache.dependencies(module)` lists them in build order.
 
 ### Changed
+- The CUDA C implementation of a `Kernel` is called `"cuda_c"` in `Kernel.implementations` and
+  `Kernel.selected(device=True)` (was `"cuda"`); `"cuda"` remains the setting that requires any
+  device implementation. `Kernel.has_cuda`, `KernelCatalog.with_cuda` and `parity_cases` count
+  Python device kernels too, and the `repr` of a `Kernel` lists its device implementations.
 - `Kernel.from_folder` (and `KernelPackage.from_folder`, `KernelCatalog.from_package`) no longer
   imports the host kernel module (`<name>_pyccel.py`) when it builds the kernel, only when its
   `"python"` or `"pyccel"` implementation is first used. A host module that cannot be imported,

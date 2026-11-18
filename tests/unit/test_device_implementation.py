@@ -12,7 +12,12 @@ import cunumpy as xp
 
 def test_device_setting_validation_and_context_restoration():
     previous = xp.kernels.get_device_kernel_implementation()
-    assert xp.kernels.DEVICE_IMPLEMENTATIONS == ("cuda",)
+    assert xp.kernels.DEVICE_IMPLEMENTATIONS == (
+        "cuda",
+        "cuda_c",
+        "cupy_jit",
+        "numba_cuda",
+    )
     with xp.kernels.use_device_kernel_implementation(None):
         assert xp.kernels.get_device_kernel_implementation() is None
         xp.kernels.set_device_kernel_implementation("cuda")
