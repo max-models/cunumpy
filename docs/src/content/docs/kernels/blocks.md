@@ -1,6 +1,6 @@
 ---
 title: "Shared kernel blocks"
-description: "Small functions of scalars that the kernels of several packages share, in every backend: where they live, how each backend imports them, the rules that keep them fast and safe, and the generated versions."
+description: "Small functions of scalars that the kernels of several packages share, in every backend: where they live, how each backend imports them, and the rules that keep them fast, safe and in step."
 ---
 
 A fused kernel does several steps in one pass over the markers: it gathers the field at a
@@ -55,31 +55,10 @@ second code needs exactly that combination.
 - **Fuse only where a profile asks for it,** and profile a change to a block in the kernels that
   use it (3-5 runs per side).
 
-## Generated versions: `KernelBlock`
+## One source of truth
 
-The Pyccel version of an `@inline` block is enough to write the others: `KernelBlock` translates
-it to a CUDA `__device__` function, a Metal function and a NumPy function.
-
-```python
-import cunumpy as xp
-from mpiparticles.kernels.boris_pyccel import boris_update
-
-block = xp.kernels.KernelBlock(boris_update)
-block.cuda("mpiparticles_boris")  # source of a __device__ function (double precision)
-block.metal()  # source of a Metal function (float32), for header=
-update = block.numpy()  # a NumPy function, elementwise on arrays
-vx, vy, vz = update(vx, vy, vz, kx, ky, kz, tx, ty, tz)
-```
-
-The block is one `return` of an expression or a tuple of expressions over scalar arguments
-(`float`, `int`, `bool`): arithmetic, comparisons (also chained), `and`, `or`, `not`,
-conditional expressions, `int(x)` (truncation, as in Python and C), `float(x)`, `sqrt` and
-`abs`. One result is the return value; several are written through pointers (CUDA) or
-`thread` references (Metal) after the arguments. Subexpressions used more than once are
-computed once into temporaries (NumPy does not merge them by itself). `//` of two integers is
-refused, since Python floors and C truncates.
-
-On mpiparticles' Boris update the generated CUDA function gives the same results bit for bit
-as the hand-written `boris.cuh` (on the emulator), the NumPy function the same results to
-3e-15 at the same speed, and the Metal function the same results to float32 precision (through
-a C++ stand-in for Metal).
+The Pyccel version of a block is plain Python as well, so it is the reference for the
+others: a test runs the hand-written CUDA (on the emulator), NumPy and Metal versions and
+compares them with the Pyccel block evaluated in Python, marker by marker (mpiparticles'
+`tests/test_kernels.py` does this for the Boris update). The versions cannot drift apart
+without a failing test, and no translator between the languages is needed.

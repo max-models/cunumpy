@@ -25,10 +25,6 @@ the builds on disk, keyed on their source, for later processes: pass it as
 the cache and the launch options shared by the kernel folders of one package;
 :func:`source_roots` finds the headers of other packages for ``include_dirs``.
 
-A :class:`KernelBlock` generates the CUDA, Metal and NumPy versions of a scalar
-block (an ``@inline`` Pyccel function shared by the kernels of several packages)
-from its Pyccel source.
-
 A :class:`MetalKernel` runs a Metal Shading Language kernel on the GPU of an
 Apple silicon Mac through MLX (``pip install 'cunumpy[metal]'``), on NumPy
 float32 arrays.
@@ -39,7 +35,6 @@ mode) in :mod:`cunumpy.cuda`, and the pytest helpers for kernel pairs in
 :mod:`cunumpy.kernel_testing`.
 """
 
-from cunumpy._blocks import KernelBlock
 from cunumpy._cuda_kernel import BoundLaunch, CudaKernel, CudaKernelVariants
 from cunumpy._dispatch import Kernel, KernelCatalog
 from cunumpy._fusion import fuse
@@ -73,7 +68,6 @@ __all__ = [
     "CudaKernelVariants",
     "HostImplementations",
     "Kernel",
-    "KernelBlock",
     "KernelCatalog",
     "KernelPackage",
     "MetalKernel",
