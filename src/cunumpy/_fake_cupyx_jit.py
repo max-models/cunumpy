@@ -74,8 +74,14 @@ def _gridsize(ndim: int) -> int | tuple[int, ...]:
     return size[0] if ndim == 1 else size
 
 
-def _atomic(update: Callable[[Any, Any], Any]) -> Callable[..., Any]:
+def _atomic(
+    name: str, dtypes: tuple[str, ...], update: Callable[..., Any]
+) -> Callable[..., Any]:
     def atomic(array: Any, index: Any, value: Any, *rest: Any) -> Any:
+        dtype = getattr(array, "dtype", None)
+        if dtype is not None and dtype.name not in dtypes:
+            # as CuPy, which has no atomics for e.g. int64 (atomic_add: uint64)
+            raise TypeError(f"`{name}` does not support {dtype} input.")
         old = array[index].copy() if hasattr(array[index], "copy") else array[index]
         array[index] = update(old, value, *rest)
         return old
@@ -166,13 +172,23 @@ def make_module(cupy: Any) -> types.ModuleType:
     jit.grid = _grid
     jit.gridsize = _gridsize
     jit.range = builtins.range
-    jit.atomic_add = _atomic(lambda old, value: old + value)
-    jit.atomic_sub = _atomic(lambda old, value: old - value)
-    jit.atomic_max = _atomic(max)
-    jit.atomic_min = _atomic(min)
-    jit.atomic_exch = _atomic(lambda old, value: value)
+    # the dtypes CuPy's atomics take (CuPy 14, CUDA)
+    ints = ("int32", "uint32", "uint64")
+    jit.atomic_add = _atomic(
+        "atomicAdd",
+        (*ints, "float16", "float32", "float64"),
+        lambda old, value: old + value,
+    )
+    jit.atomic_sub = _atomic("atomicSub", ("int32", "uint32"), lambda o, v: o - v)
+    jit.atomic_max = _atomic("atomicMax", ints, max)
+    jit.atomic_min = _atomic("atomicMin", ints, min)
+    jit.atomic_exch = _atomic(
+        "atomicExch", (*ints, "float32"), lambda old, value: value
+    )
     jit.atomic_cas = _atomic(
-        lambda old, compare, value: value if old == compare else old
+        "atomicCAS",
+        (*ints, "uint16"),
+        lambda old, compare, value: value if old == compare else old,
     )
     for name in ("syncthreads", "syncwarp", "shared_memory", "shfl_sync", "laneid"):
         setattr(jit, name, _not_emulated(name))
