@@ -757,7 +757,8 @@ def test_cupy_jit_kernels_on_the_gpu():
     check_histogram(CupyJitKernel(jit_kernels.histogram, block_size=(8, 8)))
     # a plain function is compiled by cupyx.jit at the first launch
     plain = CupyJitKernel(jit_kernels.scale._func)
-    plain(*make_scale_args("cupy", 0))
+    with xp.use_backend("cupy"):  # make_scale_args builds arrays on the active backend
+        plain(*make_scale_args("cupy", 0))
     assert plain.is_compiled
 
 
@@ -777,5 +778,6 @@ def test_numba_cuda_kernels_on_the_gpu():
     check_streams_and_rules(kernel.numba_cuda_kernel)
     check_histogram(NumbaCudaKernel(numba_kernels.histogram, block_size=(8, 8)))
     plain = NumbaCudaKernel(numba_kernels.scale.py_func)
-    plain(*make_scale_args("cupy", 0))
+    with xp.use_backend("cupy"):  # make_scale_args builds arrays on the active backend
+        plain(*make_scale_args("cupy", 0))
     assert plain.is_compiled
