@@ -292,7 +292,7 @@ CuPy. Does not compile anything.
 k = xp.kernels.CudaKernel(source, name, *, block_size=128, options=(), include_dirs=(),
                   source_dir=None, structs=(), template_args=None,
                   check_signature=True, debug=None)
-k = xp.kernels.CudaKernel.from_file("push/push_cuda.cu")           # name "push"
+k = xp.kernels.CudaKernel.from_file("push/push_cuda.cu")           # name "push" (also push_cuda_c.cu, push.cu, or a file's only kernel)
 ks = xp.kernels.CudaKernel.all_from_file("ops.cu")                 # dict name -> kernel
 k(*args, n_threads=None, grid=None, block=None, shared_mem=0, stream=None)
 k.compile(log_stream=None); k.recompile(log_stream=None)

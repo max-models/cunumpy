@@ -35,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rebuilds the kernel. `PyccelCache.dependencies(module)` lists them in build order.
 
 ### Changed
+- `CudaKernel.from_file(path)` without a name works with any file name: it takes the file name
+  minus `_cuda_c.cu`, `_cuda.cu` or `.cu` if the file defines that kernel, else the file's only
+  `__global__` function, and raises listing the kernels otherwise. `suffix=` (now None by default)
+  still requires that suffix and strips it.
 - The CUDA C implementation of a `Kernel` is called `"cuda_c"` in `Kernel.implementations` and
   `Kernel.selected(device=True)` (was `"cuda"`); `"cuda"` remains the setting that requires any
   device implementation. `Kernel.has_cuda`, `KernelCatalog.with_cuda` and `parity_cases` count

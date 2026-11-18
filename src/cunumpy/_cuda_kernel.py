@@ -470,6 +470,34 @@ def cuda_kernel_names(source: str) -> list[str]:
     return list(dict.fromkeys(_GLOBAL_FUNCTION.findall(_strip_comments(source))))
 
 
+CUDA_FILE_SUFFIXES = ("_cuda_c.cu", "_cuda.cu", ".cu")
+"""File name suffixes stripped to find a kernel's name, longest first."""
+
+
+def _kernel_name_from_file(file_name: str, source: str, suffix: str | None) -> str:
+    """Return the kernel of a CUDA file named by its file name or its only kernel."""
+    if suffix is not None:
+        if not file_name.endswith(suffix):
+            raise ValueError(
+                f"{file_name} does not end with {suffix!r}; pass the kernel name",
+            )
+        return file_name[: -len(suffix)]
+    names = cuda_kernel_names(source)
+    stem = next(
+        (file_name[: -len(s)] for s in CUDA_FILE_SUFFIXES if file_name.endswith(s)),
+        None,
+    )
+    if stem in names:
+        return stem
+    if len(names) == 1:
+        return names[0]
+    found = ", ".join(names) if names else "none"
+    raise ValueError(
+        f"cannot tell the kernel of {file_name}: no __global__ function named "
+        f"{stem!r}, and it defines {len(names)} ({found}); pass the kernel name",
+    )
+
+
 def _compile_in_threads(
     compilers: Mapping[Hashable, Callable[[], Any]],
     jobs: int | None,
@@ -2195,20 +2223,26 @@ class CudaKernel(_LaunchConfig):
         path: str | Path,
         name: str | None = None,
         *,
-        suffix: str = "_cuda.cu",
+        suffix: str | None = None,
         **kwargs: Any,
     ) -> CudaKernel:
         """Create a kernel from a CUDA source file.
+
+        Without `name` the kernel is found from the file: the file name without
+        its suffix (``_cuda_c.cu``, ``_cuda.cu`` or ``.cu``: ``axpy_cuda.cu``,
+        ``axpy_cuda_c.cu`` and ``axpy.cu`` give ``axpy``) if the file defines a
+        ``__global__`` function of that name, else the file's only
+        ``__global__`` function, whatever the file is called.
 
         Parameters
         ----------
         path : str or Path
             Path of the CUDA source file.
         name : str, optional
-            Name of the kernel function; by default the file name without
-            `suffix` (``axpy_cuda.cu`` -> ``axpy``).
+            Name of the kernel function; by default found from the file.
         suffix : str, optional
-            File name suffix stripped to get the default name.
+            Strip exactly this file name suffix to get the default name, and
+            raise if the file name does not end with it.
         **kwargs
             Passed on to :class:`CudaKernel`. The file's directory is added
             to `include_dirs` and is the `source_dir`.
@@ -2221,22 +2255,21 @@ class CudaKernel(_LaunchConfig):
         Raises
         ------
         ValueError
-            If `name` is not given and the file name does not end in `suffix`.
+            If `name` is not given and the kernel cannot be found: the file
+            does not end in `suffix`, or neither its name nor a single
+            ``__global__`` function names it.
 
         Examples
         --------
         >>> push = xp.kernels.CudaKernel.from_file("push/push_cuda.cu")  # doctest: +SKIP
         """
         path = Path(path)
+        source = path.read_text()
         if name is None:
-            if not path.name.endswith(suffix):
-                raise ValueError(
-                    f"{path.name} does not end with {suffix!r}; pass the kernel name",
-                )
-            name = path.name[: -len(suffix)]
+            name = _kernel_name_from_file(path.name, source, suffix)
         include_dirs = (path.parent, *kwargs.pop("include_dirs", ()))
         kwargs.setdefault("source_dir", path.parent)
-        return cls(path.read_text(), name, include_dirs=include_dirs, **kwargs)
+        return cls(source, name, include_dirs=include_dirs, **kwargs)
 
     @classmethod
     def all_from_file(cls, path: str | Path, **kwargs: Any) -> dict[str, CudaKernel]:
