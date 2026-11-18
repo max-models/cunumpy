@@ -2,6 +2,7 @@
 
 import importlib
 import importlib.util
+import os
 import sys
 import textwrap
 import types
@@ -15,7 +16,9 @@ from cunumpy import _dispatch as dispatch_module
 from cunumpy.arguments import CudaArguments, CudaStruct
 from cunumpy.kernel_testing import (
     assert_kernels_agree,
+    fake_cupy_active,
     numba_simulator_active,
+    requires_cupy,
     run_in_fake_cupy_subprocess,
 )
 from cunumpy.kernels import (
@@ -555,14 +558,17 @@ FAKE_CUPY_JIT = textwrap.dedent(
             assert jit.blockDim.x == 4 and jit.gridDim.y == 2 and nx == 8 and ny == 6
 
     cells = cupy.asarray(np.arange(20).reshape(5, 4) % 3)
-    counts = cupy.zeros(3, dtype=np.int64)
+    counts = cupy.zeros(3, dtype=np.int32)
     CupyJitKernel(histogram, block_size=(4, 3))(cells, counts)
     assert counts.get().tolist() == [7, 7, 6]
     histogram[(2, 2), (4, 3)](cells, counts)
     assert counts.get().sum() == 40
 
     old = cupy.zeros(1)
-    assert jit.atomic_exch(old.get(), 0, 5.0) == 0.0 and jit.atomic_max([1], 0, 3) == 1
+    assert jit.atomic_exch(old.get().astype(np.float32), 0, 5.0) == 0.0
+    assert jit.atomic_max([1], 0, 3) == 1
+    with pytest.raises(TypeError, match="does not support int64"):
+        jit.atomic_add(np.zeros(1, dtype=np.int64), 0, 1)  # as in CuPy
     assert jit.atomic_cas([1], 0, 1, 7) == 1 and jit.atomic_min([4], 0, 2) == 4
     assert jit.atomic_sub([4], 0, 1) == 4
 
@@ -659,3 +665,117 @@ def test_the_emulated_jit_in_process(monkeypatch):
     assert jit.atomic_add([1], 0, 2) == 1 and jit.range is range
     with pytest.raises(NotImplementedError, match="jit.shared_memory"):
         jit.shared_memory(np.float64, 4)
+
+
+# -- on a GPU -----------------------------------------------------------------------
+
+HERE = Path(__file__).resolve().parent
+N_GPU = 1024  # a multiple of the block size: SCALE_CUDA has no bounds check
+
+
+def load_gpu_kernels(stem):
+    """Import a module of GPU kernels next to this file (they import CuPy or numba)."""
+    spec = importlib.util.spec_from_file_location(stem, HERE / f"{stem}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def numba_cuda_on_gpu():
+    """Skip without CuPy, a GPU or numba-cuda; fail instead with CUNUMPY_REQUIRE_NUMBA_CUDA=1."""
+    reason = None
+    if fake_cupy_active() or not xp.cupy_available():
+        reason = "CuPy/GPU not available"
+    else:
+        try:
+            from numba import cuda
+
+            if not cuda.is_available():
+                reason = "numba-cuda finds no GPU"
+        except ImportError:
+            reason = "numba-cuda not installed"
+    if reason is not None:
+        if os.environ.get("CUNUMPY_REQUIRE_NUMBA_CUDA", "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }:
+            pytest.fail(f"CUNUMPY_REQUIRE_NUMBA_CUDA is set, but {reason}")
+        pytest.skip(reason)
+    return load_gpu_kernels("gpu_kernels_numba_cuda")
+
+
+def make_scale_args(backend, seed):
+    x = xp.to_cunumpy(np.random.default_rng(seed).random(N_GPU))
+    return x, 3.0, xp.zeros(N_GPU)
+
+
+def check_histogram(kernel):
+    import cupy as cp
+
+    cells_host = np.random.default_rng(1).integers(0, 5, size=(40, 30))
+    counts = cp.zeros(5, dtype=np.int32)  # cupyx.jit has no int64 atomic_add
+    kernel(cp.asarray(cells_host), counts)  # a 2D launch from the shape of cells
+    np.testing.assert_array_equal(
+        counts.get(), np.bincount(cells_host.ravel(), minlength=5)
+    )
+
+
+def check_streams_and_rules(kernel):
+    import cupy as cp
+
+    stream = cp.cuda.Stream(non_blocking=True)
+    with stream:  # CuPy work before and after the launch, on the current stream
+        x = cp.arange(float(N_GPU))
+        out = cp.empty_like(x)
+        kernel(x, 2.0, out)
+        total = out.sum()
+    stream.synchronize()
+    assert float(total) == 2.0 * N_GPU * (N_GPU - 1) / 2
+    again = cp.zeros_like(x)
+    kernel(x, 3.0, again, stream=stream)
+    stream.synchronize()
+    np.testing.assert_array_equal(again.get(), 3.0 * x.get())
+    kernel(CudaArguments(x, 4.0), again)  # flattened
+    np.testing.assert_array_equal(again.get(), 4.0 * x.get())
+    with pytest.raises(TypeError, match="argument 0 is a NumPy array"):
+        kernel(np.ones(4), 1.0, cp.zeros(4))
+    with xp.cuda.cuda_debug(True):  # synchronizes after the launch
+        kernel(x, 5.0, again)
+    np.testing.assert_array_equal(again.get(), 5.0 * x.get())
+
+
+@requires_cupy
+def test_cupy_jit_kernels_on_the_gpu():
+    jit_kernels = load_gpu_kernels("gpu_kernels_cupy_jit")
+    kernel = Kernel(
+        scale, CudaKernel(SCALE_CUDA, "scale"), cupy_jit_kernel=jit_kernels.scale
+    )
+    assert kernel.selected(device=True) == "cuda_c"
+    assert_kernels_agree(kernel, make_scale_args, outputs=[2])  # cuda_c and cupy_jit
+    check_streams_and_rules(kernel.cupy_jit_kernel)
+    check_histogram(CupyJitKernel(jit_kernels.histogram, block_size=(8, 8)))
+    # a plain function is compiled by cupyx.jit at the first launch
+    plain = CupyJitKernel(jit_kernels.scale._func)
+    plain(*make_scale_args("cupy", 0))
+    assert plain.is_compiled
+
+
+def test_numba_cuda_kernels_on_the_gpu():
+    numba_kernels = numba_cuda_on_gpu()
+    jit_kernels = load_gpu_kernels("gpu_kernels_cupy_jit")
+    kernel = Kernel(
+        scale,
+        CudaKernel(SCALE_CUDA, "scale"),
+        cupy_jit_kernel=jit_kernels.scale,
+        numba_cuda_kernel=numba_kernels.scale,
+    )
+    assert kernel.implementations[-3:] == ("cuda_c", "cupy_jit", "numba_cuda")
+    assert_kernels_agree(kernel, make_scale_args, outputs=[2])  # all three
+    with xp.kernels.use_device_kernel_implementation("numba_cuda"):
+        assert kernel.selected(device=True) == "numba_cuda"
+    check_streams_and_rules(kernel.numba_cuda_kernel)
+    check_histogram(NumbaCudaKernel(numba_kernels.histogram, block_size=(8, 8)))
+    plain = NumbaCudaKernel(numba_kernels.scale.py_func)
+    plain(*make_scale_args("cupy", 0))
+    assert plain.is_compiled
