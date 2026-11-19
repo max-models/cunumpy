@@ -1,0 +1,30 @@
+# Weak scaling of a particle step on cunumpy's algorithms (particles.py), 200 000 markers per rank.
+#
+#   scope-profiler jobs run profiling/particles_weak.toml --upload   # on a cluster: SLURM jobs
+#   scope-profiler jobs run profiling/particles_weak.toml --scheduler dry-run
+#
+# --upload pushes every finished run to the profiling catalogue, where the Profiling section of
+# the docs picks it up (profiling.yaml), and starts a docs build ([store] below).
+
+[case]
+label = "particles_weak"
+name = "Particle step, weak scaling"
+description = "Push, neighbour exchange, Morton sort and deposit, 200 000 markers per rank."
+command = ["python", "{case_dir}/particles.py", "--profile-out", "{profile}", "{args}"]
+inputs = ["particles.py"]
+env = { OMP_NUM_THREADS = "1", OPENBLAS_NUM_THREADS = "1" }
+metadata = { markers_per_rank = 200000, steps = 20 }
+
+[[launch]]
+ntasks = [1, 2, 4, 8, 16, 32, 64]
+args = ["--markers", "200000", "--steps", "20"]
+sbatch = { time = "00:10:00" }
+
+[store]
+url = "https://github.com/max-models/profiling-catalog.git"
+path = "cunumpy/{label}"
+# The catalogue is public: host names and private paths are left out of the packaged metadata.
+public = true
+# Rebuild the docs after every push, so the Profiling section shows the new run at once (needs a
+# logged-in `gh`; without one the run is pushed anyway and the next docs build shows it).
+after_push = ["gh workflow run docs.yml -R max-models/cunumpy --ref devel"]

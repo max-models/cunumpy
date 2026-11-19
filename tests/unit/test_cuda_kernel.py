@@ -90,14 +90,13 @@ class FakeDeviceArray:
         self.data = SimpleNamespace(ptr=ptr)
         self.shape = tuple(shape)
         self.ndim = len(self.shape)
-        # C-contiguous strides, computed without allocating an array of this shape.
+        # The C-order strides of the shape, computed: a fake array stands for device memory
+        # that is never allocated, and may be far larger than the runner's memory.
         c_strides, stride = [], self.dtype.itemsize
         for n in reversed(self.shape):
             c_strides.insert(0, stride)
             stride *= n
-        if strides is None:
-            strides = c_strides
-        self.strides = tuple(strides)
+        self.strides = tuple(c_strides if strides is None else strides)
         c_contiguous = self.strides == tuple(c_strides)
         self.flags = SimpleNamespace(c_contiguous=c_contiguous)
         if flags is not None:
@@ -317,11 +316,35 @@ def test_from_file(tmp_path):
     assert f"-I{tmp_path}" in kernel.options
     assert kernel.compile_options()[-1] == f"-I{cuda_include_dir()}"
 
+    # any suffix: the file's only kernel
     other = tmp_path / "saxpy.cu"
     other.write_text(AXPY)
-    with pytest.raises(ValueError, match="does not end with"):
-        CudaKernel.from_file(other)
+    assert CudaKernel.from_file(other).name == "axpy"
     assert CudaKernel.from_file(other, "axpy").name == "axpy"
+    with pytest.raises(ValueError, match="does not end with '_cuda.cu'"):
+        CudaKernel.from_file(other, suffix="_cuda.cu")
+    for file_name in ("axpy_cuda_c.cu", "axpy.cu", "axpy_gpu.cuh"):
+        (tmp_path / file_name).write_text(AXPY)
+        assert CudaKernel.from_file(tmp_path / file_name).name == "axpy"
+
+
+def test_from_file_with_several_kernels(tmp_path):
+    source = AXPY + AXPY.replace("axpy", "scale")
+    for file_name in ("scale_cuda.cu", "scale_cuda_c.cu", "scale.cu"):
+        (tmp_path / file_name).write_text(source)
+        assert CudaKernel.from_file(tmp_path / file_name).name == "scale"
+    (tmp_path / "both.cu").write_text(source)
+    with pytest.raises(
+        ValueError, match=r"no __global__ function named 'both'.*2 \(axpy, scale\)"
+    ):
+        CudaKernel.from_file(tmp_path / "both.cu")
+    (tmp_path / "axpy_gpu.cu").write_text(source)
+    assert (
+        CudaKernel.from_file(tmp_path / "axpy_gpu.cu", suffix="_gpu.cu").name == "axpy"
+    )
+    (tmp_path / "empty.cu").write_text("// nothing here")
+    with pytest.raises(ValueError, match=r"defines 0 \(none\)"):
+        CudaKernel.from_file(tmp_path / "empty.cu")
 
 
 TWO_KERNELS = r"""

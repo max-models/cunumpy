@@ -2,3 +2,8 @@
 dist/
 .astro/
 node_modules/
+# written by `scope-profiler site` from profiling/profiling.yaml (make profiling), with the
+# components that draw the pages
+src/content/docs/profiling/
+public/profiling/
+src/components/scope-profiler/

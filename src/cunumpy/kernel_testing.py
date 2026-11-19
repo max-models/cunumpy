@@ -37,6 +37,10 @@ without it. See :doc:`/kernels/testing`.
   ``requires_bounds_check_views`` always skip on HIP, known gaps rather than
   a broken GPU/driver.
 * Test ``__device__`` helpers: :func:`device_function_kernel`.
+* Run Python CUDA kernels without a GPU: the fake CuPy emulates ``cupyx.jit``
+  (:class:`~cunumpy.kernels.CupyJitKernel`), and numba's simulator
+  (``NUMBA_ENABLE_CUDASIM=1``, :func:`numba_simulator_active`) runs
+  :class:`~cunumpy.kernels.NumbaCudaKernel` launches on the CPU.
 * Run CUDA kernels on the CPU, without a GPU (from ``cunumpy._emulation``):
   :func:`emulate_cuda_kernel`, :func:`emulated_launches`,
   :func:`compile_for_emulation`, :func:`emulation_compiler` and
@@ -91,6 +95,7 @@ from cunumpy._emulation import (
     emulation_compiler,
 )
 from cunumpy._fake_cupy import host_buffer
+from cunumpy._kernel import use_device_kernel_implementation
 from cunumpy.xp import cupy_available, get_backend, to_numpy, use_backend
 
 # the pytest objects are created on first access, see __getattr__
@@ -113,6 +118,7 @@ __all__ = [
     "high_dim_cuda_views_available",
     "host_buffer",
     "install_fake_cupy",
+    "numba_simulator_active",
     "parity_cases",
     "requires_bounds_check_views",  # noqa: F822
     "requires_cupy",  # noqa: F822
@@ -750,6 +756,40 @@ def _compare_results(
         )
 
 
+def numba_simulator_active() -> bool:
+    """Return whether numba-cuda runs kernels in its CPU simulator.
+
+    The simulator is chosen with ``NUMBA_ENABLE_CUDASIM=1`` before numba is
+    imported. Under it, :class:`~cunumpy.kernels.NumbaCudaKernel` launches run
+    on the CPU, also on the arrays of the fake CuPy.
+
+    Returns
+    -------
+    bool
+        False if numba-cuda is not installed.
+
+    Examples
+    --------
+    >>> from cunumpy.kernel_testing import numba_simulator_active
+    >>> numba_simulator_active() in (True, False)
+    True
+    """
+    try:
+        from numba import config
+    except ImportError:
+        return False
+    return bool(getattr(config, "ENABLE_CUDASIM", False))
+
+
+def _runs_on_fake_cupy(implementation: str) -> bool:
+    """Whether a device implementation runs on the fake CuPy (without a GPU)."""
+    if implementation == "cupy_jit":
+        return True
+    if implementation == "numba_cuda":
+        return numba_simulator_active()
+    return False
+
+
 def assert_kernels_agree(
     kernel: Kernel,
     make_args: Callable[[str, int], Sequence[Any]],
@@ -762,19 +802,22 @@ def assert_kernels_agree(
     n_calls: int = 1,
     outputs: Sequence[int | str] | None = None,
     seed: int = 0,
+    implementations: Sequence[str] | None = None,
 ) -> dict[str, np.ndarray]:
-    """Check that the host and CUDA versions of a kernel compute the same.
+    """Check that the host and device versions of a kernel compute the same.
 
-    For each backend, ``"numpy"`` then ``"cupy"``, the backend is activated,
-    the arguments are built with ``make_args(backend, seed)``, the kernel is
-    called `n_calls` times, and the arrays among the arguments are collected.
-    The CUDA results are copied to the host and compared with
-    ``numpy.testing.assert_allclose``.
+    The kernel runs on the ``"numpy"`` backend, then on ``"cupy"`` once per
+    device implementation (``"cuda_c"``, ``"cupy_jit"``, ``"numba_cuda"``,
+    selected with :func:`~cunumpy.kernels.use_device_kernel_implementation`).
+    Each time the backend is activated, the arguments are built with
+    ``make_args(backend, seed)``, the kernel is called `n_calls` times, and the
+    arrays among the arguments are collected. The device results are copied to
+    the host and compared with ``numpy.testing.assert_allclose``.
 
     Parameters
     ----------
     kernel : Kernel
-        A :class:`~cunumpy.kernels.Kernel` with a CUDA version.
+        A :class:`~cunumpy.kernels.Kernel` with a device version.
     make_args : callable
         ``make_args(backend, seed)`` returns the positional arguments of the
         kernel (a tuple or list). It runs with the backend active, so arrays
@@ -800,6 +843,12 @@ def assert_kernels_agree(
         arguments are compared one level deep (plus container attributes).
     seed : int, optional
         Passed to `make_args` on both backends.
+    implementations : sequence of str, optional
+        The device implementations to check; by default all of the kernel's
+        (:attr:`Kernel.device_kernels <cunumpy.kernels.Kernel.device_kernels>`).
+        On the fake CuPy only those that run without a GPU: ``"cupy_jit"``
+        (emulated) and ``"numba_cuda"`` under numba's simulator
+        (``NUMBA_ENABLE_CUDASIM=1``).
 
     Returns
     -------
@@ -810,17 +859,20 @@ def assert_kernels_agree(
     Raises
     ------
     ValueError
-        If `kernel` has no CUDA version or `n_calls` is less than 1.
+        If `kernel` has no device version, one of `implementations` is not
+        one of its device implementations, or `n_calls` is less than 1.
     TypeError
         If `kernel` is not a ``Kernel``, or no launch size is given or
         configured.
     AssertionError
-        If an array differs; the message names the argument.
+        If an array differs; the message names the argument and the device
+        implementation.
 
     Notes
     -----
-    Skipped with ``pytest.skip`` without a GPU or on the fake CuPy; with
-    ``CUNUMPY_REQUIRE_CUDA=1`` it fails instead. See :doc:`/kernels/testing`.
+    Skipped with ``pytest.skip`` without a GPU, or on the fake CuPy if none
+    of the implementations can run there; with ``CUNUMPY_REQUIRE_CUDA=1`` it
+    fails instead. See :doc:`/kernels/testing`.
 
     Examples
     --------
@@ -834,20 +886,37 @@ def assert_kernels_agree(
         raise TypeError(f"expected a Kernel, got {type(kernel).__name__}")
     if not kernel.has_cuda:
         raise ValueError(f"kernel {kernel.name!r} has no CUDA version")
-    if n_threads is None and grid is None and kernel.cuda_kernel.n_threads_from is None:
-        raise TypeError("n_threads (or grid) is required to launch the CUDA kernel")
+    device_kernels = kernel.device_kernels
+    if implementations is None:
+        implementations = tuple(device_kernels)
+    for name in implementations:
+        if name not in device_kernels:
+            raise ValueError(
+                f"kernel {kernel.name!r} has no {name!r} implementation "
+                f"(it has {', '.join(device_kernels)})",
+            )
+        if (
+            n_threads is None
+            and grid is None
+            and device_kernels[name].n_threads_from is None
+        ):
+            raise TypeError(
+                f"n_threads (or grid) is required to launch the {name} kernel"
+            )
     if n_calls < 1:
         raise ValueError(f"n_calls must be at least 1, got {n_calls}")
     if outputs is None:
         outputs = kernel.host_kernel.outputs
     if fake_cupy_active():
-        _skip_or_fail(FAKE_SKIP_REASON)
-    if not cupy_available():
+        implementations = [n for n in implementations if _runs_on_fake_cupy(n)]
+        if not implementations:
+            _skip_or_fail(FAKE_SKIP_REASON)
+    elif not cupy_available():
         _skip_or_fail(SKIP_REASON)
 
     parameters = kernel.host_parameters()
-    results = {}
-    for backend in ("numpy", "cupy"):
+
+    def run(backend: str) -> dict[str, Any]:
         with use_backend(backend):
             if get_backend() != backend:  # pragma: no cover - cupy_available() lied
                 raise RuntimeError(f"could not activate the {backend} backend")
@@ -855,10 +924,13 @@ def assert_kernels_agree(
             launch = n_threads(args) if callable(n_threads) else n_threads
             for _ in range(n_calls):
                 kernel(*args, n_threads=launch, grid=grid, block=block)
-            results[backend] = _collect_arrays(args, outputs, parameters)
+            return _collect_arrays(args, outputs, parameters)
 
-    host = {name: to_numpy(a) for name, a in results["numpy"].items()}
-    _compare_results(host, results["cupy"], rtol, atol, kernel.name)
+    host = {name: to_numpy(a) for name, a in run("numpy").items()}
+    for implementation in implementations:
+        with use_device_kernel_implementation(implementation):
+            device = run("cupy")
+        _compare_results(host, device, rtol, atol, f"{kernel.name} ({implementation})")
     return host
 
 

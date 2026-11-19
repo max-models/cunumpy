@@ -26,6 +26,7 @@ export default defineDocs({
 		{ label: 'Guides', link: '/guides/backends/' },
 		{ label: 'Kernels', link: '/kernels/overview/' },
 		{ label: 'Examples', link: '/examples/' },
+		{ label: 'Profiling', link: '/profiling/' },
 		{ label: 'API', link: '/reference/', section: '/api/' },
 	],
 	sidebar: [
@@ -54,8 +55,10 @@ export default defineDocs({
 				'kernels/pyccel-kernel',
 				'kernels/cuda-kernel',
 				'kernels/cuda-headers',
+				'kernels/python-kernels',
 				'kernels/metal-kernel',
 				'kernels/dispatch',
+				'kernels/blocks',
 				'kernels/arguments',
 				'kernels/accumulation',
 				'kernels/debugging',
@@ -63,6 +66,11 @@ export default defineDocs({
 			].map(page),
 		},
 		{ label: 'Examples', items: [{ label: 'Overview', slug: 'examples' }, ...['examples/portable-script', 'examples/particle-pusher'].map(page)] },
+		{
+			label: 'Profiling',
+			// written by `make profiling` (scope-profiler site) from profiling/profiling.yaml
+			items: [{ autogenerate: { directory: 'profiling', collapsed: true } }],
+		},
 		{ label: 'More', items: ['best-practices', 'troubleshooting', 'pyodide', 'ai-assistants'].map(page) },
 		{
 			label: 'Development',

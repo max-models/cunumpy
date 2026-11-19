@@ -176,9 +176,12 @@ push = xp.kernels.CudaKernel.from_file(
 )  # kernel name "push"
 ```
 
-`from_file` derives the kernel name from the file name minus the `_cuda.cu`
-suffix (override with `name=` or `suffix=`), and adds the file's directory to the
-include path, so `#include "helpers.cuh"` next to it works.
+`from_file` finds the kernel from the file: the file name minus its suffix
+(`_cuda_c.cu`, `_cuda.cu` or `.cu`) if the file defines a `__global__` function
+of that name, else the file's only `__global__` function, whatever the file is
+called. Pass `name=` for a file with several kernels, or `suffix=` to require one
+file name suffix. It adds the file's directory to the include path, so
+`#include "helpers.cuh"` next to it works.
 
 A file with several small kernels is loaded at once with `all_from_file`, which
 returns a dict by name; the kernels share one compilation:

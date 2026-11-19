@@ -1,0 +1,20 @@
+# The Profiling section of the docs: `make profiling` fetches the runs (fetch_data.sh) and writes
+# the pages with `scope-profiler site profiling/profiling.yaml -o docs --section profiling`.
+# The runs come from max-models/profiling-catalog, where `scope-profiler jobs run <case>.toml
+# --upload` puts them; every uploaded folder is an execution of its case, so new runs need no
+# change here. Keys: https://max-models.github.io/scope-profiler/reference/cli/#scope-profiler-site
+title: Profiling
+description: Profiling runs of cunumpy's algorithms, with the cunumpy regions turned on.
+base: /cunumpy
+
+cases:
+  - id: particles-weak
+    title: Particle step, weak scaling
+    description: Push, neighbour exchange, Morton sort and deposit, with the same number of markers on every rank.
+    tags: [cpu, mpi, weak-scaling]
+    scaling: weak
+    code:
+      - path: particles.py
+        url: https://github.com/max-models/cunumpy/blob/devel/profiling/particles.py
+    executions:
+      path: "data/cunumpy/particles_weak/{execution}/run*/profiling_data.h5"

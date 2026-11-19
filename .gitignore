@@ -177,3 +177,7 @@ stc.lock
 
 # Pyodide test runtime
 node_modules/
+
+# profiling runs: the work folder of `scope-profiler jobs` and the runs fetched for the docs
+_profiling_jobs/
+profiling/data/

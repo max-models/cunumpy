@@ -49,6 +49,14 @@ Applications such as Struphy must choose Python-source kernels and ensure their
 imports (including any Pyccel decorators) work without a native compiler. Wrapping
 a function does not make its own dependencies Pyodide-compatible.
 
+Kernel folders (`Kernel.from_folder`, `KernelPackage.from_folder`) work in
+Pyodide without changes when the folder has a `<name>_numpy.py` (or numba)
+version: the Pyccel source `<name>_pyccel.py` is imported only when its
+implementation is used, so one that imports Pyccel (e.g. its OpenMP module)
+does not break the import of the package. The kernel then runs its NumPy
+version, and its signature comes from that version. Leave Pyccel out of the
+browser's install with a marker, `"pyccel>2.0; sys_platform != 'emscripten'"`.
+
 ## Testing the built wheel
 
 From the repository root, with Python and Node.js 22 installed:

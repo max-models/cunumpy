@@ -116,3 +116,11 @@ a loop of steps for device times.
 3. Look for gaps between kernels (host overhead, synchronization) and for the
    longest kernels.
 4. Use `timed_region()` around a loop of steps to measure the improvement.
+
+## Profiling runs of cunumpy
+
+The [Profiling](/cunumpy/profiling/) section shows profiles of cunumpy's algorithms in a particle
+step, with the cunumpy regions turned on, across rank counts and over time. The cases are in
+`profiling/` of the repository (a script and a `scope-profiler jobs` case file each);
+`scope-profiler jobs run profiling/particles_weak.toml --upload` runs one on a cluster and adds
+its results to the section.

@@ -89,11 +89,14 @@ def test_axpy_parity():
     assert_kernels_agree(axpy, make_axpy_args, n_threads=1000)
 ```
 
-For each backend, NumPy then CuPy, it activates the backend, builds the
-arguments with `make_args(backend, seed)`, calls the kernel (`n_calls` times),
-then copies the CUDA results to the host and compares them with
+It runs the kernel on NumPy, then on CuPy once per device implementation
+(`"cuda_c"`, `"cupy_jit"`, `"numba_cuda"`, whichever the kernel has; choose with
+`implementations=[...]`). Each time it activates the backend, builds the
+arguments with `make_args(backend, seed)` and calls the kernel (`n_calls`
+times); then it copies the device results to the host and compares them with
 `numpy.testing.assert_allclose(rtol=1e-12, atol=0)`. A failure names the
-argument that differs. Without a GPU the test is skipped.
+argument that differs and the implementation. Without a GPU the test is skipped,
+except for the Python kernels that can run on the fake CuPy (below).
 
 Things to know:
 
@@ -393,9 +396,13 @@ Its arrays live in host memory but are not NumPy arrays: `numpy.asarray(a)`
 raises (as it does for real CuPy arrays, so a compiled host kernel rejects
 them), CuPy functions reject NumPy arrays and lists, mixing the two raises,
 reductions return 0-d arrays, and arrays have `data.ptr`, `device` and
-`__cuda_array_interface__`. Kernels cannot run: `RawKernel` raises
-`NotImplementedError`, `requires_cupy` skips and `assert_kernels_agree`
-skips while the fake is active (`cunumpy.kernel_testing.fake_cupy_active()`). It
+`__cuda_array_interface__`. CUDA C kernels cannot run: `RawKernel` raises
+`NotImplementedError` and `requires_cupy` skips while the fake is active
+(`cunumpy.kernel_testing.fake_cupy_active()`). Kernels written in Python can:
+the fake CuPy emulates `cupyx.jit`, and numba's simulator runs numba-cuda
+kernels, so `assert_kernels_agree` checks those implementations and skips only
+a kernel that has neither (see [CUDA kernels in
+Python](/cunumpy/kernels/python-kernels/#testing-without-a-gpu)). It
 can also be installed from code, before the first backend use:
 
 ```python

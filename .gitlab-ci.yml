@@ -63,9 +63,19 @@ stages:
     - python3 -c "import cupy; cupy.show_config()"
     - python3 -c "import cupy; assert cupy.cuda.runtime.is_hip, 'expected a HIP build of CuPy'"
 
+# numba-cuda for the NumbaCudaKernel tests, on the toolkit generation of CuPy; with
+# CUNUMPY_REQUIRE_NUMBA_CUDA they fail instead of skipping if it is missing. NVIDIA
+# only: numba-cuda has no ROCm support.
+.install_numba_cuda: &install_numba_cuda
+  - python3 -m pip install --user "numba-cuda[cu13]" "cuda-toolkit==13.2.*"
+  - python3 -c "from numba import cuda; assert cuda.is_available(); cuda.detect()"
+
 gpu_tests_nvidia:
   extends: .gpu_job_nvidia
+  variables:
+    CUNUMPY_REQUIRE_NUMBA_CUDA: "1"
   script:
+    - *install_numba_cuda
     - python3 -m pytest -q tests
     - python3 testing/cupyx_names.py
 
@@ -84,7 +94,9 @@ gpu_tests_min_cupy_nvidia:
   extends: .gpu_job_nvidia
   variables:
     CUPY_PIN: "==14.0.0"
+    CUNUMPY_REQUIRE_NUMBA_CUDA: "1"
   script:
+    - *install_numba_cuda
     - python3 -c "import cupy, cunumpy; assert cupy.__version__ == cunumpy.MIN_CUPY_VERSION, cupy.__version__"
     - python3 -m pytest -q tests
     - python3 testing/cupyx_names.py --exact

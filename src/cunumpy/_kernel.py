@@ -165,7 +165,10 @@ class PyccelKernel:
         source = self._parameters
         if source is not None:
             return source() if callable(source) else tuple(source)
-        function = getattr(self._kernel, "python", self._kernel)
+        # a HostImplementations' reference (the Python version, else the NumPy one)
+        function = getattr(self._kernel, "reference", None) or getattr(
+            self._kernel, "python", self._kernel
+        )
         try:
             signature = inspect.signature(function)
         except (TypeError, ValueError):
@@ -595,8 +598,16 @@ def use_host_kernel_implementation(name: str | None) -> Iterator[None]:
         _KERNEL_IMPLEMENTATION = previous
 
 
-DEVICE_IMPLEMENTATIONS = ("cuda",)
-"""The names of the device implementations a kernel can have."""
+DEVICE_IMPLEMENTATIONS = ("cuda", "cuda_c", "cupy_jit", "numba_cuda")
+"""The device implementation settings: ``"cuda"`` (any CUDA implementation, never
+the host fallback), or one implementation: ``"cuda_c"`` (a CUDA C kernel,
+:class:`~cunumpy.kernels.CudaKernel`), ``"cupy_jit"`` (Python with ``cupyx.jit``,
+:class:`~cunumpy.kernels.CupyJitKernel`) or ``"numba_cuda"`` (Python with
+numba-cuda, :class:`~cunumpy.kernels.NumbaCudaKernel`)."""
+
+DEVICE_KERNEL_ORDER = ("cuda_c", "cupy_jit", "numba_cuda")
+"""The device implementations a kernel can have, in the order automatic selection
+tries them: the hand-written CUDA C kernel first."""
 
 
 def _check_device_implementation(name: str | None) -> str | None:
@@ -616,17 +627,23 @@ _DEVICE_KERNEL_IMPLEMENTATION = _check_device_implementation(
 def set_device_kernel_implementation(name: str | None) -> None:
     """Choose the device implementation for dispatched kernels.
 
-    With ``"cuda"``, a :class:`~cunumpy.kernels.Kernel` without a CUDA
-    implementation raises :class:`LookupError` on device arguments, even with
-    ``missing_cuda="fallback"``. Does not switch the array backend or affect
-    host calls or direct :class:`~cunumpy.kernels.CudaKernel` calls. Global,
-    not per thread; ``CUNUMPY_DEVICE_KERNEL_IMPLEMENTATION`` sets it at import.
+    In automatic mode (None) a :class:`~cunumpy.kernels.Kernel` runs its first
+    available device implementation of
+    :data:`~cunumpy.kernels.DEVICE_KERNEL_ORDER` (``"cuda_c"``, ``"cupy_jit"``,
+    ``"numba_cuda"``), else the host kernel if ``missing_cuda="fallback"``.
+    With ``"cuda"``, the same without the host fallback: a kernel without a
+    usable device implementation raises :class:`LookupError` on device
+    arguments. With ``"cuda_c"``, ``"cupy_jit"`` or ``"numba_cuda"``, only that
+    implementation runs, e.g. to compare a Python port with the CUDA C one. Does
+    not switch the array backend or affect host calls or direct kernel calls.
+    Global, not per thread; ``CUNUMPY_DEVICE_KERNEL_IMPLEMENTATION`` sets it at
+    import.
 
     Parameters
     ----------
     name : str or None
-        ``"cuda"`` (see :data:`~cunumpy.kernels.DEVICE_IMPLEMENTATIONS`), or
-        None for automatic selection.
+        One of :data:`~cunumpy.kernels.DEVICE_IMPLEMENTATIONS`, or None for
+        automatic selection.
 
     Raises
     ------
@@ -760,6 +777,28 @@ class HostImplementations:
     def python(self) -> Callable[..., Any]:
         """The uncompiled Python function (for signatures and reference results)."""
         return self.get("python")
+
+    @property
+    def reference(self) -> Callable[..., Any]:  # numpydoc ignore=RT01
+        """The function whose signature and annotations stand for the kernel.
+
+        The Python version, or, if its module cannot be imported (e.g. a Pyccel
+        source without Pyccel, as in Pyodide), the first that loads of the
+        NumPy and numba versions (the Python function of a numba dispatcher).
+
+        Raises
+        ------
+        LookupError
+            If none of them loads; the load errors are in `errors`.
+        """
+        for name in ("python", "numpy", "numba"):
+            if self.available(name):
+                function = self.get(name)
+                return getattr(function, "py_func", function)
+        raise LookupError(
+            f"kernel {self.__name__!r}: no Python, NumPy or numba version loads "
+            f"({self.errors!r})",
+        )
 
     def available(self, name: str) -> bool:
         """Return whether implementation `name` exists and loads (loads it now).
