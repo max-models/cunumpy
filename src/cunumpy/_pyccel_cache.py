@@ -240,6 +240,11 @@ class PyccelCache:
     builds them serial, except modules that call the OpenMP runtime. The setting
     is part of the key, so serial and OpenMP builds live side by side.
 
+    ``<PREFIX>_FLAGS`` passes extra flags to the C compiler (Pyccel's ``--flags``), such
+    as ``-march=native`` for the machine at hand; they are part of the key too. None
+    by default: such builds may not run on another CPU, and flags like ``-ffast-math``
+    change the rounding.
+
     Builds are published with an atomic rename: processes that compile the
     same module at the same time (MPI ranks on a cold cache) never see a
     partial build, and the first one to finish wins.
@@ -254,15 +259,15 @@ class PyccelCache:
     env_prefix : str, optional
         Prefix of the environment variables. By default `name` in upper case
         with ``-`` and ``.`` replaced by ``_`` (``"tree-d-3d"`` gives
-        ``TREE_D_3D_KERNEL_CACHE`` and ``TREE_D_3D_OPENMP``).
+        ``TREE_D_3D_KERNEL_CACHE``, ``TREE_D_3D_OPENMP`` and ``TREE_D_3D_FLAGS``).
     language : str, optional
         Pyccel's target language. Default ``"c"``.
 
     Examples
     --------
     >>> cache = xp.kernels.PyccelCache("my-sim")
-    >>> cache.cache_env, cache.openmp_env
-    ('MY_SIM_KERNEL_CACHE', 'MY_SIM_OPENMP')
+    >>> cache.cache_env, cache.openmp_env, cache.flags_env
+    ('MY_SIM_KERNEL_CACHE', 'MY_SIM_OPENMP', 'MY_SIM_FLAGS')
 
     In the package's kernel folder::
 
@@ -291,6 +296,15 @@ class PyccelCache:
     def openmp_env(self) -> str:
         """Name of the environment variable that turns OpenMP off (``0``)."""
         return f"{self.env_prefix}_OPENMP"
+
+    @property
+    def flags_env(self) -> str:
+        """Name of the environment variable with extra C compiler flags."""
+        return f"{self.env_prefix}_FLAGS"
+
+    def flags(self) -> str:
+        """Return the extra compiler flags of the builds (``<PREFIX>_FLAGS``, empty by default)."""
+        return " ".join(os.environ.get(self.flags_env, "").split())
 
     def cache_root(self) -> Path:
         """Directory holding the builds (``~/.cache/<name>/kernels`` by default)."""
@@ -364,7 +378,8 @@ class PyccelCache:
     def build_key(self, module: ModuleType, language: str | None = None) -> str:
         """Return the key of `module`'s build, which changes with anything that changes it.
 
-        The module's own source, the language, the OpenMP setting, the Pyccel,
+        The module's own source, the language, the OpenMP setting, the extra
+        compiler flags (:meth:`flags`), the Pyccel,
         NumPy and Python versions and the platform, and the names and sources of
         the modules built with it (:meth:`dependencies`), so editing one of them
         rebuilds the kernel.
@@ -394,6 +409,7 @@ class PyccelCache:
             language or self.language,
             _LAYOUT,
             f"openmp={self._openmp_for(module)}",
+            f"flags={self.flags()}",
             _pyccel_version(),
             f"numpy={_numpy_version()}",
             sys.version,
@@ -404,7 +420,12 @@ class PyccelCache:
 
     @staticmethod
     def _run_pyccel(
-        source: Path, language: str, output: Path, openmp: bool, staging: Path
+        source: Path,
+        language: str,
+        output: Path,
+        openmp: bool,
+        staging: Path,
+        flags: str = "",
     ) -> None:
         """Compile `source` into `output` with ``pyccel compile``; raise on failure."""
         command = [
@@ -418,6 +439,8 @@ class PyccelCache:
         ]
         if openmp:
             command.append("--openmp")
+        if flags:
+            command.append(f"--flags={flags}")
         # Pyccel writes lock files (``.lock_acquisition.lock``, ``stc.lock``) to
         # the directory it runs in: run it in the staging folder, removed after
         # the build, so they never land in the caller's working directory.
@@ -444,15 +467,16 @@ class PyccelCache:
         sources.mkdir()
         output = staging / "build"
         openmp = self._openmp_for(module)
+        flags = self.flags()
         dependencies = self.dependencies(module)
         for name, source in dependencies.items():
             flat = _flat_name(name)
             path = sources / f"{flat}.py"
             path.write_text(_rewrite_imports(source, name.rpartition(".")[0]))
-            self._run_pyccel(path, language, output, openmp, staging)
+            self._run_pyccel(path, language, output, openmp, staging, flags)
         path = sources / f"{stem}.py"
         path.write_text(_rewrite_imports(_source_path(module).read_text(), package))
-        self._run_pyccel(path, language, output, openmp, staging)
+        self._run_pyccel(path, language, output, openmp, staging, flags)
         for name in dependencies:
             extension = _extension_path(output, _flat_name(name))
             if extension is not None:
