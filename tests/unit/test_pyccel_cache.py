@@ -54,9 +54,10 @@ def cache(tmp_path, monkeypatch):
 
 def test_environment_variables_follow_the_package_name():
     cache = xp.kernels.PyccelCache("tree-d-3d")
-    assert (cache.cache_env, cache.openmp_env) == (
+    assert (cache.cache_env, cache.openmp_env, cache.flags_env) == (
         "TREE_D_3D_KERNEL_CACHE",
         "TREE_D_3D_OPENMP",
+        "TREE_D_3D_FLAGS",
     )
     custom = xp.kernels.PyccelCache("my.sim", env_prefix="SIM")
     assert custom.cache_env == "SIM_KERNEL_CACHE"
@@ -98,6 +99,30 @@ def test_key_changes_with_the_source_and_the_openmp_setting(
     edited = make_module(SOURCE.replace("1.0", "2.0"), name="tiny_kernel_edited")
     edited.__name__ = module.__name__  # same name, other source
     assert cache.build_key(edited) != key
+
+
+def test_compiler_flags_change_the_key_and_reach_pyccel(
+    make_module, cache, monkeypatch
+):
+    # no compiler needed: the command is captured instead of run
+    pytest.importorskip("pyccel")
+    module = make_module()
+    monkeypatch.delenv(cache.flags_env, raising=False)
+    assert cache.flags() == ""
+    key = cache.build_key(module)
+    monkeypatch.setenv(cache.flags_env, "  -march=native   -O2 ")
+    assert cache.flags() == "-march=native -O2"
+    assert cache.build_key(module) != key
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=1, stdout="", stderr="captured")
+
+    monkeypatch.setattr(_pyccel_cache.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="captured"):
+        cache.compile(module)
+    assert "--flags=-march=native -O2" in calls[0]
 
 
 def test_key_changes_with_the_numpy_version(make_module, cache, monkeypatch):

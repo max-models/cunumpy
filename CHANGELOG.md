@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `PyccelCache` takes extra C compiler flags from `<PREFIX>_FLAGS` (`flags_env`, `flags()`),
+  passed to `pyccel compile --flags` and part of the build key, e.g. `-march=native` for the
+  machine at hand. None by default.
 - CUDA kernels written in Python: `xp.kernels.CupyJitKernel` (`cupyx.jit`) and
   `xp.kernels.NumbaCudaKernel` (numba-cuda), launched like a `CudaKernel` (`n_threads`, `grid`,
   `block`, `shared_mem`, `stream`, launch size from the first array). Device arrays only (NumPy
