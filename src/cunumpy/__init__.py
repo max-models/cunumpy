@@ -30,6 +30,7 @@ from cunumpy import (
     petsc,
     profiling,
     rng,
+    threads,
     xp,
 )
 from cunumpy._host import evaluate_on_host, host_call, setup_on_host
@@ -141,6 +142,7 @@ __all__ = [
     "set_backend",
     "setup_on_host",
     "synchronize",
+    "threads",
     "to_cunumpy",
     "to_cupy",
     "to_host_async",
