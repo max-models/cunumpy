@@ -45,6 +45,7 @@ export default defineDocs({
 				'guides/particle-codes',
 				'guides/solvers',
 				'guides/profiling',
+				'guides/threads',
 				'guides/array-api-compat',
 			].map(page),
 		},

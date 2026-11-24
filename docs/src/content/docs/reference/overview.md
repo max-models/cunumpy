@@ -56,6 +56,7 @@ The submodules are named so that they do not hide a NumPy name (`rng`, not
 | [`cunumpy.integrate`](/cunumpy/api/cunumpy/integrate/) | both | `quad`, `odeint` (SciPy on the host, callbacks on the device) |
 | [`cunumpy.mpi`](/cunumpy/api/cunumpy/mpi/) | both | `mpi_buffer`, `MPIStaging`, CUDA-aware MPI detection, `synchronize_for_mpi`, and the MPI stand-ins of maybempi (`get_mpi`, `local_rank`, ...) |
 | [`cunumpy.profiling`](/cunumpy/api/cunumpy/profiling/) | both | `timed_region`, `nvtx_range`, `count_transfers`, `assert_no_transfers`, `TransferBudget` |
+| [`cunumpy.threads`](/cunumpy/api/cunumpy/threads/) | CPU | `configure_threads`, `blas_threads`, `limit_blas_threads`, `thread_report`: BLAS limited next to the OpenMP kernels, oversubscription warnings; `python -m cunumpy.threads` |
 | [`cunumpy.memory`](/cunumpy/api/cunumpy/memory/) | both | `HostStaging`, `HostCopy`, `DeviceMirror` |
 | [`cunumpy.petsc`](/cunumpy/api/cunumpy/petsc/) | both | `petsc_vec` |
 | [`cunumpy.kernel_testing`](/cunumpy/api/cunumpy/kernel_testing/) | both | pytest helpers for host/CUDA kernel pairs (not imported by `import cunumpy`) |

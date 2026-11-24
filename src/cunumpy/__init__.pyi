@@ -20,6 +20,7 @@ from cunumpy import optimize as optimize
 from cunumpy import petsc as petsc
 from cunumpy import profiling as profiling
 from cunumpy import rng as rng
+from cunumpy import threads as threads
 from cunumpy import xp as xp
 from cunumpy._scipy_backend import scipy as scipy
 from cunumpy._staging import HostCopy

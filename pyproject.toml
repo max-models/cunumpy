@@ -26,6 +26,9 @@ dependencies = [
   "maybempi>=0.1.2",
   "numpy",
   "scope-profiler>=0.8.0",
+  # the BLAS and OpenMP thread pools (cunumpy.threads); 3.7 reads scipy_openblas and
+  # OpenMP-built OpenBLAS correctly
+  "threadpoolctl>=3.7",
 ]
 
 optional-dependencies.dev = [
