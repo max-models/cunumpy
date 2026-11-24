@@ -192,10 +192,12 @@ def test_the_flags_and_openmp_are_part_of_the_key(tmp_path, monkeypatch):
     monkeypatch.setenv("CPKG_TEST_C_FLAGS", "-O2")
     keys.add(cache.build_key(source, "wrapper", ()))
     assert cache.flags()[0] == "-O2"
+    openmp = "-fopenmp" in cache.flags()  # not on macOS, whose clang has no OpenMP
+    assert openmp == (sys.platform != "darwin")
     monkeypatch.setenv("CPKG_TEST_OPENMP", "0")
     assert "-fopenmp" not in cache.flags()
     keys.add(cache.build_key(source, "wrapper", ()))
-    assert len(keys) == 3
+    assert len(keys) == (3 if openmp else 2)
 
 
 @needs_compiler
