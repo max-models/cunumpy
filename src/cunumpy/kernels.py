@@ -38,6 +38,7 @@ mode) in :mod:`cunumpy.cuda`, and the pytest helpers for kernel pairs in
 :mod:`cunumpy.kernel_testing`.
 """
 
+from cunumpy._c_kernels import CCache
 from cunumpy._cuda_kernel import BoundLaunch, CudaKernel, CudaKernelVariants
 from cunumpy._dispatch import Kernel, KernelCatalog
 from cunumpy._fusion import fuse
@@ -69,6 +70,7 @@ __all__ = [
     "DEVICE_KERNEL_ORDER",
     "HOST_IMPLEMENTATIONS",
     "BoundLaunch",
+    "CCache",
     "CompiledHostKernel",
     "CudaKernel",
     "CudaKernelVariants",

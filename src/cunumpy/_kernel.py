@@ -499,7 +499,7 @@ class PyccelKernel:
         )
 
 
-HOST_IMPLEMENTATIONS = ("pyccel", "numba", "numpy", "python")
+HOST_IMPLEMENTATIONS = ("c", "pyccel", "numba", "numpy", "python")
 """The names of the host implementations a kernel can have, see
 :class:`~cunumpy.kernels.HostImplementations`.
 """
@@ -714,7 +714,7 @@ class HostImplementations:
     Each implementation is loaded on first use (a Pyccel build, an import); a
     failed load is remembered in `errors`. A call runs the implementation set
     with :func:`~cunumpy.kernels.set_host_kernel_implementation`, or else the
-    first available of ``"pyccel"``, ``"numba"`` and ``"numpy"``, and as a
+    first available of ``"c"``, ``"pyccel"``, ``"numba"`` and ``"numpy"``, and as a
     last resort ``"python"`` with a :class:`RuntimeWarning` (once). Built by
     :meth:`Kernel.from_folder <cunumpy.kernels.Kernel.from_folder>`.
 
@@ -879,7 +879,7 @@ class HostImplementations:
         if _KERNEL_IMPLEMENTATION is not None:
             return _KERNEL_IMPLEMENTATION
         if self._default is None:
-            for name in ("pyccel", "numba", "numpy"):
+            for name in ("c", "pyccel", "numba", "numpy"):
                 if self.available(name):
                     self._default = name
                     break
