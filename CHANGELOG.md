@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `xp.algorithms.hilbert_encode(*cells, levels=...)`: Hilbert keys of integer cells in 2D and
+  3D (Skilling's construction, on NumPy or CuPy): consecutive keys are neighbouring cells,
+  and the cells of every quadtree or octree node are a contiguous range.
 - A kernel call whose NumPy arrays are not all C-contiguous (a column slice of marker
   storage) runs the next host implementation, Pyccel where it builds, instead of the C
   version, which takes C-contiguous arrays only and raised `TypeError`.
