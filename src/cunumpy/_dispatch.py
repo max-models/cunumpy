@@ -330,6 +330,7 @@ class Kernel:
         include_dirs: Sequence[str | Path] | None = None,
         dispatch: str = "backend",
         compile_host: Callable[[Any], Any] | None = None,
+        compile_c: Callable[..., Callable[..., Any]] | None = None,
         extra_implementations: (
             Mapping[str, Callable[[], Callable[..., Any]]] | None
         ) = None,
@@ -338,8 +339,11 @@ class Kernel:
         """Build the kernel of one kernel folder.
 
         Each version of ``<name>`` in the folder is an implementation:
-        ``<name><host_suffix>.py`` gives ``"pyccel"`` (compiled with
-        `compile_host` on first use) and ``"python"`` (uncompiled),
+        ``<name>_c.c`` gives ``"c"`` (compiled with `compile_c` on first use,
+        with the arguments of the Pyccel version, see
+        :class:`~cunumpy.kernels.CCache`), ``<name><host_suffix>.py`` gives
+        ``"pyccel"`` (compiled with `compile_host` on first use) and
+        ``"python"`` (uncompiled),
         ``<name>_numba.py`` gives ``"numba"``, ``<name>_numpy.py`` gives
         ``"numpy"``; on the device ``<name><cuda_suffix>`` (or
         ``<name>_cuda_c.cu``) gives ``"cuda_c"``, ``<name><cupy_jit_suffix>.py``
@@ -389,6 +393,12 @@ class Kernel:
             Returns the compiled form of the host module (e.g. a wrapper of
             ``pyccel.epyccel`` with a cache); cunumpy compiles nothing itself.
             If it raises, the ``"pyccel"`` implementation is unavailable.
+        compile_c : callable, optional
+            ``compile_c(source, name, reference, include_dirs)`` returns the
+            compiled C kernel (:meth:`CCache.compile
+            <cunumpy.kernels.CCache.compile>`); without it ``<name>_c.c`` is
+            ignored. If it raises, the ``"c"`` implementation is unavailable and
+            a call runs the next one.
         extra_implementations : mapping, optional
             Loaders of further host implementations by name, e.g.
             ``{"numpy": lambda: push_numpy}``.
@@ -464,10 +474,20 @@ class Kernel:
         def pyccel() -> Callable[..., Any]:
             return getattr(compile_host(importlib.import_module(host_module)), name)
 
+        if include_dirs is None:
+            include_dirs = (_source_root(package),)
         loaders: dict[str, Callable[[], Callable[..., Any]]] = {
             "python": python,
             "pyccel": pyccel if compile_host is not None else python,
         }
+        c_source = folder / f"{name}_c.c"
+        if compile_c is not None and c_source.is_file():
+            c_include_dirs = tuple(include_dirs)
+
+            def c_kernel() -> Callable[..., Any]:
+                return compile_c(c_source, name, python(), c_include_dirs)
+
+            loaders["c"] = c_kernel
         for implementation in ("numba", "numpy"):
             if (folder / f"{name}_{implementation}.py").is_file():
                 loaders[implementation] = _import_loader(
@@ -484,8 +504,6 @@ class Kernel:
             )
             if declared is not None:
                 host_options = {**(host_options or {}), "outputs": declared}
-        if include_dirs is None:
-            include_dirs = (_source_root(package),)
         python_options = {
             key: cuda_options[key]
             for key in ("block_size", "n_threads_from", "debug")

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- C host kernels: a kernel folder may hold `<name>_c.c` next to the Pyccel version (the same arguments; arrays as pointer and shape). `CCache` (in `KernelPackage.c_cache`) compiles it with a generated CPython wrapper and keeps the build; the implementation `"c"` comes before `"pyccel"`, and a failed build falls back to it. For loops the compiler must vectorise.
 - `cunumpy.threads`: `configure_threads` (every BLAS at one thread, a warning when the ranks of a node run more OpenMP threads than it has cores), `blas_threads`, `limit_blas_threads`, `restore_blas_threads`, `thread_report` and `python -m cunumpy.threads`; spinning BLAS threads slowed the OpenMP kernels run after a BLAS call. Needs `threadpoolctl>=3.7`.
 - `PyccelCache` takes extra C compiler flags from `<PREFIX>_FLAGS` (`flags_env`, `flags()`),
   passed to `pyccel compile --flags` and part of the build key, e.g. `-march=native` for the

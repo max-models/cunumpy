@@ -54,6 +54,7 @@ export default defineDocs({
 			items: [
 				'kernels/overview',
 				'kernels/pyccel-kernel',
+				'kernels/c-kernel',
 				'kernels/cuda-kernel',
 				'kernels/cuda-headers',
 				'kernels/python-kernels',

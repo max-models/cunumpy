@@ -7,6 +7,7 @@ from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
 
+from cunumpy._c_kernels import CCache
 from cunumpy._dispatch import Kernel
 from cunumpy._metal_kernel import MetalKernel
 from cunumpy._pyccel_cache import PyccelCache
@@ -117,6 +118,8 @@ class KernelPackage:
         self.name = name
         #: The on-disk build cache of the package's Pyccel kernels.
         self.cache = PyccelCache(name, env_prefix=env_prefix)
+        #: The on-disk build cache of the package's C kernels (``<name>_c.c``).
+        self.c_cache = CCache(name, env_prefix=env_prefix)
         self.host_suffix = host_suffix
         self.dispatch = dispatch
         self.block_size = block_size
@@ -133,12 +136,14 @@ class KernelPackage:
         Returns
         -------
         dict
-            ``host_suffix``, ``compile_host`` (:attr:`cache`), ``dispatch``,
+            ``host_suffix``, ``compile_host`` (:attr:`cache`), ``compile_c``
+            (:attr:`c_cache`), ``dispatch``,
             ``block_size`` and ``n_threads_from``.
         """
         return {
             "host_suffix": self.host_suffix,
             "compile_host": self.cache,
+            "compile_c": self.c_cache.compile,
             "dispatch": self.dispatch,
             "block_size": self.block_size,
             "n_threads_from": self.n_threads_from,
