@@ -158,6 +158,32 @@ def test_bad_arguments_raise(tmp_path, monkeypatch):
 
 
 @needs_compiler
+def test_a_strided_array_runs_the_next_implementation(tmp_path, monkeypatch):
+    kernel, _ = _package(tmp_path, monkeypatch)
+    host = kernel.host_kernel.kernel
+    ran = []
+    original = host.get
+
+    def recording(name):
+        ran.append(name)
+        return original(name)
+
+    monkeypatch.setattr(host, "get", recording)
+    storage = np.ones((3, 8))
+    x, _, a, n, flag, out = _arguments()
+    y = storage[:, ::2]  # a strided view, as a column slice of marker storage
+    kernel(x, y, a, n, flag, out)
+    # the next implementation: Pyccel, or Python where Pyccel does not build (macOS CI)
+    assert ran[-1] == host._after_c() != "c" and kernel.selected() == "c"
+    expected = _arguments()
+    original("python")(*expected)
+    np.testing.assert_array_equal(y, expected[1])
+    assert storage[:, 1::2].tolist() == np.ones((3, 4)).tolist()  # untouched
+    kernel(*_arguments())  # contiguous again: the C version
+    assert ran[-1] == "c"
+
+
+@needs_compiler
 def test_builds_are_cached_and_keyed_on_the_headers(tmp_path, monkeypatch):
     kernel, folder = _package(tmp_path, monkeypatch)
     cache = xp.kernels.CCache("cpkg-test")

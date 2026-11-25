@@ -708,6 +708,16 @@ def use_device_kernel_implementation(name: str | None) -> Iterator[None]:
         _DEVICE_KERNEL_IMPLEMENTATION = previous
 
 
+def _c_contiguous(args: Sequence[Any], kwargs: Mapping[str, Any]) -> bool:
+    """Whether every NumPy array among the arguments is C-contiguous."""
+    import numpy as np
+
+    for value in (*args, *kwargs.values()):
+        if isinstance(value, np.ndarray) and not value.flags.c_contiguous:
+            return False
+    return True
+
+
 class HostImplementations:
     """Hold the host implementations of one kernel and call the selected one.
 
@@ -715,7 +725,9 @@ class HostImplementations:
     failed load is remembered in `errors`. A call runs the implementation set
     with :func:`~cunumpy.kernels.set_host_kernel_implementation`, or else the
     first available of ``"c"``, ``"pyccel"``, ``"numba"`` and ``"numpy"``, and as a
-    last resort ``"python"`` with a :class:`RuntimeWarning` (once). Built by
+    last resort ``"python"`` with a :class:`RuntimeWarning` (once). The C version
+    takes C-contiguous arrays only: a call with a strided NumPy array runs the next
+    available implementation instead. Built by
     :meth:`Kernel.from_folder <cunumpy.kernels.Kernel.from_folder>`.
 
     Parameters
@@ -914,8 +926,20 @@ class HostImplementations:
         """
         return resolve_host(self.get(self.selected()))
 
+    def _after_c(self) -> str:
+        """Return the implementation a call runs when the C version cannot take it."""
+        for name in ("pyccel", "numba", "numpy"):
+            if name in self.names and self.available(name):
+                return name
+        return "python"
+
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        return self.get(self.selected())(*args, **kwargs)
+        name = self.selected()
+        if name == "c" and not _c_contiguous(args, kwargs):
+            # the C wrapper takes C-contiguous arrays only: a strided view (a column
+            # slice of the marker storage) goes to the next implementation instead
+            name = self._after_c()
+        return self.get(name)(*args, **kwargs)
 
     def __repr__(self) -> str:
         return f"HostImplementations({self.__name__!r}, {list(self.names)})"
