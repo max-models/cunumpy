@@ -28,9 +28,11 @@ and returns `void`:
 | `int32[:,:,:]` | `int32_t *x, const int64_t *x_shape` |
 | `bool[:]` | `bool *x, const int64_t *x_shape` |
 
-Arrays arrive C-contiguous, with their shape; a call with a non-contiguous
-array, another element type or another number of dimensions raises
-`TypeError`.
+Arrays arrive C-contiguous, with their shape. A kernel call with a strided NumPy
+array (a column slice, `x[:, ::2]`) runs the next implementation instead, Pyccel
+where it builds, so a C version can sit next to a kernel whose callers pass views.
+Calling the C implementation itself with such an array, another element type or
+another number of dimensions raises `TypeError`.
 
 ```c
 // my_sim/kernels/axpy/axpy_c.c, next to axpy_pyccel.py:
